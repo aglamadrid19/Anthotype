@@ -1,8 +1,8 @@
 #!/bin/zsh
 # Sync the LIVE working tree into the portable deliverable bundle.
 #
-#   live:   /Volumes/CrucialX10/anthosting/{pipeline,variant-{a,b,c},preview}
-#   bundle: /Volumes/CrucialX10/codex/2026-09-27/i-n/outputs/anthosting-coming-soon/
+#   live:   <live>/pipeline, <live>/variant-{a,b,c}, <live>/preview
+#   bundle: the published repo (this tree)
 #
 # The bundle is the hand-off artifact: it must contain everything needed to
 # rebuild and re-score the three pages from a neutral path, with no absolute
@@ -10,11 +10,30 @@
 #
 # usage: ./sync-bundle.sh
 set -e
-LIVE=/Volumes/CrucialX10/anthosting
-BUNDLE=/Volumes/CrucialX10/codex/2026-09-27/i-n/outputs/anthosting-coming-soon
-DOCS=/Volumes/CrucialX10/codex/2026-09-27/i-n/outputs
+LIVE="${ANTHOSTING_LIVE:-}"
+BUNDLE="${ANTHOSTING_BUNDLE:-$PWD}"
+DOCS="${ANTHOSTING_DOCS:-$LIVE/docs}" 
+
+if [[ -z "$LIVE" ]]; then
+  echo "sync-bundle.sh: this script mirrors a development tree into the published repo." >&2
+  echo "  In the repo there is nothing to sync.  To use it, point it at a dev tree:" >&2
+  echo "    ANTHOSTING_LIVE=/path/to/dev-tree ANTHOSTING_BUNDLE=\$PWD zsh sync-bundle.sh" >&2
+  exit 0
+fi
 
 [[ -d "$BUNDLE" ]] || { echo "no bundle at $BUNDLE" >&2; exit 1 }
+
+# Hard guard: LIVE and BUNDLE must be different directories.  If they collide, the
+# mirror below deletes the very source tree it is about to copy from.  That is not
+# hypothetical -- it happened once when both defaulted to the same path and wiped
+# the development tree.
+if [[ "${LIVE:A}" == "${BUNDLE:A}" ]]; then
+  echo "sync-bundle.sh: LIVE and BUNDLE resolve to the same directory:" >&2
+  echo "  $LIVE" >&2
+  echo "Refusing to run -- the mirror would delete its own source." >&2
+  echo "Set ANTHOSTING_LIVE (dev tree) and ANTHOSTING_BUNDLE (repo) to different paths." >&2
+  exit 1
+fi
 
 # Mirror, don't accumulate.  A copy-only sync leaves files behind when a source
 # path is renamed or dropped (a stale sites/*/public/design-reference.png once

@@ -22,26 +22,32 @@ Metric = mean absolute per-pixel RGB difference vs the reference PNG at
 
 ## 1. Where everything lives
 
-| What | Path |
-|---|---|
-| Pipeline (art generation + all QA tooling) | `/Volumes/CrucialX10/anthosting/pipeline` |
-| The three Astro sites | `/Volumes/CrucialX10/anthosting/variant-{a,b,c}` |
-| Reference PNGs | `/Volumes/CrucialX10/anthosting/assets/teaser/anthosting-coming-soon-variant-{a,b,c}.png` |
-| Same refs, as the QA tools consume them | `pipeline/qa/ref-{a,b,c}.png` (identical files) |
-| This handoff + state + mirrors | `/Volumes/CrucialX10/codex/2026-09-27/i-n/outputs` |
-| Python venv (numpy/pillow/scipy/skimage) | `/Volumes/CrucialX10/codex/2026-09-27/i-n/work/.venv/bin/python` |
-| Node | `/Users/alamadrid/.nvm/versions/node/v22.23.2/bin` |
+This document was written inside the development tree; **in this repo the same
+things live in one place**, so paths below have been mapped accordingly.
 
-### Environment preamble (needed for every command below)
+| What | In this repo |
+|---|---|
+| Art generation + all QA tooling | `pipeline/` |
+| The three Astro sites | `sites/variant-{a,b,c}/` |
+| Reference PNGs | `pipeline/qa/ref-{a,b,c}.png` |
+| Per-design config (box, text rects, params) | `pipeline/designs/{a,b,c}.json` |
+| Vendored Inter | `pipeline/fonts/*.woff2` |
+| This handoff + machine-readable state | `docs/HANDOFF.md`, `docs/STATE.json` |
+| Preview server + gallery | `preview/` |
+
+### Environment preamble
+
+Nothing needs exporting. `bootstrap.sh` creates the venv, and `qa/_env.py`
+resolves python/node/chrome by probing for a working interpreter rather than
+trusting a hardcoded path:
 
 ```sh
-export PATH="/Users/alamadrid/.nvm/versions/node/v22.23.2/bin:$PATH"
-cd /Volumes/CrucialX10/anthosting/pipeline
-PY=/Volumes/CrucialX10/codex/2026-09-27/i-n/work/.venv/bin/python
+./bootstrap.sh                  # potrace check + python venv + npm install
+cd pipeline && ./qa/verify.sh   # score the three builds
 ```
 
-External dependencies: **potrace 1.16** (`brew install potrace` — the only one),
-plus Google Chrome and `sips` for screenshots. All present.
+External dependencies: **potrace** (`brew install potrace` — the only required
+one), plus Google Chrome and `sips` for screenshots.
 
 ---
 
@@ -410,22 +416,22 @@ for v in a b c; do node to-astro.mjs $v; (cd ../sites/variant-$v && npm run buil
 ./qa/verify.sh                 # still PASS after a full from-source rebuild
 ```
 
-Last run confirmed all of the above, plus that no absolute path to
-`/Volumes/CrucialX10/anthosting` or `/Users/alamadrid` remains in
-`pipeline/`, `preview/` or `sites/`.  `qa/_env.py` resolves the interpreter by
-*probing* candidates for numpy rather than trusting a hardcoded path, and
-`qa/verify.sh` needs no environment variables at all.
+Last run confirmed all of the above, plus that no absolute path to the
+development tree or the author's home directory remains anywhere in the repo.
+`qa/_env.py` resolves the interpreter by *probing* candidates for numpy rather
+than trusting a hardcoded path, and `qa/verify.sh` needs no environment variables
+at all.  A fresh `git clone` was then bootstrapped, rebuilt and re-scored from
+scratch to confirm the committed files are sufficient.
 
 ---
 
 ## 6. Viewing the builds
 
-`/Volumes/CrucialX10/anthosting/preview/serve.py` serves all three built `dist/`
-directories plus a gallery from one process:
+`preview/serve.py` serves all three built `dist/` directories plus a gallery
+from one process:
 
 ```sh
-cd /Volumes/CrucialX10/anthosting/preview
-./start-persistent.sh 4173
+cd preview && ./start-persistent.sh 4173
 #   http://127.0.0.1:4173/      gallery (iframes all three + scores)
 #   http://127.0.0.1:4173/a/    variant A   (b/, c/ likewise)
 #   http://127.0.0.1:4173/ref/a   reference PNG
@@ -479,19 +485,34 @@ DOM.  Worth repeating after any change to the content layer.
 
 ---
 
-## 8. Output bundle contents
+## 8. What is committed, and what is generated
 
-In `/Volumes/CrucialX10/codex/2026-09-27/i-n/outputs`:
+The dividing line is *"can it be regenerated from the committed files, and is it
+expensive?"*
 
-- `STATE.json` — machine-readable current state.
-- `a.svg` / `b.svg` / `c.svg` — the shipped traced artwork.
-- `{a,b,c}-full.html` — the self-contained pages.
-- `{a,b,c}.page.css` — the DOM/CSS layer.
-- `index-{a,b,c}.astro` — the Astro pages as built.
-- `ref-{v}.png`, `render-{v}.png`, `diff-{v}.png` — input, output, difference.
-- `current-state-{a,b,c}-half.png`, `current-state-all-half.png` — visual state.
-- `anthosting/` — mirror of the pipeline including all 67 QA tools in
-  `anthosting/qa/`.
+**Committed** (inputs, logic, and the expensive artifact):
+- `pipeline/{a,b,c}.svg` — the traced artwork. This is the one output worth
+  committing: regenerating it needs potrace and a few minutes per variant.
+- `pipeline/designs/{a,b,c}.json` — per-design trace box, text rects, params.
+- `pipeline/qa/ref-{a,b,c}.png` — the design references.
+- `pipeline/fonts/*.woff2` — vendored Inter.
+- `pipeline/{a,b,c}.page.css`, `pipeline/content.json` — the DOM/CSS layer.
+- all QA tooling, the sites' `package.json` / `astro.config.mjs`, `preview/`.
+
+**Generated** (gitignored; see `.gitignore`):
+- `pipeline/{v}-full.html`, `{v}-static.html` — from `gen-page.mjs`.
+- `sites/*/src/pages/index.astro` — from `to-astro.mjs`.
+- `sites/*/dist/` — from `astro build`.
+- `qa/render-*.png` and friends — scratch output from the scorer.
+
+So a fresh clone is three commands from a passing build:
+
+```sh
+./bootstrap.sh
+cd pipeline && for v in a b c; do node gen-page.mjs $v; node to-astro.mjs $v; done
+cd .. && for v in a b c; do (cd sites/variant-$v && npm run build); done
+cd pipeline && ./qa/verify.sh
+```
 - `mkart-backup.py` — the pre-polarity-fix `mkart.py`, kept as a reference for
   how the masks used to be (wrongly) built.
 - `anthosting-coming-soon/` — **the portable hand-off bundle** (see below).

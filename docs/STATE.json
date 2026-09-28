@@ -20,10 +20,10 @@
  "metric": "mean abs pixel diff over the 1024x768 stage vs the reference PNG (lower = closer)",
  "realistic_floor": "~3.0-3.4. The band-paint oracle beats the SVG render mainly on A and C because their bright bands are fragmented into 1-5px specks (78.9% of A bright ink, 57.2% of C) that vector tracing reproduces poorly; B is 26.0% and its oracle and render nearly agree. Raising `up` recovers this (A up=6 -> 3.67) at linear cost in file size.",
  "breakthrough": "the art layer is no longer hand-authored SVG shapes: it is real vector geometry recovered from the reference with potrace (qa/mkart.py), emitted through the normal page pipeline. Cut art error ~3-4x.",
- "pipeline": "/Volumes/CrucialX10/anthosting/pipeline",
- "outputs": "/Volumes/CrucialX10/codex/2026-09-27/i-n/outputs",
- "python": "/Volumes/CrucialX10/codex/2026-09-27/i-n/work/.venv/bin/python",
- "node_path": "/Users/alamadrid/.nvm/versions/node/v22.23.2/bin",
+ "pipeline": "pipeline/",
+ "outputs": "this repo",
+ "python": "pipeline/.venv/bin/python (created by bootstrap.sh)",
+ "node_path": "the node on PATH",
  "tools_installed": {
   "potrace": "1.16 (brew) -- the only external tool needed"
  },
@@ -32,14 +32,15 @@
   768
  ],
  "refs": {
-  "a": "/Volumes/CrucialX10/anthosting/assets/teaser/anthosting-coming-soon-variant-a.png",
-  "b": "/Volumes/CrucialX10/anthosting/assets/teaser/anthosting-coming-soon-variant-b.png",
-  "c": "/Volumes/CrucialX10/anthosting/assets/teaser/anthosting-coming-soon-variant-c.png"
+  "a": "pipeline/qa/ref-a.png",
+  "b": "pipeline/qa/ref-b.png",
+  "c": "pipeline/qa/ref-c.png",
+  "note": "the original design PNGs live in the repo as pipeline/qa/ref-{a,b,c}.png; the old dev-tree path under assets/teaser/ no longer applies"
  },
  "variant_dirs": {
-  "a": "/Volumes/CrucialX10/anthosting/variant-a",
-  "b": "/Volumes/CrucialX10/anthosting/variant-b",
-  "c": "/Volumes/CrucialX10/anthosting/variant-c"
+  "a": "sites/variant-a",
+  "b": "sites/variant-b",
+  "c": "sites/variant-c"
  },
  "previews": {
   "a": 4173,
@@ -114,7 +115,7 @@
   ],
   "suspect": "qa/mkart.py:_fmt() adds potrace's translate tx/ty to RELATIVE path deltas; a relative delta transforms as d*s with no offset. Verified by inspection.",
   "caution": "respecting command case is correct SVG but drove the render white (mean lum 247 vs reference 16), so it interacts with something else -- likely the frame-plate subpaths or the translate(x0 y0) wrapper.",
-  "backup": "/Volumes/CrucialX10/codex/2026-09-27/i-n/outputs/mkart-backup.py"
+  "backup": "this repo/mkart-backup.py"
  },
  "verified_fixes": [
   "qa/glyph.py:strip_frame_subpaths() -- potrace emits a frame-filling rectangle as the first subpath of a band; left in it painted an opaque black plate over the brand marks.",
@@ -167,7 +168,7 @@
   "Re-tune .stage gradient alphas after any art regeneration.",
   "Re-score, node to-astro.mjs, npm run build, copy to outputs/."
  ],
- "handoff_doc": "/Volumes/CrucialX10/codex/2026-09-27/i-n/outputs/HANDOFF.md",
+ "handoff_doc": "this repo/HANDOFF.md",
  "art_blur_px": {
   "a": 0,
   "b": 0,
@@ -204,7 +205,7 @@
   "opttol is inert; alphamax=1.0 makes files bigger, so flat polygons are optimal.",
   "text-shadow / glow RE-CHECKED under the corrected scorer: NOT exhausted -- tightening radius/alpha gained 0.05-0.09 on every variant. See glow_fix."
  ],
- "entry_point": "/Volumes/CrucialX10/codex/2026-09-27/i-n/outputs/README.md",
+ "entry_point": "this repo/README.md",
  "art_floor": {
   "metric": "qa/artfloor.py -- band-paint oracle vs actual render, masked to the art window with live-text rects excluded",
   "a": {
@@ -287,7 +288,7 @@
   "c": 3.05
  },
  "reproducible": "Verified: re-running qa/mkart.py from the committed PARAMS produced byte-identical {a,b,c}.svg to the shipped ones.",
- "viewing": "cd /Volumes/CrucialX10/anthosting/preview && ./start-persistent.sh 4173  ->  http://127.0.0.1:4173/ (gallery), /a/ /b/ /c/, /ref/<v>, /diff/<v>. Use start-persistent.sh (double-fork via daemonize.py) NOT `serve.py &` -- a background job dies with its shell, which is why the URLs previously stopped resolving. launchctl submit does not work (launchd cannot read the external volume). astro dev does NOT work on this project (managed dev server ignores --port; hangs re-transforming ~7MB inline SVG per request). The pages are self-contained and open directly from dist/index.html with no server and no network. Default browser is Safari.",
+ "viewing": "cd preview/ && ./start-persistent.sh 4173  ->  http://127.0.0.1:4173/ (gallery), /a/ /b/ /c/, /ref/<v>, /diff/<v>. Use start-persistent.sh (double-fork via daemonize.py) NOT `serve.py &` -- a background job dies with its shell, which is why the URLs previously stopped resolving. launchctl submit does not work (launchd cannot read the external volume). astro dev does NOT work on this project (managed dev server ignores --port; hangs re-transforming ~7MB inline SVG per request). The pages are self-contained and open directly from dist/index.html with no server and no network. Default browser is Safari.",
  "self_hosted_fonts": {
   "what": "Inter is vendored at pipeline/fonts/*.woff2 (6 weights, 144 KB) and inlined as @font-face by gen-page.mjs; the Google Fonts <link> and both preconnects were removed.",
   "why": "The page previously loaded Inter from the Google Fonts CDN, so its typography -- and the scored fidelity -- depended on the network. With fonts.googleapis.com + fonts.gstatic.com DNS-blackholed the old build scored 4.22 on A instead of 2.77 (silent fallback to Helvetica).",
@@ -353,5 +354,19 @@
   "why_it_was_missed": "The previous session swept glow under the old `sips -z` scorer and concluded the shipped values were optimal. The blur introduced by that scaler hid the improvement. Re-swept via qa/tune.py against the corrected Lanczos scorer, it reproduces on all three.",
   "gain": "A 2.76->2.71, B 2.82->2.76, C 3.08->2.99. Stable +/-0.01 over 3 runs. pct>30 unchanged (1.13/1.59/1.57), so this is not a contrast trade.",
   "lesson": "Anything in the exhausted list that was judged only by aggregate mean should be re-checked now the scorer is honest. Font metrics were re-checked and still hold; glow did not."
+ },
+ "layout": {
+  "repo": "everything is in this repo; the dev-tree paths in the older entries of this file are historical",
+  "pipeline": "pipeline/  (art generation + all QA tooling)",
+  "sites": "sites/variant-{a,b,c}/",
+  "refs": "pipeline/qa/ref-{a,b,c}.png",
+  "design_config": "pipeline/designs/{a,b,c}.json",
+  "fonts": "pipeline/fonts/*.woff2",
+  "preview": "preview/  (serve.py + gallery + start-persistent.sh)"
+ },
+ "committed_vs_generated": {
+  "committed": "pipeline/{a,b,c}.svg (the traced art -- regenerating needs potrace), designs/*.json, qa/ref-*.png, fonts/*.woff2, *.page.css, content.json, all QA tooling, site package.json/astro.config.mjs, preview/",
+  "generated_gitignored": "pipeline/{v}-full.html and {v}-static.html (gen-page.mjs), sites/*/src/pages/index.astro (to-astro.mjs), sites/*/dist/ (astro build), qa/render-*.png scratch",
+  "fresh_clone": "./bootstrap.sh; then gen-page.mjs + to-astro.mjs for a/b/c; then npm run build in each site; then pipeline/qa/verify.sh"
  }
 }
