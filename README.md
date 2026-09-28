@@ -132,5 +132,6 @@ docs/HANDOFF.md        full engineering history: what was tried, what worked,
   oracle reconstruction is +0.24 / +0.10 / +0.16 mean. Payload and parity trade
   off along one dial (`bands`), roughly 1 KB of gzip per 0.001 mean.
 
-`docs/HANDOFF.md` records the full route, including the measured list of things
-already ruled out — read it before re-litigating font metrics or band edges.
+`docs/CHECKPOINT.md` — current state and what a future session must not break.
+`docs/HANDOFF.md` — the full route, including the measured list of things already
+ruled out. Read both before re-litigating font metrics or band edges.
