@@ -431,8 +431,8 @@ Consequences:
   `sips -z`. The table above lets you translate between the two.
 
 ### Clean-room verification (re-run this after any change)
-The bundle in `anthosting-coming-soon/` is verified reproducible from a neutral
-path with no reference back to this machine's layout:
+This repo is verified reproducible from a neutral path with no reference back to
+this machine's layout (see `docs/HOME.md` for where the checkouts live):
 
 ```sh
 git clone <repo> /tmp/cr && cd /tmp/cr
@@ -544,5 +544,5 @@ cd pipeline && ./build.sh && ./qa/verify.sh
 site, so there is no per-design loop to keep in sync.
 - `mkart-backup.py` — the pre-polarity-fix `mkart.py`, kept as a reference for
   how the masks used to be (wrongly) built.
-- `anthosting-coming-soon/` — **this repo, the portable deliverable.** The old
-  dev-tree mirror (`sync-bundle.sh`) was removed; edit this repo directly.
+- **this repo is the deliverable.** The old dev-tree mirror (`sync-bundle.sh`)
+  was removed; edit a checkout directly (see `docs/HOME.md`).

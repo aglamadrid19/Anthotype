@@ -1,36 +1,58 @@
 # Where this repo lives
 
-This project has **one canonical git repository** (a bare mirror) and two working
-checkouts. Nothing here is a *second* tree to sync from — the working checkouts
-are clones of the mirror, and the mirror is the source of truth.
+**Anthotype** — turn a design PNG into a code-native website.
+
+One canonical git repository (a bare mirror) and two working checkouts. The
+checkouts are clones of the mirror, so neither can silently diverge.
 
 ```
-/Volumes/CrucialX10/design-to-site.git     <- bare mirror, CANONICAL
-/Volumes/CrucialX10/design-to-site         <- working checkout (use this one)
+/Volumes/CrucialX10/anthotype.git    <- bare mirror (local canonical)
+/Volumes/CrucialX10/anthotype        <- working checkout (use this one)
 /Volumes/CrucialX10/codex/2026-09-27/i-n/outputs/anthosting-coming-soon
-                                           <- original working checkout
+                                     <- second checkout (same history)
 ```
+
+Both checkouts have two remotes:
+
+| remote | points at | use for |
+|---|---|---|
+| `origin` | `https://github.com/aglamadrid19/Anthotype.git` | the published repo |
+| `mirror` | `/Volumes/CrucialX10/anthotype.git` | the local bare mirror |
 
 ## Normal use
 
-Work in `/Volumes/CrucialX10/design-to-site`:
+Work in `/Volumes/CrucialX10/anthotype`:
 
 ```sh
-cd /Volumes/CrucialX10/design-to-site
+cd /Volumes/CrucialX10/anthotype
 ./bootstrap.sh                 # once: venv + each site's node_modules
 cd pipeline && ./build.sh      # build every design
-              ./qa/verify.sh   # score each design (expect a 2.71 / 2.76 / 2.99)
+              ./qa/verify.sh   # score each design (expect 2.71 / 2.76 / 2.99)
 ../preview/start-persistent.sh 4180    # http://127.0.0.1:4180/
 ```
 
-Commit in a checkout, then push to the mirror:
+## Committing and pushing
+
+`git push-anthotype` (an alias set on both checkouts) pushes `main` to the
+mirror *and* GitHub in one step:
 
 ```sh
-git push origin main           # origin = /Volumes/CrucialX10/design-to-site.git
+git push-anthotype             # mirror + GitHub
 ```
 
-From the other checkout, `git pull --ff-only` to pick it up. Both checkouts and
-the mirror share history, so the two can never silently diverge.
+Or manually:
+
+```sh
+git push mirror main           # local bare mirror
+git push origin main           # GitHub
+```
+
+Then sync the other checkout:
+
+```sh
+git -C /Volumes/CrucialX10/codex/2026-09-27/i-n/outputs/anthosting-coming-soon \
+    pull --ff-only origin main
+```
 
 ## Adding a design
 
@@ -45,13 +67,4 @@ node gen-page.mjs <name> && node to-astro.mjs <name>
 
 ## GitHub
 
-Published at **https://github.com/aglamadrid19/Anthotype** (remote `origin`).
-
-```sh
-cd /Volumes/CrucialX10/design-to-site
-git push origin main
-```
-
-Note the one naming wrinkle: the GitHub repo is `Anthotype`, but the local
-mirror and checkouts keep the older `design-to-site` directory names. That is
-purely on-disk naming — the remote URL is what matters, and it is already set.
+Published at **https://github.com/aglamadrid19/Anthotype**.
