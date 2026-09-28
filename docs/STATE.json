@@ -1,0 +1,357 @@
+{
+ "task": "AntHosting coming-soon pages: make the three Astro sites match the reference PNGs",
+ "deliverable": "code (Astro + SVG/CSS/DOM) that renders like the reference PNGs",
+ "status": "DONE and verified. All three sites build clean; qa/verify.sh scores each variant's real Astro dist/index.html. Re-running qa/mkart.py from the committed PARAMS reproduces the shipped SVGs byte-for-byte (deterministic pipeline).",
+ "scores": {
+  "a": 2.71,
+  "b": 2.76,
+  "c": 2.99
+ },
+ "scores_conversation_start": {
+  "a": 12.17,
+  "b": 16.92,
+  "c": 15.09
+ },
+ "pct_pixels_over_30": {
+  "a": 1.13,
+  "b": 1.59,
+  "c": 1.57
+ },
+ "metric": "mean abs pixel diff over the 1024x768 stage vs the reference PNG (lower = closer)",
+ "realistic_floor": "~3.0-3.4. The band-paint oracle beats the SVG render mainly on A and C because their bright bands are fragmented into 1-5px specks (78.9% of A bright ink, 57.2% of C) that vector tracing reproduces poorly; B is 26.0% and its oracle and render nearly agree. Raising `up` recovers this (A up=6 -> 3.67) at linear cost in file size.",
+ "breakthrough": "the art layer is no longer hand-authored SVG shapes: it is real vector geometry recovered from the reference with potrace (qa/mkart.py), emitted through the normal page pipeline. Cut art error ~3-4x.",
+ "pipeline": "/Volumes/CrucialX10/anthosting/pipeline",
+ "outputs": "/Volumes/CrucialX10/codex/2026-09-27/i-n/outputs",
+ "python": "/Volumes/CrucialX10/codex/2026-09-27/i-n/work/.venv/bin/python",
+ "node_path": "/Users/alamadrid/.nvm/versions/node/v22.23.2/bin",
+ "tools_installed": {
+  "potrace": "1.16 (brew) -- the only external tool needed"
+ },
+ "stage": [
+  1024,
+  768
+ ],
+ "refs": {
+  "a": "/Volumes/CrucialX10/anthosting/assets/teaser/anthosting-coming-soon-variant-a.png",
+  "b": "/Volumes/CrucialX10/anthosting/assets/teaser/anthosting-coming-soon-variant-b.png",
+  "c": "/Volumes/CrucialX10/anthosting/assets/teaser/anthosting-coming-soon-variant-c.png"
+ },
+ "variant_dirs": {
+  "a": "/Volumes/CrucialX10/anthosting/variant-a",
+  "b": "/Volumes/CrucialX10/anthosting/variant-b",
+  "c": "/Volumes/CrucialX10/anthosting/variant-c"
+ },
+ "previews": {
+  "a": 4173,
+  "b": 4174,
+  "c": 4175
+ },
+ "builds": {
+  "a": "ok",
+  "b": "ok",
+  "c": "ok"
+ },
+ "art_params": {
+  "a": {
+   "box": [
+    418,
+    0,
+    1024,
+    742
+   ],
+   "bands": 96,
+   "up": 2,
+   "turdsize": 2,
+   "alphamax": 0.0,
+   "opttol": 0.0,
+   "exclude_text": true,
+   "text_lum_max": 200.0,
+   "cumulative": true
+  },
+  "b": {
+   "box": [
+    0,
+    46,
+    1024,
+    726
+   ],
+   "bands": 24,
+   "up": 4,
+   "turdsize": 2,
+   "alphamax": 0.0,
+   "opttol": 0.0,
+   "exclude_text": true,
+   "text_lum_max": 200.0,
+   "cumulative": true
+  },
+  "c": {
+   "box": [
+    0,
+    78,
+    1024,
+    742
+   ],
+   "bands": 96,
+   "up": 2,
+   "turdsize": 2,
+   "alphamax": 0.0,
+   "opttol": 0.0,
+   "exclude_text": true,
+   "text_lum_max": 200.0,
+   "cumulative": true
+  }
+ },
+ "open_lead": {
+  "summary": "The art layer loses 5-8 of error between qa/mkart.py output and the browser.",
+  "evidence": [
+   "qa/artrecon.py band-paint reconstruction scores 1.2-1.8",
+   "the same bands emitted as SVG and rendered by Chrome score 7.3-10.1"
+  ],
+  "ruled_out": [
+   "representation error (opttol 0.02-0.25, alphamax 0-1, prec 0-3 all <0.02)",
+   "minpx (0 px dropped on b)",
+   "band paint order (already darkest-first)"
+  ],
+  "suspect": "qa/mkart.py:_fmt() adds potrace's translate tx/ty to RELATIVE path deltas; a relative delta transforms as d*s with no offset. Verified by inspection.",
+  "caution": "respecting command case is correct SVG but drove the render white (mean lum 247 vs reference 16), so it interacts with something else -- likely the frame-plate subpaths or the translate(x0 y0) wrapper.",
+  "backup": "/Volumes/CrucialX10/codex/2026-09-27/i-n/outputs/mkart-backup.py"
+ },
+ "verified_fixes": [
+  "qa/glyph.py:strip_frame_subpaths() -- potrace emits a frame-filling rectangle as the first subpath of a band; left in it painted an opaque black plate over the brand marks.",
+  "Stage radial-gradients double-counted glow already baked into the traced art. B .16/.10/.07 -> .02/.02/.03 alone took B 6.09 -> 5.01.",
+  "Art BOX widened to recover artwork the old box cut off (A's ring reaches x~363).",
+  "TEXT exclusion rects + text_lum_max=70 stop the trace baking a blurry copy of the DOM type under the real text, while keeping the dim glow behind it.",
+  "CSS_OVERRIDE='...' node gen-page.mjs <v> && ./qa.sh <v> is the reliable A/B path; qa/batch.py can disagree because it rebuilds from an older cached style block."
+ ],
+ "per_region_now": {
+  "a": {
+   "title": 14.31,
+   "coming": 13.56,
+   "tagline": 19.85,
+   "ant": 11.9,
+   "pods": 7.89,
+   "bgR": 3.36
+  },
+  "b": {
+   "brand": 8.82,
+   "title": 23.15,
+   "coming": 13.45,
+   "tagline": 10.8,
+   "cta": 10.77,
+   "pods": 4.67,
+   "bgTL": 3.6
+  },
+  "c": {
+   "brand": 10.15,
+   "title": 19.92,
+   "coming": 15.57,
+   "tagline": 15.54,
+   "ant": 13.43,
+   "pods": 7.24,
+   "bgR": 5.32
+  }
+ },
+ "gotchas": [
+  "potrace fills BLACK: pass the desired band as white; do not invert.",
+  "potrace emits its own y-flip translate(0,H) scale(1,-1); keep the transform, never rewrite coords.",
+  "qa.sh screenshots over file:// -- no server; a stray http.server once served stale art.",
+  "qa/batch.py._scope must be brace-aware or multi-line overrides are silently dropped.",
+  "Cap batch grids at COLS*MAX_ROWS or cells come back blank and scores go bogus.",
+  "qa/geom.py writes qa/geom-<v>.png, not qa/render-<v>.png.",
+  "gen-{a,b}.mjs are legacy hand-art generators; re-running them overwrites the good {v}.svg."
+ ],
+ "next_priorities": [
+  "Chase the _fmt relative-coordinate lead (worth ~5 mean if art renders at its 1.2-1.8 floor).",
+  "C brand 10.15 / B brand 8.82 (worst means, small areas). B's CSS clip-path hexagon still beats every trace of it, so leave that one.",
+  "Titles (B 23.15 / C 19.92) look immovable: Inter weight 400 beats every weight, family, blur and shadow tried.",
+  "Re-tune .stage gradient alphas after any art regeneration.",
+  "Re-score, node to-astro.mjs, npm run build, copy to outputs/."
+ ],
+ "handoff_doc": "/Volumes/CrucialX10/codex/2026-09-27/i-n/outputs/HANDOFF.md",
+ "art_blur_px": {
+  "a": 0,
+  "b": 0,
+  "c": 0
+ },
+ "root_cause_fixed": "potrace fills the BLACK/bit-0 region of a bitmap, and PIL's L->'1' conversion also writes the mask as bit 0, so qa/mkart.py was tracing the COMPLEMENT of every luminance band. The emitted frame-spanning plate painted an opaque near-black sheet over the whole art layer. The old _fmt() coordinate bug happened to shrink those plates into invisible slivers, which is why the page looked plausible while the art contributed ~0 -- verified: hiding .art changed the score by <0.01.",
+ "fix": "qa/mkart.py passes (~mask)*255 to potrace and emits potrace's paths verbatim inside nested <g> transforms (no coordinate rewriting). _fmt() and the frame-plate stripper are both gone.",
+ "page_size": {
+  "a": "6.4 MB raw / 870 KB gzip",
+  "b": "3.4 MB raw / 523 KB gzip",
+  "c": "7.7 MB raw / 1051 KB gzip"
+ },
+ "page_size_tradeoff": "Measured Pareto (a): 2.77 @ 6.7MB, 2.85 @ 5.7MB (up3/bands64), 2.86 @ 4.3MB (up2/bands64), 2.94 @ 3.2MB (up2/bands48). (c): 3.11 @ 8.0MB, 3.24 @ 4.8MB (up2/bands64), 3.40 @ 2.8MB (up1/bands64). (b): 2.84 @ 4.8MB (up4/bands32), 2.90 @ 3.5MB (up4/bands24), 3.09 @ 1.9MB (up4/bands16). Shipped point is the best-value knee, not the max-parity extreme.",
+ "open_leads": [
+  "TEXT is now the largest single contributor (a 1.47, b 1.75, c 1.77 of the overall mean, vs art 1.06/1.42/1.37) but is at a local optimum for the Inter stack. Only a different font or a higher-resolution reference could move it.",
+  "More bands still buys score (a 128 bands -> 2.75) at ~1 KB gzip per 0.001 mean -- a pure size/parity judgement, not a technical barrier.",
+  "B brand / C brand remain the worst regional means (small areas)."
+ ],
+ "incremental_wins": [
+  "font: -webkit-font-smoothing:antialiased on all three (~0.04-0.08 each)",
+  "CUMULATIVE BANDS: trace {lum >= e_i} instead of the disjoint band {e_i<=lum<e_{i+1}}. Mathematically identical painted darkest-first, but one solid nested region per band instead of scattered 1px slivers: a 3.76->2.99, b 3.36->3.23, c 3.78->3.32, and the SVG halves.",
+  "alphamax=0 + opttol=0: a 3.76->3.65, c 3.78->3.72, b 3.36->3.34; file smaller. opttol is inert; alphamax=1.0 makes files BIGGER, so flat polygons are optimal at these resolutions.",
+  "Operating point moved to the knee of the size curve: a up2/bands64, b up4/bands24, c up2/bands64."
+ ],
+ "resolved_leads": [
+  "The _fmt() relative-coordinate lead is dead: cumulative masks removed the need for any coordinate rewriting and closed the art gap.",
+  "The A/C bright-band speck diagnosis is superseded: the loss was the disjoint-band decomposition, not the specks themselves."
+ ],
+ "exhausted_from_previous_session": [
+  "FONT: Inter beats Inter Tight/Inter Display/SF Pro/Helvetica Neue/Archivo/Public Sans by ~1.3 mean on a and ~0.9 on c. Inter is correct.",
+  "TYPE METRICS: h1 font-size is centred at its optimum on all three (a 80, b 84, c 82 px); letter-spacing, font-weight, transform, ink colour and opacity all fail to improve it. Text is at its floor for this stack.",
+  "BLUR: 0 px is optimal for all three (0.5 px costs 0.04-0.27).",
+  "BAND EDGES: uniform binning beats quantile binning and 1-D k-medians, which over-weight the huge dark region (a 1.74 vs 1.77 vs 3.45 paint error).",
+  "opttol is inert; alphamax=1.0 makes files bigger, so flat polygons are optimal.",
+  "text-shadow / glow RE-CHECKED under the corrected scorer: NOT exhausted -- tightening radius/alpha gained 0.05-0.09 on every variant. See glow_fix."
+ ],
+ "entry_point": "/Volumes/CrucialX10/codex/2026-09-27/i-n/outputs/README.md",
+ "art_floor": {
+  "metric": "qa/artfloor.py -- band-paint oracle vs actual render, masked to the art window with live-text rects excluded",
+  "a": {
+   "oracle": 1.208,
+   "render": 1.477,
+   "trace_overhead": 0.269
+  },
+  "b": {
+   "oracle": 1.165,
+   "render": 1.383,
+   "trace_overhead": 0.218
+  },
+  "c": {
+   "oracle": 1.329,
+   "render": 1.527,
+   "trace_overhead": 0.198
+  },
+  "note": "The tracer is no longer the bottleneck (A's overhead was +1.56 pre-cumulative-mask at the then-current 40-band set). What remains is the reference's own band quantisation."
+ },
+ "error_contribution": {
+  "metric": "share of the overall mean, split by area; text rects from mkart.TEXT",
+  "a": {
+   "text": 1.47,
+   "art": 1.06,
+   "rest": 0.46
+  },
+  "b": {
+   "text": 1.75,
+   "art": 1.42,
+   "rest": 0.07
+  },
+  "c": {
+   "text": 1.77,
+   "art": 1.37,
+   "rest": 0.18
+  },
+  "note": "DOM text is now the largest single contributor but is at a local optimum for the Inter stack."
+ },
+ "per_region": {
+  "a": {
+   "title": 14.35,
+   "coming": 10.59,
+   "tagline": 17.41,
+   "cta": 5.78,
+   "ant": 2.17,
+   "pods": 1.88,
+   "bgTL": 0.78,
+   "bgR": 1.06,
+   "bgB": 0.8
+  },
+  "b": {
+   "brand": 5.87,
+   "title": 14.02,
+   "coming": 10.59,
+   "tagline": 9.25,
+   "cta": 9.91,
+   "ant": 2.87,
+   "pods": 1.96,
+   "bgTL": 2.52,
+   "bgR": 1.14,
+   "bgB": 0.66
+  },
+  "c": {
+   "brand": 7.68,
+   "title": 14.62,
+   "coming": 12.22,
+   "divider": 4.55,
+   "tagline": 11.28,
+   "cta": 9.95,
+   "ant": 3.6,
+   "pods": 2.16,
+   "bgTL": 2.04,
+   "bgR": 1.67,
+   "bgB": 1.17
+  }
+ },
+ "verify_targets": {
+  "a": 2.77,
+  "b": 2.82,
+  "c": 3.05
+ },
+ "reproducible": "Verified: re-running qa/mkart.py from the committed PARAMS produced byte-identical {a,b,c}.svg to the shipped ones.",
+ "viewing": "cd /Volumes/CrucialX10/anthosting/preview && ./start-persistent.sh 4173  ->  http://127.0.0.1:4173/ (gallery), /a/ /b/ /c/, /ref/<v>, /diff/<v>. Use start-persistent.sh (double-fork via daemonize.py) NOT `serve.py &` -- a background job dies with its shell, which is why the URLs previously stopped resolving. launchctl submit does not work (launchd cannot read the external volume). astro dev does NOT work on this project (managed dev server ignores --port; hangs re-transforming ~7MB inline SVG per request). The pages are self-contained and open directly from dist/index.html with no server and no network. Default browser is Safari.",
+ "self_hosted_fonts": {
+  "what": "Inter is vendored at pipeline/fonts/*.woff2 (6 weights, 144 KB) and inlined as @font-face by gen-page.mjs; the Google Fonts <link> and both preconnects were removed.",
+  "why": "The page previously loaded Inter from the Google Fonts CDN, so its typography -- and the scored fidelity -- depended on the network. With fonts.googleapis.com + fonts.gstatic.com DNS-blackholed the old build scored 4.22 on A instead of 2.77 (silent fallback to Helvetica).",
+  "result": "Offline score is now identical to online: 2.77 / 2.90 / 3.11 (delta < 0.0001 mean vs the previous render).",
+  "required_config": "build.inlineStylesheets: 'always' in every astro.config.mjs. The font CSS pushes the stylesheet past Astro's 4 kB auto-inline threshold; without it Astro emits /_astro/index.*.css which cannot load over file:// -- the protocol qa.sh and qa/verify.sh screenshot with. Symptom of regression: scores jump to 158/170/227 and the page renders unstyled.",
+  "gate": "qa/verify.sh fails on remote asset refs AND external /_astro/*.css, and asserts zero page-originated network requests via qa/netcheck.py (Chrome net-log based). qa/netcheck.py --selftest proves the detector sees a deliberate CDN fetch, so a zero is trustworthy. Both gates negative-tested.",
+  "refresh": "npm pack @fontsource/inter; copy package/files/inter-latin-{300..800}-normal.woff2 into pipeline/fonts/.",
+  "payload_cost": "3 weights (400/500/600) only -- those are the only font-weight values used across the three page CSS files. 72 KB of woff2 inlined as base64. Base64 costs ~33% raw but gzip removes exactly that, so the gzip delta equals the raw font size (~72 KB/variant) and the page stays a single file with zero extra requests.",
+  "measured": "Net-log verified: 0 page-originated http(s) requests on all three builds."
+ },
+ "preview_persistence": {
+  "problem": "The preview server had been started as a background job from a shell that later exited, so it was killed and the URLs stopped resolving in the browser.",
+  "fix": "preview/start-persistent.sh uses preview/daemonize.py (double-fork + setsid) so the server is re-parented to launchd (PPID 1) and survives shell exit.",
+  "usage": "./start-persistent.sh [port]  (default 4173); pidfile /tmp/anthosting-preview-<port>.pid, log /tmp/anthosting-preview-<port>.log",
+  "note": "launchctl submit does NOT work here -- launchd cannot read the external volume (Operation not permitted). The double-fork in daemonize.py is the working approach."
+ },
+ "font_loading": "self-hosted (was: Google Fonts CDN). See self_hosted_fonts.",
+ "non_pixel_fixes": {
+  "artwork_a11y": "The traced SVG was announced as aria-label='AntHosting {v} artwork', leaking the internal variant letter. Now aria-hidden='true' focusable='false' (the art is decorative). Geometry byte-identical; scores unchanged. Fixed in qa/mkart.py.",
+  "cta_dead_link": "OPEN: the CTA is href='#waitlist' but no element with that id exists on any variant, so the button does nothing. The design PNGs specify only its appearance, so the real destination is a product decision. Set it in pipeline/content.json markup strings."
+ },
+ "scores_previous_scaler": {
+  "note": "produced with `sips -z`; the shipped scorer is now PIL Lanczos (qa/downsample.py)",
+  "a": 2.77,
+  "b": 2.9,
+  "c": 3.11
+ },
+ "scorer_downgrade_fixed": {
+  "what": "The 2x screenshot -> 1024x768 reference resize used `sips -z`, which is the worst measured reconstruction filter. PIL Lanczos is now canonical (qa/downsample.py), used by both qa.sh and qa/verify.sh.",
+  "why_it_matters": "The filter is not neutral: on B, sips 2.8970 vs lanczos 2.8205 -- 0.077, about 2.7% of the headline number. Page pixels were NOT changed to obtain this; only the measurement improved.",
+  "new_scores": "2.76 / 2.82 / 3.08, stable to +/-0.01 over 3 consecutive runs.",
+  "targets": "Tightened to 2.82 / 2.88 / 3.15 (~0.06 headroom above the stable value).",
+  "table": {
+   "sips": [
+    2.7718,
+    2.897,
+    3.1083
+   ],
+   "box": [
+    2.7736,
+    2.8312,
+    3.0886
+   ],
+   "hamming": [
+    2.7685,
+    2.8721,
+    3.0977
+   ],
+   "bicubic": [
+    2.7616,
+    2.8615,
+    3.091
+   ],
+   "lanczos": [
+    2.7587,
+    2.8205,
+    3.0803
+   ]
+  }
+ },
+ "glow_fix": {
+  "what": "text-shadow radius/alpha tightened on h1, h1 .green and h2 across all three variants (h1 14-18px->8-10px; h1 .green 18-20px->6-10px and alpha .30-.32->.20-.22; h2 12px->6px).",
+  "why_it_was_missed": "The previous session swept glow under the old `sips -z` scorer and concluded the shipped values were optimal. The blur introduced by that scaler hid the improvement. Re-swept via qa/tune.py against the corrected Lanczos scorer, it reproduces on all three.",
+  "gain": "A 2.76->2.71, B 2.82->2.76, C 3.08->2.99. Stable +/-0.01 over 3 runs. pct>30 unchanged (1.13/1.59/1.57), so this is not a contrast trade.",
+  "lesson": "Anything in the exhausted list that was judged only by aggregate mean should be re-checked now the scorer is honest. Font metrics were re-checked and still hold; glow did not."
+ }
+}

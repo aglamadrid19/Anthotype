@@ -1,0 +1,33 @@
+:root { color-scheme: dark; --green: #19d283; --ink: #f4fff9; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { width: 100%; height: 100%; }
+    body { background: #000a07; font-family: Inter, system-ui, sans-serif; overflow: hidden;
+  -webkit-font-smoothing: antialiased; }
+    .stage { position: absolute; left: 50%; top: 50%; width: 1024px; height: 768px; transform-origin: center center;
+      background:
+        radial-gradient(58% 64% at 68% 48%, rgba(17,150,102,.39), rgba(17,150,102,0) 74%),
+        #000a07;
+      overflow: hidden; }
+    .stage::before { content: ""; position: absolute; inset: 0;
+      background-image: radial-gradient(rgba(150,255,214,.05) 1px, transparent 1px);
+      background-size: 24px 24px;
+      -webkit-mask-image: radial-gradient(60% 60% at 62% 50%, #000 8%, transparent 68%);
+      mask-image: radial-gradient(60% 60% at 62% 50%, #000 8%, transparent 68%); }
+
+    .content { position: absolute; left: 56px; top: 245px; width: 480px; z-index: 3; }
+    .white-space { white-space: nowrap; }
+    h1 { display: flex; color: var(--ink); font-size: 80px; font-weight: 400; letter-spacing: -.028em; line-height: 1;
+      text-shadow: 0 0 10px rgba(190,255,225,.12); }
+    h1 .green { color: var(--green); text-shadow: 0 0 10px rgba(16,185,129,.22); }
+    h2 { margin-top: 11px; margin-left: 4px; color: var(--green); font-size: 46px; font-weight: 400; letter-spacing: -.035em; line-height: 1;
+      text-shadow: 0 0 6px rgba(16,185,129,.28), 0 0 30px rgba(16,185,129,.14); }
+    .content p { margin-top: 16px; margin-left: 7px; color: rgba(240,255,248,.80); font-size: 19.5px; font-weight: 400; line-height: 1.15;
+      text-shadow: 0 0 8px rgba(190,255,225,.14); }
+    .cta { display: inline-flex; align-items: center; justify-content: center; gap: 12px; width: 250px; height: 55px;
+      margin-top: 28px; margin-left: 4px; border-radius: 14px; text-decoration: none; padding-left: 8px;
+      background: linear-gradient(180deg, #18c47c, #13b26e); color: #02150f; font-size: 21px; font-weight: 600;
+      box-shadow: 0 0 26px rgba(16,185,129,.5), 0 14px 26px rgba(0,0,0,.3), inset 0 1px 0 rgba(255,255,255,.4); }
+    .cta-mark { width: 15px; height: 15px; flex: none; }
+
+    .art { position: absolute; inset: 0; z-index: 2; }
+    .art > svg { display: block; width: 1024px; height: 768px; overflow: visible; }

@@ -1,0 +1,37 @@
+# ---- dependencies (installed by bootstrap.sh) ------------------------------
+node_modules/
+.venv/
+venv/
+
+# ---- python ---------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# ---- astro build cache ----------------------------------------------------
+.astro/
+
+# ---- generated build output (rebuild with pipeline/build.sh) ---------------
+# Pure products of the committed sources + the traced art:
+#   gen-page.mjs  :  <v>.svg + <v>.page.css + content.json -> <v>-full.html
+#   to-astro.mjs  :  <v>-full.html                          -> src/pages/index.astro
+#   astro build   :  src/pages/index.astro                  -> dist/index.html
+# The traced art itself ({a,b,c}.svg) IS committed -- it is the expensive
+# artifact and regenerating it needs potrace.
+pipeline/*-full.html
+pipeline/*-static.html
+sites/*/src/pages/index.astro
+sites/*/dist/
+
+# ---- QA scratch output ----------------------------------------------------
+# qa.sh writes renders next to the reference for inspection; nothing reads them.
+pipeline/qa/render-*.png
+pipeline/qa/crop-*.png
+pipeline/qa/side-*.png
+pipeline/qa/diff-*.png
+
+# ---- os / editor ----------------------------------------------------------
+.DS_Store
+*.swp
+.idea/
+.vscode/

@@ -1,0 +1,47 @@
+{
+  "name": "a",
+  "ref": "qa/ref-a.png",
+  "box": [
+    418,
+    0,
+    1024,
+    742
+  ],
+  "text": [
+    [
+      54,
+      250,
+      454,
+      336
+    ],
+    [
+      59,
+      337,
+      332,
+      390
+    ],
+    [
+      60,
+      397,
+      342,
+      424
+    ],
+    [
+      56,
+      444,
+      314,
+      508
+    ]
+  ],
+  "params": {
+    "bands": 96,
+    "up": 2,
+    "turdsize": 2,
+    "alphamax": 0.0,
+    "opttol": 0.0,
+    "minpx": null,
+    "exclude_text": true,
+    "text_lum_max": 200.0,
+    "cumulative": true
+  }
+}
