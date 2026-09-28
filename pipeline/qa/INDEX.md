@@ -6,14 +6,15 @@ exist to answer one question that was expensive to answer.
 
 ## The ones that matter
 
-- `_env.py` — Resolves python/node/chrome without hardcoded paths. Imported by the other tools.
+- `_env.py` — Resolves python/node/chrome without hardcoded paths, and locates a design's site via `designs/<name>.json`. Imported by the other tools.
+- `_bootstrap.py` — Re-execs a tool under the venv python when numpy is missing, so `python qa/<tool>.py` works with the system python3.
 - `artfloor.py` — Art-only floor: band-paint oracle vs the real render. Is the tracer the bottleneck?
 - `compare.py` — Reference-vs-render metrics, per-region breakdown, side-by-side and amplified diff images.
 - `downsample.py` — 2x screenshot -> 1024x768 with PIL Lanczos. The scaler choice changes the score.
 - `glyph.py` — Trace a small glyph/brand-mark region into a standalone inline SVG.
 - `mkart.py` — THE ART TRACER — bands the artwork by luminance and traces each band to SVG paths via potrace.
 - `netcheck.py` — Assert the built page makes no network requests. Has --selftest so a zero is trustworthy.
-- `newdesign.py` — Scaffold designs/<name>.json for a NEW reference PNG. Start here for a new design.
+- `newdesign.py` — Scaffold a COMPLETE new design (config + reference + content + page CSS + Astro site) from a reference PNG. Start here for a new design.
 - `potrace_util.py` — Shared potrace wrapper. Note the polarity rule in its docstring.
 - `svg2png.py` — Render a standalone SVG to PNG. Used by the art-only scorers.
 - `sweep_up.py` — Score-vs-size sweep for the traced art: (up, bands, turdsize) -> mean + bytes.
@@ -87,7 +88,11 @@ Investigation tools. Run any with `python qa/<tool>.py --help`.
 ```sh
 python qa/mkart.py a      # trace the art
 node gen-page.mjs a       # compose the page
-./qa.sh a                # render + score it
-./qa/verify.sh           # score each built dist/ against its targets
+./qa.sh a                 # render + score the working page
+./build.sh                # build every design's Astro site
+./qa/verify.sh            # score each built dist/ against its target
 ```
+
+The design list comes from `../designs/*.json` (via `../lib/designs.mjs`), so
+these commands take a design name and cover every configured design by default.
 

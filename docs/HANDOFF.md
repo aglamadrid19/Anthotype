@@ -1,22 +1,31 @@
-# AntHosting coming-soon pages — handoff
+# design-to-site — engineering handoff
 
-**Goal.** Three "coming soon" pages that *are code* — Astro + DOM text + CSS +
-SVG geometry, no raster images — whose rendered output matches three reference
-design PNGs as closely as possible.
+**The project.** A pipeline that turns a flat design PNG into a *code-native*
+website — Astro + DOM text + CSS + traced SVG geometry, no raster images in the
+output. The reference PNG is pipeline *input*; it is never embedded.
 
-**Status: done and verified.** All three sites build clean, and
-`pipeline/qa/verify.sh` scores each variant's real built `dist/index.html`
-against its reference. Nothing is in flight.
+**This repo is design-agnostic.** `pipeline/lib/designs.mjs` enumerates
+`pipeline/designs/*.json`, and every orchestrator uses it, so adding a design is
+`python qa/newdesign.py <name> <ref.png>` plus a trace/build — no edits to the
+pipeline. The three AntHosting designs (A/B/C) are the worked examples and the
+regression suite, not the scope. See `README.md` for the one-command flow and
+`docs/CHECKPOINT.md` for current state.
+
+**Status: done and verified.** Every design builds clean, and
+`pipeline/qa/verify.sh` scores each real built `dist/index.html` against its
+reference. Nothing is in flight.
 
 | Variant | at conversation start | **shipped now** | payload | page |
 |---|---|---|---|---|
-| A | 12.17 | **2.77** | 6.4 MB raw / 797 KB gz | `variant-a/dist/index.html` |
-| B | 16.92 | **2.90** | 3.3 MB raw / 449 KB gz | `variant-b/dist/index.html` |
-| C | 15.09 | **3.11** | 7.6 MB raw / 970 KB gz | `variant-c/dist/index.html` |
+| A | 12.17 | **2.71** | 6.4 MB raw / 870 KB gz | `sites/variant-a/dist/index.html` |
+| B | 16.92 | **2.76** | 3.4 MB raw / 523 KB gz | `sites/variant-b/dist/index.html` |
+| C | 15.09 | **2.99** | 7.7 MB raw / 1051 KB gz | `sites/variant-c/dist/index.html` |
 
 Metric = mean absolute per-pixel RGB difference vs the reference PNG at
 1024x768, 0-255 units. Lower is closer; 0 would be a perfect match.
-`pct>30` = share of pixels off by more than 30, currently 1.18% / 1.67% / 1.64%.
+`pct>30` = share of pixels off by more than 30, currently 1.13% / 1.59% / 1.57%.
+The scores above predate this session's glow re-sweep and self-hosted fonts;
+the intermediate table in section 3 is the older operating point.
 
 ---
 
@@ -48,6 +57,25 @@ cd pipeline && ./qa/verify.sh   # score the three builds
 
 External dependencies: **potrace** (`brew install potrace` — the only required
 one), plus Google Chrome and `sips` for screenshots.
+
+---
+
+### Adding a design
+
+```sh
+cd pipeline
+python qa/newdesign.py <name> path/to/design.png   # config + ref + content + site
+python qa/mkart.py <name> --out <name>.svg         # trace the art
+node gen-page.mjs <name> && node to-astro.mjs <name>
+(cd ../sites/variant-<name> && npm install && npm run build)
+./qa/verify.sh <name>
+```
+
+The only per-design inputs that matter are `box` (the artwork region) and `text`
+(rectangles of DOM type the art must not bake in), both in
+`designs/<name>.json`. `designs/<name>.json` also carries `site`, `content` and
+`target`, so nothing else needs editing: `build.sh`, `bootstrap.sh`,
+`verify.sh` and the preview gallery all discover designs from that directory.
 
 ---
 
@@ -365,10 +393,11 @@ would need a genuinely different font, or a higher-resolution reference.
     Helvetica. Font-family A/B tests are only meaningful with
     `pipeline/fonts/` in play; a bare `/tmp` probe will wrongly report "every
     family measures the same".
-13. **`sync-bundle.sh` art names are dotted, page names are hyphenated**
-    (`a.svg`, `a.page.css` vs `a-full.html`, `a-static.html`). Constructing
-    `$v.$ext` for the pages silently matches nothing and ships stale pages --
-    which happened once and only surfaced via `cmp` in the clean room.
+13. **Art names are dotted, page names are hyphenated** (`a.svg`, `a.page.css`
+    vs `a-full.html`, `a-static.html`). Any code that constructs `$v.$ext` for
+    the *pages* silently matches nothing and ships stale pages — which happened
+    once (in the now-removed `sync-bundle.sh`) and only surfaced via `cmp`.
+    `pipeline/*-full.html` and `pipeline/*-static.html` are the real patterns.
 
 ---
 
@@ -406,13 +435,12 @@ The bundle in `anthosting-coming-soon/` is verified reproducible from a neutral
 path with no reference back to this machine's layout:
 
 ```sh
-cp -R anthosting-coming-soon /tmp/cr && cd /tmp/cr
+git clone <repo> /tmp/cr && cd /tmp/cr
 ./bootstrap.sh                 # venv (numpy/pillow/scipy/skimage) + node_modules
 cd pipeline
-./qa/verify.sh                 # -> PASS 2.77 / 2.90 / 3.11
+./build.sh                     # every design: page -> astro -> dist
+./qa/verify.sh                 # -> PASS 2.71 / 2.76 / 2.99
 python qa/mkart.py a           # art regenerates BYTE-IDENTICAL from its own refs
-node gen-page.mjs a            # page regenerates BYTE-IDENTICAL
-for v in a b c; do node to-astro.mjs $v; (cd ../sites/variant-$v && npm run build); done
 ./qa/verify.sh                 # still PASS after a full from-source rebuild
 ```
 
@@ -509,12 +537,12 @@ So a fresh clone is three commands from a passing build:
 
 ```sh
 ./bootstrap.sh
-cd pipeline && for v in a b c; do node gen-page.mjs $v; node to-astro.mjs $v; done
-cd .. && for v in a b c; do (cd sites/variant-$v && npm run build); done
-cd pipeline && ./qa/verify.sh
+cd pipeline && ./build.sh && ./qa/verify.sh
 ```
+
+`build.sh` discovers designs from `designs/*.json` and builds each one's Astro
+site, so there is no per-design loop to keep in sync.
 - `mkart-backup.py` — the pre-polarity-fix `mkart.py`, kept as a reference for
   how the masks used to be (wrongly) built.
-- `anthosting-coming-soon/` — **the portable hand-off bundle** (see below).
-  Re-sync it from the live tree at any time with
-  `pipeline/sync-bundle.sh`; it is the artifact to copy elsewhere.
+- `anthosting-coming-soon/` — **this repo, the portable deliverable.** The old
+  dev-tree mirror (`sync-bundle.sh`) was removed; edit this repo directly.

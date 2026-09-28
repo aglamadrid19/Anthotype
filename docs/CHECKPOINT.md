@@ -22,12 +22,32 @@ regression suite.
 
 `pct>30` = 1.13% / 1.59% / 1.57%. Stable to ±0.01 over repeated runs.
 
-- Branch `main`, **2 commits**, working tree **clean**, 115 files, 22.8 MB.
+- Branch `main`, **4 commits**, working tree **clean**, 121 files.
 - No git remote is configured. No `gh` CLI is installed — **push is the user's
   step** (`git remote add origin <url> && git push -u origin main`).
 - Verified from a fresh `git clone`: `./bootstrap.sh`, regenerate pages, build
   all three Astro sites, `qa/verify.sh` → PASS. The tracer also reproduces the
   committed `{a,b,c}.svg` byte-identically from the committed references.
+
+## Design-agnostic: a design name is the only input
+
+The pipeline knows nothing about A/B/C. `pipeline/lib/designs.mjs` enumerates
+`pipeline/designs/*.json`, and `build.sh`, `bootstrap.sh`, `qa/verify.sh` and the
+preview gallery all ask it — so adding a design needs no edits to any of them.
+
+Adding a design is one command:
+
+```sh
+python qa/newdesign.py <name> path/to/design.png    # config + ref + content + site
+python qa/mkart.py <name> --out <name>.svg          # trace the art
+node gen-page.mjs <name> && node to-astro.mjs <name>
+(cd ../sites/variant-<name> && npm install && npm run build)
+./qa/verify.sh <name>
+```
+
+`designs/<n>.json` carries everything per-design: `ref`, `site`, `content`
+(a `content.json` key or a standalone file), `target` (the score `verify.sh`
+enforces), `box`, `text` rects, tracing `params`, and optional `regions`.
 
 ## The two things future work must not break
 
@@ -45,9 +65,10 @@ assets, on an external stylesheet, and on any page-originated network request
 ## Committed vs generated
 
 Committed: the traced art (`pipeline/{a,b,c}.svg` — expensive, needs potrace),
-per-design config (`pipeline/designs/*.json`), references
-(`pipeline/qa/ref-{a,b,c}.png`), vendored Inter, the CSS/content layer, all QA
-tooling, site configs, `preview/`.
+per-design config (`pipeline/designs/*.json`), the design registry
+(`pipeline/lib/designs.mjs`) and site template (`pipeline/site-template/`),
+references (`pipeline/qa/ref-{a,b,c}.png`), vendored Inter, the CSS/content
+layer, all QA tooling, site configs + `package-lock.json`, `preview/`.
 
 Gitignored: `pipeline/{v}-full.html` / `-static.html`, `sites/*/src/pages/`,
 `sites/*/dist/`, QA render scratch. All are pure products of the committed files.
@@ -59,7 +80,7 @@ exists in any variant, so the button does nothing. The design PNGs specify only
 its appearance. Set the real URL in `pipeline/content.json` (the `href` lives
 inside each variant's `markup` string).
 
-## This session's changes
+## Earlier session's changes
 
 - **Scorer corrected.** The 2×→reference resize used `sips -z`, the worst of the
   five filters measured; 0.077 of B's number was the scaler, not the page. Now
@@ -80,18 +101,45 @@ inside each variant's `markup` string).
   test candidate into the file `qa.sh` screenshots; and the `aria-label` on the
   artwork leaked the internal variant letter into user-facing text.
 
-## Landmine: the sync script
+## This session's changes (design-agnostic packaging)
 
-`pipeline/sync-bundle.sh` mirrors a *development tree* into this repo. It now
-requires `ANTHOSTING_LIVE` / `ANTHOSTING_BUNDLE` and exits politely inside the
-repo. **It refuses to run when both resolve to the same directory** — without
-that guard the mirror deletes the tree it is about to copy from. That happened
-once and destroyed the separate development directory
-(`/Volumes/CrucialX10/anthosting`, which held the working copies of the three
-sites plus extra assets: `anthosting-teaser-v{1,2}.png` and
-`anthosting-social-square-v{1,2}.png`). **This repo was not affected** — all 115
-files and the three reference PNGs are intact and re-verified above. Only the
-duplicate working directory was lost; nothing in the pipeline referenced it.
+- **`pipeline/lib/designs.mjs`** — the design registry. One place that answers
+  "which designs exist" and "where is this design's site", used by every
+  orchestrator. Removed the hardcoded `a b c` loops from `build.sh`,
+  `bootstrap.sh`, `qa/verify.sh`, `qa/netcheck.py`, `qa/_env.py`, `serve.py`.
+- **`qa/newdesign.py` rewritten** to scaffold a complete design (config +
+  reference + `content-<n>.json` + `<n>.page.css` + Astro site from
+  `pipeline/site-template/`) in one command.
+- **`designs/<n>.json` is now complete**: gained `site`, `content` and `target`;
+  `qa/compare.py` and `qa/mkart.py` read their regions/box from it.
+- **`qa/_bootstrap.py`** re-execs a QA tool under the venv python when numpy is
+  missing, so `python qa/mkart.py <name>` works with the system `python3`. The
+  guard compares `sys.prefix` (not `realpath` — a venv's `bin/python` is a
+  symlink to the base interpreter).
+- **`preview/serve.py`** generates the gallery from the design configs and shows
+  each target; the static `preview/index.html` is gone.
+- **Removed `pipeline/sync-bundle.sh`** (see the landmine note above).
+- **`package-lock.json`** is now committed per site for reproducible installs.
+
+Verified from a fresh `git clone`: `./bootstrap.sh` → `./build.sh` →
+`./qa/verify.sh` scores 2.71 / 2.76 / 2.99, and `qa/mkart.py` reproduces all
+three committed SVGs byte-identically. A scaffolded fourth design was traced,
+built and scored end to end, then removed.
+
+## Landmine: the sync script (removed)
+
+`pipeline/sync-bundle.sh` used to mirror a *development tree* into this repo. It
+was **deleted** this session: it hardcoded A/B/C, it mirrored a dev tree that no
+longer exists, and it once deleted its own source when both paths defaulted to
+the same directory. **This repo is now the single working tree** — edit it
+directly; there is no second tree to sync from.
+
+The incident it caused is historical: the separate development directory
+`/Volumes/CrucialX10/anthosting` was destroyed and held duplicate working copies
+of the three sites plus four extra assets (`anthosting-teaser-v{1,2}.png`,
+`anthosting-social-square-v{1,2}.png`). Those were unrecoverable but nothing in
+the pipeline referenced them. **The repo was not affected** and re-verifies
+byte-for-byte from a fresh clone.
 
 ## Environment
 

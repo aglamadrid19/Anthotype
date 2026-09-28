@@ -1,6 +1,6 @@
 {
- "task": "AntHosting coming-soon pages: make the three Astro sites match the reference PNGs",
- "deliverable": "code (Astro + SVG/CSS/DOM) that renders like the reference PNGs",
+ "task": "Design-to-site pipeline: turn a flat design PNG into a code-native website. Design-agnostic -- three worked examples (A/B/C) are the regression suite.",
+ "deliverable": "a reusable PNG -> code-native-site pipeline packaged as a repo, with A/B/C kept as examples and the regression suite",
  "status": "DONE and verified. All three sites build clean; qa/verify.sh scores each variant's real Astro dist/index.html. Re-running qa/mkart.py from the committed PARAMS reproduces the shipped SVGs byte-for-byte (deterministic pipeline).",
  "scores": {
   "a": 2.71,
@@ -20,7 +20,7 @@
  "metric": "mean abs pixel diff over the 1024x768 stage vs the reference PNG (lower = closer)",
  "realistic_floor": "~3.0-3.4. The band-paint oracle beats the SVG render mainly on A and C because their bright bands are fragmented into 1-5px specks (78.9% of A bright ink, 57.2% of C) that vector tracing reproduces poorly; B is 26.0% and its oracle and render nearly agree. Raising `up` recovers this (A up=6 -> 3.67) at linear cost in file size.",
  "breakthrough": "the art layer is no longer hand-authored SVG shapes: it is real vector geometry recovered from the reference with potrace (qa/mkart.py), emitted through the normal page pipeline. Cut art error ~3-4x.",
- "pipeline": "pipeline/",
+ "pipeline": "pipeline/ (lib/designs.mjs is the design registry; designs/*.json is per-design config)",
  "outputs": "this repo",
  "python": "pipeline/.venv/bin/python (created by bootstrap.sh)",
  "node_path": "the node on PATH",
@@ -368,5 +368,19 @@
   "committed": "pipeline/{a,b,c}.svg (the traced art -- regenerating needs potrace), designs/*.json, qa/ref-*.png, fonts/*.woff2, *.page.css, content.json, all QA tooling, site package.json/astro.config.mjs, preview/",
   "generated_gitignored": "pipeline/{v}-full.html and {v}-static.html (gen-page.mjs), sites/*/src/pages/index.astro (to-astro.mjs), sites/*/dist/ (astro build), qa/render-*.png scratch",
   "fresh_clone": "./bootstrap.sh; then gen-page.mjs + to-astro.mjs for a/b/c; then npm run build in each site; then pipeline/qa/verify.sh"
- }
+ },
+ "adding_a_design": {
+  "scaffold": "python qa/newdesign.py <name> path/to/design.png",
+  "trace": "python qa/mkart.py <name> --out <name>.svg",
+  "build": "node gen-page.mjs <name> && node to-astro.mjs <name> && (cd ../sites/variant-<name> && npm install && npm run build)",
+  "score": "./qa/verify.sh <name>",
+  "note": "build.sh / bootstrap.sh / verify.sh / preview gallery auto-discover designs/*.json"
+ },
+ "status_notes": [],
+ "targets": {
+  "a": 2.77,
+  "b": 2.82,
+  "c": 3.05
+ },
+ "verified_from_fresh_clone": true
 }
