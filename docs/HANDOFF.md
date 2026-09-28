@@ -1,4 +1,4 @@
-# design-to-site — engineering handoff
+# Anthotype — engineering handoff
 
 **The project.** A pipeline that turns a flat design PNG into a *code-native*
 website — Astro + DOM text + CSS + traced SVG geometry, no raster images in the

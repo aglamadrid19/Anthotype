@@ -1,17 +1,26 @@
-# design-to-site
+# Anthotype
+
+> *an anthotype is a photographic image made from a natural process — plant
+> pigments, sunlight, and time, instead of film and chemistry.*
+
+This is a software anthotype: a picture goes in, a real website comes out, and
+the picture is not part of the result. The reference image is **input** to
+recover geometry, never an embedded asset — by the time the page ships, the
+image itself has been entirely consumed.
 
 Turn a flat design PNG into a **real, code-native website** — DOM text, CSS and
 SVG geometry, with no raster images in the output.
 
 The output is not a screenshot. Every glyph is selectable text, every shape is a
 vector path, and the page scales, re-colours and animates like any other site.
-The reference image is used as *input* to recover geometry, then discarded — it
-is not embedded.
 
 This repo contains the pipeline plus three fully-worked examples (A/B/C) that
 demonstrate it end to end and act as the regression suite.
 
 ## What it does
+
+The reference is exposed, banded, and traced; the pigment is CSS; the fixer is
+Astro. Nothing of the original plate survives into the print.
 
 ```
 design.png
@@ -30,7 +39,7 @@ design.png
    └─ astro build        -> dist/index.html          ← the shipped artifact
 ```
 
-## The one fact that matters most
+## The one fact that matters most (the polarity rule)
 
 **potrace fills the BLACK (bit-0) region of a bitmap.** PIL's `L -> '1'`
 conversion also writes the mask as bit 0, so feeding a mask straight in traces
@@ -68,8 +77,8 @@ cd pipeline
 ../preview/start-persistent.sh  # gallery at http://127.0.0.1:4173/
 ```
 
-Requires `brew install potrace` — the only external binary. Node and Python deps
-are installed by `bootstrap.sh`.
+Requires `brew install potrace` — the only external binary. Node and Python
+deps are installed by `bootstrap.sh`.
 
 ## Adding a new design
 

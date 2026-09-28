@@ -22,9 +22,9 @@ regression suite.
 
 `pct>30` = 1.13% / 1.59% / 1.57%. Stable to ±0.01 over repeated runs.
 
-- Branch `main`, **4 commits**, working tree **clean**, 121 files.
-- No git remote is configured. No `gh` CLI is installed — **push is the user's
-  step** (`git remote add origin <url> && git push -u origin main`).
+- Branch `main`, working tree **clean**; see `docs/HOME.md` for the mirror + checkouts.
+- Published to GitHub: **https://github.com/aglamadrid19/Anthotype** (remote `origin`
+  on the canonical mirror and both checkouts).
 - Verified from a fresh `git clone`: `./bootstrap.sh`, regenerate pages, build
   all three Astro sites, `qa/verify.sh` → PASS. The tracer also reproduces the
   committed `{a,b,c}.svg` byte-identically from the committed references.

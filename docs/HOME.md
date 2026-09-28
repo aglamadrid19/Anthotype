@@ -6,7 +6,7 @@ are clones of the mirror, and the mirror is the source of truth.
 
 ```
 /Volumes/CrucialX10/design-to-site.git     <- bare mirror, CANONICAL
-/Volumes/CrucialX10/design-to-site         <- working checkout (recommended)
+/Volumes/CrucialX10/design-to-site         <- working checkout (use this one)
 /Volumes/CrucialX10/codex/2026-09-27/i-n/outputs/anthosting-coming-soon
                                            <- original working checkout
 ```
@@ -43,19 +43,15 @@ node gen-page.mjs <name> && node to-astro.mjs <name>
 ./qa/verify.sh <name>
 ```
 
-## Publishing to GitHub
+## GitHub
 
-The mirror has **no remote configured** and `gh` is not installed, so this is a
-manual step:
+Published at **https://github.com/aglamadrid19/Anthotype** (remote `origin`).
 
 ```sh
 cd /Volumes/CrucialX10/design-to-site
-git remote add github git@github.com:<you>/design-to-site.git
-git push github main
+git push origin main
 ```
 
-To push from the bare mirror directly:
-
-```sh
-git --git-dir=/Volumes/CrucialX10/design-to-site.git push git@github.com:<you>/design-to-site.git main
-```
+Note the one naming wrinkle: the GitHub repo is `Anthotype`, but the local
+mirror and checkouts keep the older `design-to-site` directory names. That is
+purely on-disk naming — the remote URL is what matters, and it is already set.

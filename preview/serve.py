@@ -81,7 +81,7 @@ def gallery():
   <p>{link}<br><span class="muted">ref <a href="/ref/{name}.png">/{name}.png</a>{tgt}</span></p>
 </section>''')
     return f'''<!doctype html><html lang="en"><head><meta charset="utf-8">
-<title>design-to-site &mdash; live builds</title>
+<title>Anthotype &mdash; live builds</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <style>
   :root {{ color-scheme: dark; }}
@@ -101,7 +101,7 @@ def gallery():
   .muted {{ color:#7e9189; }}
   .note {{ margin-top:26px; color:#7e9189; font-size:12.5px; border-top:1px solid #1d2a26; padding-top:14px; }}
 </style></head><body>
-<h1>design-to-site &mdash; <em>{len(SITES)}</em> live build(s)</h1>
+<h1>Anthotype &mdash; <em>{len(SITES)}</em> live build(s)</h1>
 <div class="sub">Served from each design&rsquo;s built <code>dist/</code> &mdash; the exact artifact
 <code>qa/verify.sh</code> scores. Real DOM text + CSS + traced SVG art, no raster images.</div>
 <div class="grid">
