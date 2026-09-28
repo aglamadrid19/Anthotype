@@ -1,6 +1,9 @@
 {
   "name": "a",
   "ref": "qa/ref-a.png",
+  "site": "sites/variant-a",
+  "content": "a",
+  "target": 2.77,
   "box": [
     418,
     0,

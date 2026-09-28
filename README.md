@@ -62,7 +62,8 @@ Scores are stable to ±0.01 across repeated runs; `qa/verify.sh` enforces them.
 ```sh
 ./bootstrap.sh                  # potrace check + python venv + npm install
 cd pipeline
-./qa/verify.sh                  # score all three builds against their references
+./build.sh                      # build every configured design end to end
+./qa/verify.sh                  # score each build against its reference
                                 #   a 2.71 PASS   b 2.76 PASS   c 2.99 PASS
 ../preview/start-persistent.sh  # gallery at http://127.0.0.1:4173/
 ```
@@ -72,37 +73,68 @@ are installed by `bootstrap.sh`.
 
 ## Adding a new design
 
+**One command scaffolds everything.** The design name is the only thing you
+supply — nothing in the pipeline hardcodes a design list.
+
 ```sh
 cd pipeline
-python qa/newdesign.py mydesign path/to/design.png      # scaffold + copy the ref
-#   edit designs/mydesign.json: set `box` (the artwork region) and `text`
-#   (rects of DOM type the art must NOT bake in)
-python qa/mkart.py mydesign --out mydesign.svg          # trace the artwork
+python qa/newdesign.py mydesign path/to/design.png      # config + ref + content + site
 ```
 
-Then give it a page: copy a `sites/variant-*/` project, point `content.json` at
-your copy, and iterate `gen-page.mjs` / `astro build` against the reference.
-`qa/textrects.py` derives the text rectangles automatically from a DOM-only
-render once you have a page, and `qa/tune.py` runs coordinate descent over any
-CSS property through the real pipeline.
+That writes `designs/mydesign.json` (the only per-design config), copies the
+reference to `qa/ref-mydesign.png`, creates `content-mydesign.json` and
+`mydesign.page.css` for your copy and layout, and scaffolds a ready-to-build
+Astro project at `sites/variant-mydesign/`. Then:
+
+```sh
+python qa/mkart.py mydesign --out mydesign.svg          # trace the artwork
+node gen-page.mjs mydesign && node to-astro.mjs mydesign
+(cd ../sites/variant-mydesign && npm install && npm run build)
+./qa/verify.sh mydesign
+```
+
+Only two things in `designs/mydesign.json` are genuinely per-design and worth
+checking by hand:
+
+- **`box`** — the artwork region. Everything inside it is repainted by traced
+  bands, so it must cover the art and *not* the DOM text.
+- **`text`** — rectangles the artwork must not bake in. Leaving these empty
+  bakes a rasterised copy of your headline into the art, which then ghosts any
+  later copy edit. `qa/textrects.py` derives them automatically from a DOM-only
+  render once your page CSS exists.
+
+`qa/tune.py` runs coordinate descent over any CSS property through the real
+pipeline; `designs/<n>.json` also accepts `regions` (per-region diagnostics for
+`qa/compare.py`) and `target` (the pass threshold `qa/verify.sh` enforces).
+
+Because every tool enumerates `designs/*.json`, a new design also appears
+automatically in `build.sh`, `bootstrap.sh`, the preview gallery at
+`http://127.0.0.1:4173/`, and `verify.sh` — with no edits to any of them.
 
 ## Layout
 
 ```
 pipeline/
+  lib/designs.mjs      THE design registry: enumerates designs/*.json for every
+                       other tool (list / site / show). Single source of truth.
+  designs/<n>.json     per-design config: ref, site, content, target, trace box,
+                       text rects, tracing params, optional regions
   qa/INDEX.md          what every tool does, and which ones matter
   qa/mkart.py          the art tracer (the heart of this repo)
-  qa/newdesign.py      scaffold a config for a new reference
+  qa/newdesign.py      scaffold a whole new design (config + content + site)
+  qa/_bootstrap.py     re-exec a QA tool under the venv python if numpy is absent
   qa/verify.sh         score each built dist/ against its reference; PASS/FAIL
   qa/netcheck.py       assert the page fetches nothing over the network
-  designs/<n>.json     per-design config: ref, trace box, text rects, params
+  site-template/       what newdesign.py stamps out for a new design
   fonts/               vendored Inter (inlined at build time)
   {a,b,c}.svg          the traced artwork (committed — regenerating needs potrace)
   gen-page.mjs         compose the self-contained page
-  to-astro.mjs         copy that page into the Astro project
-content.json           the text layer for each design
-sites/variant-{a,b,c}/ the three Astro projects
-preview/               one static server for all builds + a gallery
+  to-astro.mjs         copy that page into the design's Astro project
+  build.sh             build every configured design end to end
+content.json           the shared text layer for the three shipped examples
+content-<n>.json       a new design's own text layer (isolated from the above)
+sites/variant-{a,b,c}/ the three worked examples
+preview/               one static server for all builds + a generated gallery
 docs/HANDOFF.md        full engineering history: what was tried, what worked,
                        what is exhausted, and the landmines
 ```

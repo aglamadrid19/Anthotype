@@ -22,6 +22,8 @@ notes stay readable.
 
 usage: downsample.py <in.png> <out.png> [W] [H]
 """
+
+import _bootstrap  # noqa: F401  (re-exec under the venv python if needed)
 import sys
 from PIL import Image
 

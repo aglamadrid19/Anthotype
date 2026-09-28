@@ -113,9 +113,11 @@ def main():
             tag = os.path.basename(a)
             url = 'file://' + page
         else:
-            site = next((c for c in (f'{root}/variant-{a}/dist/index.html',
-                                     f'{root}/sites/variant-{a}/dist/index.html')
-                         if os.path.isfile(c)), None)
+            import sys as _sys
+            _sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from _env import site_dir as _site_dir
+            site = os.path.join(_site_dir(a), 'dist', 'index.html')
+            site = site if os.path.isfile(site) else None
             if not site:
                 print(f'{a}: no build found', file=sys.stderr)
                 fail = 1

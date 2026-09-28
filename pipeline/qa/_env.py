@@ -87,17 +87,44 @@ SIPS = os.environ.get('SIPS') or shutil.which('sips') or '/usr/bin/sips'
 PYTHON = PY
 
 
-def variant_dir(name, v):
-    """Locate a variant's site directory in either supported layout.
+def design_names():
+    """Every configured design, from pipeline/designs/*.json (sorted)."""
+    d = os.path.join(PIPE, 'designs')
+    if not os.path.isdir(d):
+        return []
+    return sorted(f[:-5] for f in os.listdir(d) if f.endswith('.json'))
 
-    Live layout:  <root>/pipeline/  + <root>/variant-a/
-    Bundle layout: <root>/pipeline/ + <root>/sites/variant-a/
+
+def site_dir(name):
+    """Locate a design's site directory.
+
+    Resolution order: the `site` key in designs/<name>.json (relative to the
+    repo root), then the documented convention in either supported layout
+    (<root>/variant-<name> live, <root>/sites/variant-<name> bundle).
     """
-    for cand in (os.path.join(os.path.dirname(PIPE), name),
-                 os.path.join(os.path.dirname(PIPE), 'sites', name)):
-        if os.path.isdir(cand):
-            return cand
-    return os.path.join(os.path.dirname(PIPE), name)
+    import json
+    root = os.path.dirname(PIPE)
+    cfg_path = os.path.join(PIPE, 'designs', f'{name}.json')
+    explicit = None
+    if os.path.isfile(cfg_path):
+        try:
+            explicit = json.load(open(cfg_path)).get('site')
+        except Exception:
+            explicit = None
+    for cand in [explicit,
+                 f'variant-{name}', f'sites/variant-{name}',
+                 f'site-{name}', f'sites/site-{name}']:
+        if not cand:
+            continue
+        abs_ = cand if os.path.isabs(cand) else os.path.join(root, cand)
+        if os.path.isdir(abs_):
+            return abs_
+    return os.path.join(root, 'sites', f'variant-{name}')
+
+
+# Backwards-compatible alias: older tools called variant_dir(<dirname>, <v>).
+def variant_dir(_name, v):
+    return site_dir(v)
 
 
 if __name__ == '__main__':

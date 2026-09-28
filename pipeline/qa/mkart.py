@@ -9,6 +9,8 @@ contains no embedded bitmap.
 
 usage: mkart.py <variant> [--bands N] [--up K] [--turd N] [--prec D] [--out P]
 """
+
+import _bootstrap  # noqa: F401  (re-exec under the venv python if needed)
 import os, re, sys, subprocess, tempfile
 import numpy as np
 from PIL import Image
@@ -145,7 +147,11 @@ def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
     cfg = design(v)
     ref = ref or cfg.get('ref') or f'{HERE}/ref-{v}.png'
     text_rects = cfg.get('text', []) if text_rects is None else text_rects
-    x0, y0, x1, y1 = box or cfg.get('box') or BOX[v]
+    trace_box = box or cfg.get('box') or BOX.get(v)
+    if not trace_box:
+        raise SystemExit(f"no trace box for design {v!r}: set 'box' in "
+                         f"pipeline/designs/{v}.json (see qa/newdesign.py)")
+    x0, y0, x1, y1 = trace_box
     a = np.asarray(Image.open(ref).convert('RGB')).astype(np.float32)
     sub = a[y0:y1, x0:x1]
     if up != 1:

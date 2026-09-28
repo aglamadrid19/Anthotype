@@ -6,6 +6,8 @@ usage: artscore.py <variant> [--bands N] [--turd N] [--opttol F] [--up K]
                               [--minpx N] [--blur F] [--keep FILE]
 Prints the art-window mean abs error (lower is better).
 """
+
+import _bootstrap  # noqa: F401  (re-exec under the venv python if needed)
 import os, sys, subprocess
 import numpy as np
 from PIL import Image, ImageFilter

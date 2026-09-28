@@ -13,11 +13,14 @@ __pycache__/
 
 # ---- generated build output (rebuild with pipeline/build.sh) ---------------
 # Pure products of the committed sources + the traced art:
-#   gen-page.mjs  :  <v>.svg + <v>.page.css + content.json -> <v>-full.html
-#   to-astro.mjs  :  <v>-full.html                          -> src/pages/index.astro
+#   gen-page.mjs  :  <n>.svg + <n>.page.css + <n>'s content -> <n>-full.html
+#   to-astro.mjs  :  <n>-full.html                          -> src/pages/index.astro
 #   astro build   :  src/pages/index.astro                  -> dist/index.html
 # The traced art itself ({a,b,c}.svg) IS committed -- it is the expensive
 # artifact and regenerating it needs potrace.
+#
+# package-lock.json IS committed (not ignored) so `npm ci`/`npm install` resolve
+# the same astro version everywhere.  node_modules/ and dist/ are not.
 pipeline/*-full.html
 pipeline/*-static.html
 sites/*/src/pages/index.astro

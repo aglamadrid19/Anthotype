@@ -8,6 +8,8 @@ the rasterised words, or a later copy edit would leave a ghost of the old text.
 
 usage: textrects.py <variant> [--grow N] [--xmax N] [--thr N]
 """
+
+import _bootstrap  # noqa: F401  (re-exec under the venv python if needed)
 import os, subprocess, sys
 import numpy as np
 from PIL import Image

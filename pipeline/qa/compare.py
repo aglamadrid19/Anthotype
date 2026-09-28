@@ -4,6 +4,8 @@
 usage:
   compare.py <variant> [--crop x y w h [zoom]] [--regions]
 """
+
+import _bootstrap  # noqa: F401  (re-exec under the venv python if needed)
 import sys, os, json
 from PIL import Image, ImageChops, ImageDraw, ImageFont
 import numpy as np
@@ -50,6 +52,29 @@ REGIONS['c'] = {
     'bgB':     (0, 690, 1024, 768),
 }
 
+import json as _json
+PIPE = os.path.dirname(QA)
+
+
+def design(v):
+    """The design config, or {} -- so this tool works for any design name."""
+    p = os.path.join(PIPE, 'designs', f'{v}.json')
+    if os.path.isfile(p):
+        try:
+            return _json.load(open(p))
+        except Exception:
+            return {}
+    return {}
+
+
+def ref_path(v):
+    """Resolve a design's reference PNG via its config (falls back to qa/ref-<v>)."""
+    r = design(v).get('ref')
+    if r:
+        return r if os.path.isabs(r) else os.path.join(PIPE, r)
+    return f"{QA}/ref-{v}.png"
+
+
 def load(path):
     return np.asarray(Image.open(path).convert('RGB')).astype(np.float32)
 
@@ -68,7 +93,7 @@ def label(img, text):
 
 def main():
     v = sys.argv[1]
-    a = load(f"{QA}/ref-{v}.png")
+    a = load(ref_path(v))
     b = load(f"{QA}/render-{v}.png")
     assert a.shape == b.shape, f"size mismatch {a.shape} vs {b.shape}"
     H, W = a.shape[:2]
@@ -79,9 +104,9 @@ def main():
         x, y, w, h = map(int, args[i+1:i+5])
         Z = int(args[i+5]) if len(args) > i+5 else 3
         box = (x, y, x+w, y+h)
-        ca = Image.open(f"{QA}/ref-{v}.png").convert('RGB').crop(box).resize((w*Z, h*Z), Image.NEAREST)
+        ca = Image.open(ref_path(v)).convert('RGB').crop(box).resize((w*Z, h*Z), Image.NEAREST)
         cb = Image.open(f"{QA}/render-{v}.png").convert('RGB').crop(box).resize((w*Z, h*Z), Image.NEAREST)
-        dd = ImageChops.difference(Image.open(f"{QA}/ref-{v}.png").convert('RGB'),
+        dd = ImageChops.difference(Image.open(ref_path(v)).convert('RGB'),
                                    Image.open(f"{QA}/render-{v}.png").convert('RGB'))
         cd = dd.crop(box).resize((w*Z, h*Z), Image.NEAREST)
         out = Image.new('RGB', (w*Z*3 + 16, h*Z + 22), (20, 20, 20))
@@ -93,14 +118,17 @@ def main():
 
     mean, over = region_metrics(a, b)
     print(f"OVERALL  mean {mean:6.2f}  pct>30 {over:5.2f}%")
-    regions = REGIONS.get(v, REGIONS['a'])
+    regions = design(v).get('regions') or REGIONS.get(v)
+    if regions is None:
+        regions = REGIONS['a']  # fallback diagnostic windows
+    regions = {k: tuple(x) for k, x in regions.items()}
     if '--regions' in args or not args:
         for name, (x0, y0, x1, y1) in regions.items():
             m, o = region_metrics(a[y0:y1, x0:x1], b[y0:y1, x0:x1])
             bar = '#' * int(min(40, m))
             print(f"  {name:>8}  mean {m:6.2f}  pct>30 {o:5.2f}%  {bar}")
 
-    ra = Image.open(f"{QA}/ref-{v}.png").convert('RGB')
+    ra = Image.open(ref_path(v)).convert('RGB')
     rb = Image.open(f"{QA}/render-{v}.png").convert('RGB')
     diff = ImageChops.difference(ra, rb).point(lambda p: min(255, p*4))
     side = Image.new('RGB', (W*3 + 16, H + 22), (20, 20, 20))

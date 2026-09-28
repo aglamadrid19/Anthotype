@@ -1,12 +1,18 @@
 // Build <variant>-full.html (self-contained page) from the variant's art modules.
 // Usage: node gen-page.mjs <variant>
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { designNames, loadDesign } from './lib/designs.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const v = process.argv[2] || 'a';
+// The design name comes from the caller.  When it is omitted we fall back to
+// the first configured design, so the script never hardcodes `a`.
+const v = process.argv[2] || designNames()[0];
+if (!v) throw new Error('no designs configured: add pipeline/designs/<name>.json');
 const read = (f) => readFileSync(join(HERE, f), 'utf8');
+// The art CSS is optional: a design may carry all its styling in <name>.page.css.
+const readOpt = (f) => (existsSync(join(HERE, f)) ? readFileSync(join(HERE, f), 'utf8') : '');
 
 // Self-hosted Inter: the reference designs use Inter, and relying on the
 // Google Fonts CDN made the build's typography (and therefore its fidelity)
@@ -19,8 +25,15 @@ const interFaces = INTER_WEIGHTS.map((w) => {
 }).join('\n');
 
 const artSvg = read(`${v}.svg`);
-const artCss = read(`${v}.css`);
-const content = JSON.parse(read('content.json'))[v];
+const artCss = readOpt(`${v}.css`);
+// The text layer for this design.  `content` in the design config is either a
+// key in the shared content.json (the three shipped examples) or a path to a
+// standalone JSON file (a new design gets its own, so it stays isolated).
+const contentRef = loadDesign(v).content || v;
+const content = contentRef.endsWith('.json')
+  ? JSON.parse(read(contentRef))
+  : JSON.parse(read('content.json'))[contentRef];
+if (!content) throw new Error(`no content for design '${v}' (looked up '${contentRef}')`);
 const { title, eyebrow, tagline, cta } = content;
 
 const html = `<!doctype html>
@@ -42,7 +55,7 @@ const html = `<!doctype html>
     </section>
   </main>
   <style is:global>
-${read(`${v}.page.css`)}
+${readOpt(`${v}.page.css`)}
 ${artCss}
   </style>
   <script is:inline>
