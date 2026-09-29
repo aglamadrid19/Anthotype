@@ -5,6 +5,8 @@ When something looks wrong, start here.
 
     doctor env              check every dependency (venv, node, potrace, chrome,
                             fonts, the vision model / AntSeed proxy)
+    doctor polarity         synthetic light/dark checks for the ink, wrapping and
+                            scope heuristics (no vision model, no pipeline)
     doctor regress          prove the shipped pipeline is intact: run the repo's
                             own qa/verify.sh and report A/B/C PASS/FAIL
     doctor run [png]        run one design end to end, in-process, printing every
@@ -183,6 +185,118 @@ def _check_vision() -> None:
 
 
 # --------------------------------------------------------------------------
+# polarity: the light/dark assumptions the studio used to hardcode
+# --------------------------------------------------------------------------
+def _synth_stage(bg: tuple[int, int, int], ink: tuple[int, int, int],
+                 box: tuple[float, float, float, float],
+                 split_at: int | None = None,
+                 ink2: tuple[int, int, int] | None = None) -> "np.ndarray":
+    """A stand-in 'word': vertical bars of `ink` inside `box`.
+
+    `split_at` makes it a two-tone wordmark (first `split_at` bars `ink`, the
+    rest `ink2`), which is how the shipped designs spell a brand.
+    """
+    from PIL import Image, ImageDraw
+    import numpy as np
+    x0, y0, x1, y1 = box
+    img = Image.new("RGB", (config.STAGE_W, config.STAGE_H), bg)
+    d = ImageDraw.Draw(img)
+    # Thin bars: real type covers a minority of its box, and the ink mask is
+    # calibrated for that (a dense block trips the adaptive percentile).
+    # Bars: real type covers a minority of its box (the ink mask is calibrated
+    # for that) but each tone still spans a decent slice of the line.
+    n = 6
+    bar = (x1 - x0) * 0.3 / n
+    step = (x1 - x0 - bar) / (n - 1)
+    for i in range(n):
+        col = ink if split_at is None or i < split_at else (ink2 or ink)
+        bx = x0 + i * step
+        d.rectangle([bx, y0, bx + bar, y1], fill=col)
+    return np.asarray(img.convert("RGB")).astype(np.float32)
+
+
+def cmd_polarity(_args: list[str]) -> int:
+    """Synthetic light/dark checks -- no vision model, no pipeline, fast.
+
+    Guards exactly the assumptions the first light upload broke: which side of
+    the background is the ink, that a two-tone wordmark splits on either ground,
+    and that a wrapped block is not sized as one line.
+    """
+    import numpy as np
+    from app import fontmetrics, generate
+
+    print("polarity + wrapped type (synthetic; no vision model)\n")
+    box = (300.0, 300.0, 700.0, 360.0)
+    loose = (280.0, 290.0, 720.0, 370.0)      # what a loose model box looks like
+    grounds = (("light ground", (248, 249, 247), (48, 53, 60)),
+               ("dark ground", (10, 12, 14), (240, 244, 240)))
+    for name, bg, ink in grounds:
+        arr = _synth_stage(bg, ink, box)
+        snapped = generate.snap_to_ink(arr, loose, bg)
+        runs = generate.sample_runs(arr, snapped, "Word", bg)
+        got = runs[0][1] if runs else (255, 255, 255)
+        err = max(abs(a - b) for a, b in zip(got, ink))
+        _line(OK if err <= 24 else BAD, f"ink sampling ({name})",
+              f"sampled {got}, true {ink}")
+        off = max(abs(a - b) for a, b in zip(snapped, box))
+        _line(OK if off <= 2 else BAD, f"box snapping ({name})",
+              f"snapped {tuple(round(v) for v in snapped)}, drawn "
+              f"{tuple(int(v) for v in box)}")
+
+    # Two-tone wordmark: must split into the two runs on either ground.  The
+    # neutral tone has to suit the ground (a navy half is invisible on a near
+    # black page, so a dark design's neutral half is light).
+    tones = (("light ground", (248, 249, 247), (11, 19, 28), (27, 188, 99)),
+             ("dark ground", (10, 12, 14), (253, 253, 253), (27, 203, 125)))
+    for name, bg, neu, sat in tones:
+        arr = _synth_stage(bg, neu, box, split_at=3, ink2=sat)
+        snapped = generate.snap_to_ink(arr, loose, bg)
+        runs = generate.sample_runs(arr, snapped, "anthotype", bg)
+        ok = len(runs) == 2
+        if ok:
+            d0 = max(abs(a - b) for a, b in zip(runs[0][1], neu))
+            d1 = max(abs(a - b) for a, b in zip(runs[1][1], sat))
+            ok = d0 <= 24 and d1 <= 24
+        _line(OK if ok else BAD, f"two-tone wordmark ({name})",
+              " / ".join(f"{t}={c}" for t, c in runs) or "one run")
+
+    # Wrapped block: many lines, and not clamped to the old 8 px floor.
+    tagline = ("A tool inspired by the anthotype process — sunlight, plant "
+               "pigment, and time — to transform an image into a real website.")
+    fs, n = fontmetrics.fit_block_type(tagline, 331, 53, "tagline")
+    _line(OK if n > 1 and fs >= 9 else BAD, "wrapped block sizing",
+          f"{fs:.1f}px over {n} line(s)")
+    one = fontmetrics.fit_block_type("Coming soon", 270, 42, "subhead")
+    _line(OK if one[1] == 1 else BAD, "single-line block sizing",
+          f"{one[0]:.1f}px over {one[1]} line(s)")
+
+    # The extraction scope filter keeps page copy and drops illustration text.
+    from app.extract import Block
+    keep = Block("Open source · Community driven", "other", (49, 481, 318, 507))
+    drop = Block("Plant Pigment", "other", (559, 344, 619, 356))
+    cta = Block("Get Started", "cta", (778, 466, 810, 480))
+    ok = (generate.is_page_text(keep) and not generate.is_page_text(drop)
+          and not generate.is_page_text(cta))
+    _line(OK if ok else BAD, "page copy vs artwork",
+          f"kept footer={generate.is_page_text(keep)}, dropped caption="
+          f"{generate.is_page_text(drop)}, dropped mockup CTA="
+          f"{generate.is_page_text(cta)}")
+
+    # The studio's vision model + its fallbacks, as configured.
+    v = config.vision.describe()
+    n = len(v.get("fallbacks") or [])
+    _line(OK if v["configured"] else WARN, "vision model",
+          f"{v['model']}" + (f" (+{n} fallback)" if n else " (no fallback)"))
+
+    print()
+    if _failures:
+        print(f"{_failures} check(s) failed")
+    else:
+        print("all checks passed")
+    return 1 if _failures else 0
+
+
+# --------------------------------------------------------------------------
 # regress: is the shipped pipeline still intact?
 # --------------------------------------------------------------------------
 def cmd_regress(args: list[str]) -> int:
@@ -286,6 +400,7 @@ def cmd_jobs(_args: list[str]) -> int:
 
 COMMANDS = {
     "env": cmd_env,
+    "polarity": cmd_polarity,
     "regress": cmd_regress,
     "run": cmd_run,
     "job": cmd_job,

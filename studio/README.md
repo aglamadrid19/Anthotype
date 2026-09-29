@@ -47,14 +47,22 @@ cp studio/backend/.env.example studio/backend/.env
 ### On this machine: the local AntSeed proxy
 
 AntSeed VPR exposes an OpenAI-compatible marketplace on `127.0.0.1:8377`. Point
-the studio at the vision model pinned there:
+the studio at the vision model that transcribes the mockup best there:
 
 ```sh
 VISION_PROVIDER=openai
-VISION_MODEL=deepseek-v4-1-flash
+VISION_MODEL=glm-5.3-flash
+VISION_FALLBACK_MODELS=deepseek-v4-1-flash,gpt-5.6-luna
 VISION_API_KEY=antseed-local
 VISION_BASE_URL=http://127.0.0.1:8377/v1
 ```
+
+`glm-5.3-flash` is the recommended model on this marketplace: on the light
+reference it extracts every page block and returns accurate boxes (8/8 blocks,
+~0.72 mean box IoU). `VISION_FALLBACK_MODELS` is tried in order when the chosen
+model or peer fails — P2P routing is not reliable, and one dead peer should not
+fail a build. Prefer *different* models for the fallbacks: retrying the same one
+usually lands on the same peer.
 
 Verify it before running a job:
 
@@ -112,7 +120,47 @@ approximate. Two things make them usable:
 
 Measured against the shipped references the studio scores **a 2.72 / b 3.16 /
 c 3.34** (hand-tuned A/B/C are 2.71 / 2.76 / 2.99). A matches; B and C are a
-real, editable starting point rather than the hand-authored fidelity.
+real, editable starting point rather than the hand-authored fidelity. Those
+numbers move by a few tenths between runs — the vision model's boxes shift
+slightly on identical calls — so treat them as a band, not a constant.
+
+### Light designs
+
+A/B/C are all light-type-on-dark, and the first uploads that were not exposed how
+much of the layer had quietly assumed that:
+
+- ink is sampled and boxes snapped by **distance from the background**, and the
+  sign of the ink (darker or lighter than the background) is measured per block
+  rather than assumed. `snap_to_ink`'s old `mean > bg + 40` is unsatisfiable on a
+  near-white page, so it was a no-op on every light design.
+- a wrapped block is sized from its **box height and line count** (the model
+  reports a wrapped block as one box), not from the one-line width of the whole
+  string — the latter collapsed eight blocks on the light upload to the 8 px
+  floor.
+- the tracer is told where the page background sits (`text_bg_lum` in the design
+  config) so it drops the *ink* bands inside a text rect. The default
+  `text_lum_max` rule is one-sided and, on a light design, removes the whole
+  rect — a hard hole. The new param is only set for a light background; a dark
+  design keeps the rule it was scored with.
+- `color-scheme` follows the background polarity.
+
+`text_bg_lum` is additive: `mkart.py` behaves exactly as before when it is
+absent. `qa/mkart.py a` re-traces to a byte-identical `pipeline/a.svg`.
+
+### What is page copy, and what is artwork
+
+Text inside the illustration (step callouts, a device mockup's own wordmark) must
+not become DOM: the box is unreliable and the exclusion rect punches a hole in
+the busiest art. The extractor tags each block `part: page | artwork`, and
+`generate.page_blocks` drops `artwork` blocks plus any `other` block too small to
+be page copy. The invariant holds either way: **the exclusion rects are exactly
+the blocks that are emitted as DOM.**
+
+The trade-off is fidelity for very small page text: the shipped Inter is the only
+face available, so a design whose typeface is not Inter (the first light upload's
+display face) leaves a per-pixel residue on its text that no amount of sizing or
+weight tuning removes. Expect that — it is a font-substitution problem, not a
+layout one.
 
 ## API
 
@@ -141,16 +189,24 @@ Uploads, polls every stage, and reports the final score and artifacts.
 under the studio venv, so `python3` works too.
 
 ```sh
-studio/.venv/bin/python studio/backend/doctor.py env       # every dependency + the vision endpoint
-studio/.venv/bin/python studio/backend/doctor.py regress   # run the repo's qa/verify.sh (A/B/C PASS)
-studio/.venv/bin/python studio/backend/doctor.py run x.png # one design end to end, per-stage timings
-studio/.venv/bin/python studio/backend/doctor.py jobs      # list recent jobs
-studio/.venv/bin/python studio/backend/doctor.py job <id>  # full status + logs for one job
+studio/.venv/bin/python studio/backend/doctor.py env        # every dependency + the vision endpoint
+studio/.venv/bin/python studio/backend/doctor.py polarity   # light/dark ink, wrapping, scope (no model)
+studio/.venv/bin/python studio/backend/doctor.py regress    # run the repo's qa/verify.sh (A/B/C PASS)
+studio/.venv/bin/python studio/backend/doctor.py run x.png  # one design end to end, per-stage timings
+studio/.venv/bin/python studio/backend/doctor.py jobs       # list recent jobs
+studio/.venv/bin/python studio/backend/doctor.py job <id>   # full status + logs for one job
 ```
 
 - **`env`** proves the whole toolchain is present: the repo venv, node/npm,
   potrace, Chrome, the vendored fonts, the pipeline files, and that the vision
   endpoint answers. Exit code is non-zero on failure.
+- **`polarity`** is the cheap guard for the light/dark assumptions: it draws a
+  synthetic stage with light type on a dark ground *and* dark type on a light
+  one, then checks that the ink is sampled and the box snapped on both, that a
+  two-tone wordmark still splits into its two runs, that a wrapped block is sized
+  from its height, and that the page-copy filter keeps the footer and drops a
+  small mockup CTA. No vision model, no pipeline, a second or so — run it after
+  touching any of the sampling, wrapping or scope heuristics.
 - **`regress`** is the safety net for the *pipeline itself*: it runs the repo's
   own `qa/verify.sh`, which scores each built A/B/C site against its reference
   and asserts the network/stylesheet gates. If a studio change ever disturbed

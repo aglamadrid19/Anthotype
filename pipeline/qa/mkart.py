@@ -143,7 +143,8 @@ TEXT = {
 
 def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
           minpx=None, out=None, box=None, exclude_text=False,
-          text_lum_max=70.0, cumulative=True, ref=None, text_rects=None):
+          text_lum_max=70.0, cumulative=True, ref=None, text_rects=None,
+          text_bg_lum=None, text_lum_margin=45.0):
     cfg = design(v)
     ref = ref or cfg.get('ref') or f'{HERE}/ref-{v}.png'
     text_rects = cfg.get('text', []) if text_rects is None else text_rects
@@ -187,9 +188,21 @@ def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
         for i in range(bands):
             m = lum >= edges[i]
             if exclude_text and in_text is not None:
-                # inside a text rect only the dim bands survive
-                hi_sel = m & in_text
-                if hi_sel.any() and np.median(sub[hi_sel], axis=0).mean() > text_lum_max:
+                if text_bg_lum is not None:
+                    # Polarity-agnostic: drop the band inside the rect when the
+                    # band is an *ink* band, i.e. its luminance sits away from
+                    # the page background.  Bands at the background luminance
+                    # must survive or the rect becomes a hard hole.  The
+                    # one-sided `> text_lum_max` rule below assumes light type on
+                    # a dark ground; on a light design every band clears it and
+                    # the whole rect is removed.
+                    drop = abs(edges[i] - text_bg_lum) > text_lum_margin
+                else:
+                    # inside a text rect only the dim bands survive
+                    hi_sel = m & in_text
+                    drop = bool(hi_sel.any() and
+                                np.median(sub[hi_sel], axis=0).mean() > text_lum_max)
+                if drop:
                     m = m & ~in_text
             if m.sum() < minpx: continue
             band = m & ~(lum >= edges[i+1]) if i < bands-1 else m
@@ -202,10 +215,15 @@ def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
             if m.sum() < minpx: continue
             px = sub[m]
             col = np.median(px, axis=0)
-            if in_text is not None and col.mean() > text_lum_max:
-                m = m & ~in_text          # dim glow survives, words do not
-                if m.sum() < minpx: continue
-                col = np.median(sub[m], axis=0)
+            if in_text is not None:
+                if text_bg_lum is not None:
+                    drop = abs(col.mean() - text_bg_lum) > text_lum_margin
+                else:
+                    drop = col.mean() > text_lum_max
+                if drop:
+                    m = m & ~in_text          # dim glow survives, words do not
+                    if m.sum() < minpx: continue
+                    col = np.median(sub[m], axis=0)
             bands_out.append((int(m.sum()), col, m, i))
     # Paint order matters: later groups cover earlier ones.  Bands are nested
     # (band i+1 is a subset of the *bright* region inside band i), so the
@@ -246,11 +264,11 @@ if __name__ == '__main__':
     kw = dict(design(v).get('params') or PARAMS.get(v, {}))
     for k, t in (('--bands', int), ('--up', int), ('--turd', int), ('--prec', int), ('--minpx', int)):
         if k in sys.argv: kw[k.lstrip('-')] = t(sys.argv[sys.argv.index(k)+1])
-    for k, t in (('--alphamax', float), ('--opttol', float)):
-        if k in sys.argv: kw[k.lstrip('-')] = t(sys.argv[sys.argv.index(k)+1])
+    for k, t in (('--alphamax', float), ('--opttol', float),
+                 ('--text-lum-max', float), ('--text-bg-lum', float),
+                 ('--text-lum-margin', float)):
+        if k in sys.argv: kw[k.lstrip('-').replace('-', '_')] = t(sys.argv[sys.argv.index(k)+1])
     if '--out' in sys.argv: kw['out'] = sys.argv[sys.argv.index('--out')+1]
     if '--exclude-text' in sys.argv: kw['exclude_text'] = True
-    if '--text-lum-max' in sys.argv:
-        kw['text_lum_max'] = float(sys.argv[sys.argv.index('--text-lum-max')+1])
     if 'turd' in kw: kw['turdsize'] = kw.pop('turd')
     build(v, **kw)

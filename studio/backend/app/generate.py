@@ -20,8 +20,8 @@ from PIL import Image
 
 from .config import STAGE_H, STAGE_W
 from .extract import Block
-from .fontmetrics import (cap_top_offset, char_at_x_fraction, fit_font_size,
-                          ink_height_em)
+from .fontmetrics import (cap_top_offset, char_at_x_fraction, fit_block_type,
+                          fit_font_size, ink_height_em)
 
 # Safety growth on the mkart text-exclusion rects (stage px).
 TEXT_RECT_GROW = 6
@@ -76,26 +76,49 @@ def sample_runs(arr: np.ndarray, bbox: tuple[float, float, float, float], text: 
         return [(text, sample_ink(arr, bbox, background))]
 
     px = sub[ink]
-    core = px[px.mean(axis=1) >= np.percentile(px.mean(axis=1), 65)]
-    sat = core.max(axis=1) - core.min(axis=1)
-    neutral, coloured = core[sat < 26], core[sat >= 26]
+    dsel = dist[ink]
+    # The ink that actually draws the glyphs is the ink furthest from the
+    # background.  Distance, not brightness: selecting by brightness assumes
+    # light type on a dark ground (the shipped references) and on a light design
+    # it keeps only the anti-aliased fringe beside the background, washing every
+    # block out to near-white.
+    #
+    # Taken *per tone*, so a two-tone wordmark keeps both runs: the dark half and
+    # the saturated half sit at different distances, and a single distance cut
+    # drops the weaker one entirely.
+    sat_px = px.max(axis=1) - px.min(axis=1)
+    is_neutral = sat_px < 26
+
+    def _core(mask: np.ndarray) -> np.ndarray:
+        g, gd = px[mask], dsel[mask]
+        if g.size == 0:
+            return g
+        return g[gd >= np.percentile(gd, 65)]
+
+    neutral, coloured = _core(is_neutral), _core(~is_neutral)
+    both = max(1, len(neutral) + len(coloured))
     # Both groups must be real, not a few stray antialiased pixels.  Measured by
     # pixel count AND by horizontal extent: a coloured suffix must occupy a
     # meaningful slice of the line, not just a highlight on one glyph.
     w = max(1, sub.shape[1])
-    if len(neutral) < 0.10 * len(core) or len(coloured) < 0.10 * len(core):
-        pick = neutral if len(neutral) >= len(coloured) else coloured
-        if len(pick) == 0:
-            pick = core
+    if len(neutral) < 0.10 * both or len(coloured) < 0.10 * both:
+        # One tone: the glyph interior of the strongest ink.
+        pick = px[dsel >= np.percentile(dsel, 65)] if dsel.size else px
         return [(text, tuple(int(v) for v in np.median(pick, axis=0)))]
 
-    # The saturated pixels mark where the coloured run starts.
+    # The coloured run starts where a *column* is dominated by saturated ink,
+    # not where a single stray saturated pixel happens to appear: one noisy
+    # pixel inside the neutral half used to move the split by a whole glyph.
     mask_sat = ink & ((sub.max(axis=2) - sub.min(axis=2)) >= 26)
     mask_neu = ink & ~mask_sat
-    sat_cols = np.nonzero(mask_sat.sum(axis=0) > 0)[0]
+    col_ink = ink.sum(axis=0)
+    col_sat = mask_sat.sum(axis=0)
+    dom = (col_ink > 0) & (col_sat >= np.maximum(2, 0.5 * col_ink))
+    sat_cols = np.nonzero(dom)[0]
     neu_cols = np.nonzero(mask_neu.sum(axis=0) > 0)[0]
     if len(sat_cols) == 0 or len(neu_cols) == 0:
-        return [(text, tuple(int(v) for v in np.median(core, axis=0)))]
+        pick = neutral if len(neutral) >= len(coloured) else coloured
+        return [(text, tuple(int(v) for v in np.median(pick, axis=0)))]
     if len(sat_cols) < 0.12 * w or len(neu_cols) < 0.12 * w:
         pick = neutral if len(neutral) >= len(coloured) else coloured
         return [(text, tuple(int(v) for v in np.median(pick, axis=0)))]
@@ -127,6 +150,34 @@ def sample_fill(arr: np.ndarray, bbox: tuple[float, float, float, float],
     if sel.size == 0:
         return (24, 196, 124)
     return tuple(int(v) for v in np.median(sel, axis=0))
+
+
+def sample_plate_fill(arr: np.ndarray, bbox: tuple[float, float, float, float],
+                      background: tuple[int, int, int], grow: int = 6
+                      ) -> tuple[int, int, int]:
+    """Fill of the plate the CTA label sits on, sampled just outside the label.
+
+    The model reports the *label*, so the pixels immediately around it are the
+    button plate.  Unlike `sample_fill` this cannot be contaminated by
+    surrounding artwork (a CTA dropped on top of a photo) or by a label box that
+    is off-centre on its button -- the plate is by definition the saturated
+    colour adjacent to the label.
+    """
+    x0, y0, x1, y1 = (int(round(v)) for v in bbox)
+    wx0, wy0 = max(0, x0 - grow), max(0, y0 - grow)
+    wx1, wy1 = min(STAGE_W, x1 + grow), min(STAGE_H, y1 + grow)
+    if wx1 - wx0 < 3 or wy1 - wy0 < 3:
+        return (24, 196, 124)
+    patch = arr[wy0:wy1, wx0:wx1].reshape(-1, 3)
+    bg = np.array(background, dtype=np.float32)
+    dist = np.linalg.norm(patch - bg, axis=1)
+    sel = patch[dist > max(24.0, float(np.percentile(dist, 40)))]
+    if sel.size == 0:
+        return (24, 196, 124)
+    sat = sel.max(axis=1) - sel.min(axis=1)
+    strong = sel[sat >= max(30.0, float(np.percentile(sat, 75)))]
+    pick = strong if len(strong) >= max(8, 0.1 * len(sel)) else sel
+    return tuple(int(v) for v in np.median(pick, axis=0))
 
 
 def sample_contrast(arr: np.ndarray, bbox: tuple[float, float, float, float],
@@ -203,25 +254,22 @@ def refine_button_bbox(arr: np.ndarray, bbox: tuple[float, float, float, float],
         return bbox
     fx0, fy0, fx1, fy1 = found
     bw, bh = fx1 - fx0, fy1 - fy0
-    # Sanity: the button must contain the label and be a plausible size.  Both
-    # dimensions are checked -- a fill colour close to the background can leak
-    # out of the button and flood the whole frame, which the width bound alone
-    # would not catch.
-    if bw < (x1 - x0) or bh < (y1 - y0):
+    # The button must be plausible and overlap the label.  It need not *contain*
+    # the label box: the model's box is a few pixels loose, and on a small pill
+    # it can be wider than the button itself.
+    if bw < 0.5 * (x1 - x0) or bh < 0.5 * (y1 - y0):
         return bbox
     if bw > 4 * (x1 - x0) + 80 or bh > 4 * (y1 - y0) + 80:
         return bbox
     return (wx0 + fx0, wy0 + fy0, wx0 + fx1, wy0 + fy1)
 
 
-def estimate_font_size(block: Block, weight: int = 400) -> float:
-    """Font-size solved from the block's box width against real Inter metrics."""
-    x0, y0, x1, y1 = block.bbox
-    return fit_font_size(block.text, x1 - x0, y1 - y0, block.role, weight)
-
-
 def _hex(rgb: tuple[int, int, int]) -> str:
     return "#{:02x}{:02x}{:02x}".format(*rgb)
+
+
+def _sat(rgb: tuple[int, int, int]) -> int:
+    return max(rgb) - min(rgb)
 
 
 def _role_rank(role: str) -> int:
@@ -231,17 +279,26 @@ def _role_rank(role: str) -> int:
 
 def measure_button_bbox(arr: np.ndarray, label: tuple[float, float, float, float],
                         background: tuple[int, int, int],
-                        padx: int = 90, pady: int = 30) -> tuple[int, int, int, int] | None:
+                        padx: int | None = None,
+                        pady: int | None = None) -> tuple[int, int, int, int] | None:
     """Full button rectangle for an *outline* (bordered) button.
 
     A solid-fill button is found by flood-filling its fill colour
     (`refine_button_bbox`), but an outline button has no fill to flood -- only a
     border.  Its border and label are the only non-background pixels around the
-    label box, so the bounding box of that ink (measured in a window wide enough
-    to include the whole button, but not so tall that neighbouring lines leak
-    in) is the button.
+    label box, so the bounding box of that ink is the button.
+
+    The search window is scaled from the label rather than fixed: on a busy
+    background a fixed +-90/+30 window swallows the surrounding artwork and
+    returns a box tens of times too large (a 44x12 label once produced a 224x72
+    button over a laptop mockup).
     """
     x0, y0, x1, y1 = (int(round(v)) for v in label)
+    lh = max(1, y1 - y0)
+    if padx is None:
+        padx = max(24, int(1.2 * lh) + 12)
+    if pady is None:
+        pady = max(12, int(0.8 * lh) + 8)
     wx0, wy0 = max(0, x0 - padx), max(0, y0 - pady)
     wx1, wy1 = min(STAGE_W, x1 + padx), min(STAGE_H, y1 + pady)
     win = arr[wy0:wy1, wx0:wx1]
@@ -271,6 +328,9 @@ def snap_to_ink(arr: np.ndarray, bbox: tuple[float, float, float, float],
     shifted.  The type is the only ink inside its own box, so measuring it
     locally removes that residual error -- and because font-size is solved from
     the box width, a few pixels of width error becomes a visible size error.
+
+    Polarity-aware: the ink may be either side of the background, so the side is
+    measured rather than assumed (see the note below).
     """
     x0, y0, x1, y1 = bbox
     wx0, wy0 = max(0, int(x0) - pad), max(0, int(y0) - pad)
@@ -278,14 +338,31 @@ def snap_to_ink(arr: np.ndarray, bbox: tuple[float, float, float, float],
     if wx1 - wx0 < 3 or wy1 - wy0 < 3:
         return bbox
     sub = arr[wy0:wy1, wx0:wx1]
-    ink = sub.mean(axis=2) > (np.array(background, dtype=np.float32).mean() + thr)
-    if not ink.any():
-        return bbox
+    grey = sub.mean(axis=2)
+    bg_mean = float(np.array(background, dtype=np.float32).mean())
     # Keep only the ink connected to the reported box, so a neighbouring line
     # cannot drag the fit.
-    seed = np.zeros(ink.shape, bool)
+    seed = np.zeros(grey.shape, bool)
     seed[max(0, int(y0) - wy0):int(y1) - wy0,
          max(0, int(x0) - wx0):int(x1) - wx0] = True
+    # A fixed threshold assumes high contrast (bright type on a dark ground).
+    # Faint type -- light grey small print on a near-white page -- sits within
+    # `thr` of the background and would be missed entirely, collapsing the box.
+    # Never be stricter than the block's own strongest ink.
+    d = np.abs(grey - bg_mean)
+    base = float(d.max())
+    thr_eff = min(thr, max(14.0, 0.4 * base)) if base > 0 else thr
+    # Polarity is a property of the design, not a constant.  The references are
+    # light type on a dark ground, but an upload can be dark type on a light
+    # ground; a hardcoded `>` silently returns the model box unchanged whenever
+    # the background is near white (the threshold exceeds 255).  Choose the side
+    # of the background that actually carries the ink inside the reported box.
+    seed_grey = grey[seed] if seed.any() else grey
+    dark = float((seed_grey < bg_mean - thr_eff).mean())
+    light = float((seed_grey > bg_mean + thr_eff).mean())
+    ink = grey > (bg_mean + thr_eff) if light > dark else grey < (bg_mean - thr_eff)
+    if not ink.any():
+        return bbox
     region = seed & ink
     if not region.any():
         return bbox
@@ -303,7 +380,11 @@ def snap_to_ink(arr: np.ndarray, bbox: tuple[float, float, float, float],
     sx0, sy0 = wx0 + int(xs.min()), wy0 + int(ys.min())
     sx1, sy1 = wx0 + int(xs.max()) + 1, wy0 + int(ys.max()) + 1
     # Refuse a fit that clearly left the box (it caught a different element).
-    if sx1 - sx0 < 0.4 * (x1 - x0) or sy1 - sy0 < 0.4 * (y1 - y0):
+    # The lower bound is deliberately loose: thin, anti-aliased small print has
+    # only a few solidly-dark rows, and a tight snap there under-measures the
+    # box so badly that a wrapped block gets the wrong size and an exclusion
+    # rect misses the type.
+    if sx1 - sx0 < 0.6 * (x1 - x0) or sy1 - sy0 < 0.6 * (y1 - y0):
         return bbox
     if sx1 - sx0 > 2.0 * (x1 - x0) + 20 or sy1 - sy0 > 2.0 * (y1 - y0) + 20:
         return bbox
@@ -321,8 +402,12 @@ def decorate(blocks: list[Block], ref_png: Path,
             win = (max(0, x0 - pad), max(0, y0 - pad),
                    min(STAGE_W, x1 + pad), min(STAGE_H, y1 + pad))
             # The label box is mostly label, so the fill must be sampled from a
-            # wider window where the button dominates.
-            b.fill = sample_fill(arr, win, background)
+            # wider window where the button dominates.  But on top of artwork
+            # that window is contaminated, so prefer the saturated plate that
+            # sits immediately around the label when there is one.
+            wide = sample_fill(arr, win, background)
+            plate = sample_plate_fill(arr, b.bbox, background)
+            b.fill = plate if _sat(plate) > _sat(wide) + 40 else wide
             # Keep the label box (font-size comes from it) and grow the block to
             # the real button so the DOM button and its exclusion rect match.
             b.meta["label_bbox"] = b.bbox
@@ -389,8 +474,11 @@ def build_content(blocks: list[Block], name: str) -> dict:
 
 def build_page_css(blocks: list[Block], background: tuple[int, int, int]) -> str:
     bg = _hex(background)
+    # Picked from the design, not hardcoded: a light mockup should get a light
+    # scheme, so form controls and scrollbars match the page the artwork implies.
+    scheme = "light" if sum(background) / 3.0 >= 128 else "dark"
     lines = [
-        ":root { color-scheme: dark; }",
+        f":root {{ color-scheme: {scheme}; }}",
         "* { box-sizing: border-box; margin: 0; padding: 0; }",
         "html, body { width: 100%; height: 100%; }",
         f"body {{ background: {bg}; font-family: Inter, system-ui, sans-serif;",
@@ -435,14 +523,61 @@ def build_page_css(blocks: list[Block], background: tuple[int, int, int]) -> str
                 ]
         else:
             weight = 400
-            fs = estimate_font_size(b, weight)
+            bw, bh = x1 - x0, y1 - y0
+            fs, nlines = fit_block_type(b.text, bw, bh, b.role, weight)
             color = _hex(b.color or (255, 255, 255))
-            top = max(0.0, y0 - cap_top_offset(fs, weight))
-            lines.append(
-                f".blk-{i} {{ left: {x0:.0f}px; top: {top:.1f}px; "
-                f"font-size: {fs:.1f}px; font-weight: {weight}; color: {color}; }}"
-            )
+            if nlines > 1:
+                # The model reports a wrapped block as ONE box, so the lines must
+                # be laid out by wrapping inside it, with the leading spread to
+                # fill the box height -- but never tighter than the glyphs.
+                lh = max(bh / nlines, fs)
+                top = max(0.0, y0 - cap_top_offset(fs, weight, lh))
+                lines.append(
+                    f".blk-{i} {{ left: {x0:.0f}px; top: {top:.1f}px; width: {bw:.0f}px; "
+                    f"white-space: normal; font-size: {fs:.1f}px; line-height: {lh:.1f}px; "
+                    f"font-weight: {weight}; color: {color}; }}"
+                )
+            else:
+                top = max(0.0, y0 - cap_top_offset(fs, weight))
+                lines.append(
+                    f".blk-{i} {{ left: {x0:.0f}px; top: {top:.1f}px; "
+                    f"font-size: {fs:.1f}px; font-weight: {weight}; color: {color}; }}"
+                )
     return "\n".join(lines) + "\n"
+
+
+# A block the model called `other` must be at least this big to be page copy
+# rather than a caption inside the artwork.  Backstop for the model's `part`
+# judgement (a small step caption scored against a wrong box is worse than
+# leaving it to the tracer).
+#
+# The width floor is what catches illustration captions ("Plant Pigment", 60 px)
+# while every real page line on the reference designs is far wider (the shortest
+# is the 110 px CTA label).  `null` size is allowed: the classification only ever
+# compares a box against these, never consumes them.
+MIN_OTHER_W = 100
+MIN_OTHER_H = 6
+PRIMARY_ROLES = {"headline", "subhead", "tagline"}
+
+
+def is_page_text(b: Block) -> bool:
+    """Is this block the page's own copy, rather than text inside the artwork?
+
+    Text that belongs to an illustration (a device mockup, a product card) must
+    not become a DOM element: its box is unreliable, so the element lands in the
+    wrong place, and its exclusion rect punches a hole through the busiest part
+    of the traced art.  Leaving it out lets the tracer reproduce it instead.
+    """
+    if getattr(b, "part", "page") == "artwork":
+        return False
+    if b.role in PRIMARY_ROLES:
+        return True
+    x0, y0, x1, y1 = b.bbox
+    return (x1 - x0) >= MIN_OTHER_W and (y1 - y0) >= MIN_OTHER_H
+
+
+def page_blocks(blocks: list[Block]) -> list[Block]:
+    return [b for b in blocks if is_page_text(b)]
 
 
 def text_rects(blocks: list[Block]) -> list[list[int]]:
@@ -462,6 +597,7 @@ def text_rects(blocks: list[Block]) -> list[list[int]]:
 def write_all(pipeline: Path, name: str, blocks: list[Block],
               background: tuple[int, int, int]) -> dict:
     """Write content/page.css/design config into the job's pipeline copy."""
+    blocks = page_blocks(blocks)
     content = build_content(blocks, name)
     (pipeline / f"content-{name}.json").write_text(
         json.dumps(content, indent=2, ensure_ascii=False) + "\n")
@@ -474,8 +610,19 @@ def write_all(pipeline: Path, name: str, blocks: list[Block],
     cfg["box"] = [0, 0, STAGE_W, STAGE_H]        # full frame: exclude_text protects the type
     cfg["text"] = text_rects(blocks)
     cfg.setdefault("params", {})
+    # Polarity-aware text exclusion.  `text_bg_lum` tells the tracer where the
+    # page background sits, so it drops the bands that are *ink* (away from the
+    # background) instead of assuming light type on a dark ground -- the rule
+    # `text_lum_max` encodes, and which is correct for a dark design but turns a
+    # text rect into a hard hole on a light one.  Only set it for a light
+    # background: on a dark design the legacy rule is already right, and it is
+    # what the regression suite is scored against.
+    bg_lum = round(sum(background) / 3.0, 1)
     cfg["params"].update({
         "exclude_text": True, "text_lum_max": 200.0, "cumulative": True,
     })
+    if bg_lum >= 128:
+        cfg["params"]["text_bg_lum"] = bg_lum
+        cfg["params"]["text_lum_margin"] = 45.0
     cfg_path.write_text(json.dumps(cfg, indent=2) + "\n")
     return content

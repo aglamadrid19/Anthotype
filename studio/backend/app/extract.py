@@ -33,6 +33,7 @@ import httpx
 from .config import vision
 
 ROLES = {"headline", "subhead", "tagline", "cta", "brand", "other"}
+PARTS = {"page", "artwork"}
 
 SYSTEM_PROMPT = (
     "You are a meticulous UI reverse-engineer. You are shown a flat design "
@@ -41,17 +42,22 @@ SYSTEM_PROMPT = (
     "For each text block give:\n"
     '  "text": the exact string (no commentary),\n'
     '  "role": one of headline | subhead | tagline | cta | brand | other,\n'
+    '  "part": one of page | artwork,\n'
     '  "bbox": [x0, y0, x1, y1] in pixels of the image you are shown.\n\n'
     "Rules:\n"
     "- bbox must tightly enclose the visible glyphs, not the surrounding space.\n"
     "- role headline = the largest/most prominent title; subhead = a secondary "
     "line directly under it; tagline = body/supporting sentence; cta = the "
     "label inside a button; brand = a logo wordmark.\n"
+    "- part page = the page's own copy (title, navigation, body, button labels, "
+    "footer). part artwork = text that is part of an illustration, a device "
+    "mockup, a screenshot or a product card in the design.\n"
     "- Do NOT transcribe decorative artwork, icons or shapes as text.\n"
     "- If a block wraps across several lines, report it as ONE block whose bbox "
     "spans all its lines.\n"
     "- Output ONLY a JSON object of the form "
-    '{"blocks": [{"text": "...", "role": "...", "bbox": [0,0,0,0]}]}. '
+    '{"blocks": [{"text": "...", "role": "...", "part": "...", '
+    '"bbox": [0,0,0,0]}]}. '
     "No markdown, no commentary."
 )
 
@@ -75,6 +81,7 @@ class Block:
     text: str
     role: str
     bbox: tuple[float, float, float, float]
+    part: str = "page"                             # page copy | artwork
     color: tuple[int, int, int] | None = None      # ink colour (sampled locally)
     fill: tuple[int, int, int] | None = None       # CTA button fill (sampled locally)
     runs: list[tuple[str, tuple[int, int, int]]] = field(default_factory=list)
@@ -143,8 +150,10 @@ def _parse_blocks(raw: str) -> list[Block]:
         if y1 < y0:
             y0, y1 = y1, y0
         role = str(it.get("role", "other")).strip().lower()
+        part = str(it.get("part", "page")).strip().lower()
         out.append(Block(text=text_val, role=role if role in ROLES else "other",
-                         bbox=(x0, y0, x1, y1)))
+                         bbox=(x0, y0, x1, y1),
+                         part=part if part in PARTS else "page"))
     return out
 
 

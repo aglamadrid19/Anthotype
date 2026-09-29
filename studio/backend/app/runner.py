@@ -92,13 +92,16 @@ class PipelineRunner:
         # ---- 4. generate content + layout + exclusion rects -------------
         self.store.advance(jid, "generating")
         generate.write_all(ws.pipeline, jid, blocks, norm.background)
+        page = generate.page_blocks(blocks)
         self.store.update(jid, blocks=[
-            {"text": b.text, "role": b.role,
+            {"text": b.text, "role": b.role, "part": getattr(b, "part", "page"),
              "bbox": [round(v) for v in b.bbox],
              "color": list(b.color) if b.color else None}
-            for b in blocks
+            for b in page
         ])
-        self.store.log(jid, f"generated text layer: {len(blocks)} block(s)")
+        skipped = len(blocks) - len(page)
+        note = f", {skipped} artwork block(s) left to the tracer" if skipped else ""
+        self.store.log(jid, f"generated text layer: {len(page)} block(s){note}")
 
         # ---- 5. trace the artwork ---------------------------------------
         self.store.advance(jid, "tracing")
@@ -181,6 +184,7 @@ class PipelineRunner:
         # without another model call.
         (JOBS_DIR / jid / "raw-blocks.json").write_text(json.dumps(
             {"blocks": [{"text": b.text, "role": b.role,
+                         "part": getattr(b, "part", "page"),
                          "bbox": [float(v) for v in b.bbox]} for b in blocks]},
             indent=2) + "\n")
         return generate.decorate(blocks, ref_png, background)
