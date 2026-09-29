@@ -1,0 +1,64 @@
+"""Subprocess helpers: run a stage with a timeout and captured output."""
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+
+
+@dataclass
+class StageError(RuntimeError):
+    stage: str
+    cmd: list[str]
+    returncode: int | None
+    log: str
+
+    def __str__(self) -> str:  # pragma: no cover - display only
+        tail = "\n".join(self.log.strip().splitlines()[-12:])
+        return f"stage {self.stage!r} failed (rc={self.returncode}):\n{tail}"
+
+
+def find_node() -> str:
+    """Resolve node without hardcoding an nvm path (mirrors _env.py)."""
+    node = os.environ.get("NODE") or shutil.which("node")
+    if node:
+        return node
+    import glob
+    for cand in sorted(glob.glob(os.path.expanduser("~/.nvm/versions/node/*/bin/node")),
+                       reverse=True):
+        if os.path.isfile(cand):
+            return cand
+    for cand in ("/opt/homebrew/bin/node", "/usr/local/bin/node"):
+        if os.path.isfile(cand):
+            return cand
+    raise RuntimeError("no node found on PATH (install node, or set NODE=...)")
+
+
+def node_env() -> dict[str, str]:
+    env = dict(os.environ)
+    node_dir = os.path.dirname(find_node())
+    env["PATH"] = node_dir + os.pathsep + env.get("PATH", "")
+    return env
+
+
+def run(stage: str, cmd: list[str], cwd: Path, *, timeout: int,
+        env: dict[str, str] | None = None) -> str:
+    """Run `cmd`, returning combined stdout/stderr.
+
+    Raises StageError on a non-zero exit or timeout, carrying the captured log
+    so the job can report exactly what went wrong.
+    """
+    try:
+        proc = subprocess.run(
+            cmd, cwd=str(cwd), env=env, timeout=timeout,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        )
+    except subprocess.TimeoutExpired as exc:
+        log = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
+        raise StageError(stage, cmd, None, f"timed out after {timeout}s\n{log}") from exc
+    log = proc.stdout or ""
+    if proc.returncode != 0:
+        raise StageError(stage, cmd, proc.returncode, log)
+    return log

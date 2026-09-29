@@ -80,6 +80,23 @@ cd pipeline
 Requires `brew install potrace` — the only external binary. Node and Python
 deps are installed by `bootstrap.sh`.
 
+## Studio (upload → site)
+
+There is a local web app on top of the pipeline that turns this into a product:
+
+```sh
+python3 -m venv studio/.venv
+studio/.venv/bin/pip install -r studio/backend/requirements.txt
+cp studio/backend/.env.example studio/backend/.env   # set your vision-model key
+./studio/run.sh                                      # http://127.0.0.1:5173
+```
+
+Upload a design PNG, watch the pipeline run stage by stage, then download the
+code-native site (a single self-contained `index.html` plus the full Astro
+project). Text is extracted from the reference with a vision model; each job
+runs in its own isolated copy of the pipeline, so the A/B/C regression suite is
+never touched. See `studio/README.md`.
+
 ## Adding a new design
 
 **One command scaffolds everything.** The design name is the only thing you
@@ -144,6 +161,7 @@ content.json           the shared text layer for the three shipped examples
 content-<n>.json       a new design's own text layer (isolated from the above)
 sites/variant-{a,b,c}/ the three worked examples
 preview/               one static server for all builds + a generated gallery
+studio/                the upload -> site web app (FastAPI + React)
 docs/HANDOFF.md        full engineering history: what was tried, what worked,
                        what is exhausted, and the landmines
 ```

@@ -1,0 +1,1 @@
+"""Anthotype Studio backend package."""

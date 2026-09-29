@@ -1,0 +1,7 @@
+# ---- studio ---------------------------------------------------------------
+# Patterns are relative to this file (studio/), so no `studio/` prefix here.
+.venv/
+data/
+backend/.env
+frontend/node_modules/
+frontend/dist/
