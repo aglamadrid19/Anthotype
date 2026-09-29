@@ -52,17 +52,18 @@ the studio at the vision model that transcribes the mockup best there:
 ```sh
 VISION_PROVIDER=openai
 VISION_MODEL=glm-5.3-flash
-VISION_FALLBACK_MODELS=deepseek-v4-1-flash,gpt-5.6-luna
+VISION_FALLBACK_MODELS=deepseek-v4-flash-vision-exp,kimi-k3-fast
 VISION_API_KEY=antseed-local
 VISION_BASE_URL=http://127.0.0.1:8377/v1
 ```
 
 `glm-5.3-flash` is the recommended model on this marketplace: on the light
 reference it extracts every page block and returns accurate boxes (8/8 blocks,
-~0.72 mean box IoU). `VISION_FALLBACK_MODELS` is tried in order when the chosen
+~0.99 mean box IoU). `VISION_FALLBACK_MODELS` is tried in order when the chosen
 model or peer fails — P2P routing is not reliable, and one dead peer should not
 fail a build. Prefer *different* models for the fallbacks: retrying the same one
-usually lands on the same peer.
+usually lands on the same peer. Verify them with `doctor env`: a fallback that
+does not answer is worse than none.
 
 Verify it before running a job:
 

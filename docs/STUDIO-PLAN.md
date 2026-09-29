@@ -136,7 +136,7 @@ On this machine the provider is the local **AntSeed proxy**:
 ```sh
 VISION_PROVIDER=openai
 VISION_MODEL=glm-5.3-flash
-VISION_FALLBACK_MODELS=deepseek-v4-1-flash,gpt-5.6-luna
+VISION_FALLBACK_MODELS=deepseek-v4-flash-vision-exp,kimi-k3-fast
 VISION_API_KEY=antseed-local
 VISION_BASE_URL=http://127.0.0.1:8377/v1
 ```
@@ -146,7 +146,12 @@ VISION_BASE_URL=http://127.0.0.1:8377/v1
 `studio/backend/doctor.py`:
 
 - `env` — every dependency (repo venv, node/npm, potrace, Chrome, fonts, the
-  pipeline files) plus the vision endpoint; non-zero exit on failure.
+  pipeline files) plus the vision endpoint and a live probe of each configured
+  model; non-zero exit on failure.
+- `polarity` — synthetic light/dark checks for the ink, wrapping and extraction
+  scope heuristics (no vision model, no pipeline).
+- `light` — replays a frozen extraction against the light reference through the
+  whole local pipeline and asserts the score and the page-copy scope filter.
 - `regress` — runs the repo's own `qa/verify.sh` to prove the shipped pipeline
   is still intact (A/B/C PASS). This is the guard against a studio change
   disturbing the pipeline.
