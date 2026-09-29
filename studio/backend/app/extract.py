@@ -249,17 +249,27 @@ def normalize_roles(blocks: list[Block]) -> list[Block]:
     return blocks
 
 
+def _blocks_from_json(data: object) -> list[Block]:
+    """Parse a `{"blocks": [...]}` document (the saved/fake block format)."""
+    items = data.get("blocks", data) if isinstance(data, dict) else data
+    out: list[Block] = []
+    for b in items:  # type: ignore[union-attr]
+        part = str(b.get("part", "page")).strip().lower()
+        out.append(Block(text=str(b["text"]), role=str(b.get("role", "other")),
+                         bbox=tuple(float(v) for v in b["bbox"]),
+                         part=part if part in PARTS else "page"))
+    return out
+
+
 def extract(png: Path) -> list[Block]:
     """Return the text blocks for `png` (stage coordinates)."""
     # Development seam: a JSON file of blocks to use instead of calling a model.
     # Lets the full text path (layout + exclusion rects + scoring) be exercised
-    # with no API key.  Never set in normal use.
+    # with no API key -- and replay a *saved* extraction without a model call,
+    # which is how `doctor light` stays deterministic.  Never set in normal use.
     fake = os.environ.get("STUDIO_FAKE_BLOCKS")
     if fake and Path(fake).is_file():
-        data = json.loads(Path(fake).read_text())
-        items = data.get("blocks", data) if isinstance(data, dict) else data
-        return [Block(text=str(b["text"]), role=str(b.get("role", "other")),
-                      bbox=tuple(float(v) for v in b["bbox"])) for b in items]
+        return _blocks_from_json(json.loads(Path(fake).read_text()))
 
     provider = vision.provider.lower()
 

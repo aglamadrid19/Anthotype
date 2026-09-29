@@ -191,6 +191,7 @@ under the studio venv, so `python3` works too.
 ```sh
 studio/.venv/bin/python studio/backend/doctor.py env        # every dependency + the vision endpoint
 studio/.venv/bin/python studio/backend/doctor.py polarity   # light/dark ink, wrapping, scope (no model)
+studio/.venv/bin/python studio/backend/doctor.py light      # the light fixture, end to end (no model)
 studio/.venv/bin/python studio/backend/doctor.py regress    # run the repo's qa/verify.sh (A/B/C PASS)
 studio/.venv/bin/python studio/backend/doctor.py run x.png  # one design end to end, per-stage timings
 studio/.venv/bin/python studio/backend/doctor.py jobs       # list recent jobs
@@ -204,9 +205,19 @@ studio/.venv/bin/python studio/backend/doctor.py job <id>   # full status + logs
   synthetic stage with light type on a dark ground *and* dark type on a light
   one, then checks that the ink is sampled and the box snapped on both, that a
   two-tone wordmark still splits into its two runs, that a wrapped block is sized
-  from its height, and that the page-copy filter keeps the footer and drops a
-  small mockup CTA. No vision model, no pipeline, a second or so — run it after
-  touching any of the sampling, wrapping or scope heuristics.
+  from its height, and that the page-copy filter keeps a wide footer and a small
+  wordmark while dropping a narrow caption and an `artwork` block. No vision
+  model, no pipeline, a second or so — run it after touching any of the sampling,
+  wrapping or scope heuristics.
+- **`light`** is the end-to-end guard that `polarity` cannot be: it replays a
+  frozen extraction (`studio/fixtures/light-blocks.json`) against the light
+  reference (`studio/fixtures/light-ref.png`) through the *whole* local pipeline —
+  layout, `mkart` tracing with `text_bg_lum`, Astro build, scoring — and asserts
+  the score stays at or below **6.6** and that all 8 page blocks are emitted as
+  DOM while the 12 artwork blocks are left to the tracer. No vision model, so it
+  is deterministic and free; this is the check that catches a light-design
+  regression (it caught a real one — the 94 px brand wordmark — the first time it
+  ran). `--keep` leaves the job directory for `doctor job <id>`.
 - **`regress`** is the safety net for the *pipeline itself*: it runs the repo's
   own `qa/verify.sh`, which scores each built A/B/C site against its reference
   and asserts the network/stylesheet gates. If a studio change ever disturbed
@@ -223,11 +234,22 @@ Every job also keeps its whole working tree at `studio/data/jobs/<id>/workspace/
 
 ## Notes and limits
 
+- **The target is a real, editable page, not a pixel match.** The studio's job is
+  to rebuild a *photograph of a design* as code — traced art plus live DOM — and
+  the tracer has a band-paint floor of its own. On the shipped A/B/C designs that
+  floor is 2.16 / 2.16 / 2.12 and the hand-tuned sites land at 2.71 / 2.76 /
+  2.99. A first upload whose reference is a photorealistic render (soft shadows,
+  gradients, a non-Inter display face) will sit higher; the light fixture scores
+  ~6.4 and that is the font substitution, not the layout. Judge a build by the
+  rendered page, and treat the number as a band.
 - **First-pass typography is approximate.** The model gives boxes, not font
   metrics, so the generated CSS positions and sizes each block from its box.
   It is a real, editable starting point — not the hand-tuned fidelity of the
   repo's A/B/C examples. Runs are also not bit-identical: the model's boxes move
   a little between calls, so the score varies by roughly ±0.1.
+- **A CTA icon is not reproduced.** The button becomes a DOM element sized to the
+  reference's plate, and its interior is excluded from the trace, so a decorative
+  arrow inside the button is dropped. The label and the plate colour survive.
 - **One build at a time.** Builds are serialized (potrace + Astro are heavy);
   extra uploads queue.
 - Local tool: no auth, and uploads are trusted. The image type is validated and

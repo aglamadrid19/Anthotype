@@ -547,17 +547,17 @@ def build_page_css(blocks: list[Block], background: tuple[int, int, int]) -> str
 
 
 # A block the model called `other` must be at least this big to be page copy
-# rather than a caption inside the artwork.  Backstop for the model's `part`
-# judgement (a small step caption scored against a wrong box is worse than
-# leaving it to the tracer).
+# rather than a caption inside the artwork.  A backstop for the model's `part`
+# judgement: a small step caption scored against a wrong box is worse than
+# leaving it to the tracer.
 #
-# The width floor is what catches illustration captions ("Plant Pigment", 60 px)
-# while every real page line on the reference designs is far wider (the shortest
-# is the 110 px CTA label).  `null` size is allowed: the classification only ever
-# compares a box against these, never consumes them.
+# Only `other` is gated.  `headline`/`subhead`/`tagline` are the page's copy by
+# definition, and a `brand` wordmark or a `cta` label is legitimately small (the
+# reference's brand is 94 px, its button label 110 px).  `other` is the catch-all
+# where a stray illustration caption lands, and those are far narrower than any
+# real page line.
 MIN_OTHER_W = 100
 MIN_OTHER_H = 6
-PRIMARY_ROLES = {"headline", "subhead", "tagline"}
 
 
 def is_page_text(b: Block) -> bool:
@@ -567,10 +567,16 @@ def is_page_text(b: Block) -> bool:
     not become a DOM element: its box is unreliable, so the element lands in the
     wrong place, and its exclusion rect punches a hole through the busiest part
     of the traced art.  Leaving it out lets the tracer reproduce it instead.
+
+    The model's `part` is the primary signal.  The size backstop only applies to
+    `other`, the catch-all role: a wordmark (`brand`) or a button label (`cta`)
+    is legitimately small -- the brand here is a 94 px wordmark -- so gating on
+    size would drop real copy.  `other` is where a stray illustration caption
+    would land, and those are far narrower than any real page line.
     """
     if getattr(b, "part", "page") == "artwork":
         return False
-    if b.role in PRIMARY_ROLES:
+    if b.role != "other":
         return True
     x0, y0, x1, y1 = b.bbox
     return (x1 - x0) >= MIN_OTHER_W and (y1 - y0) >= MIN_OTHER_H

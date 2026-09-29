@@ -7,6 +7,8 @@ When something looks wrong, start here.
                             fonts, the vision model / AntSeed proxy)
     doctor polarity         synthetic light/dark checks for the ink, wrapping and
                             scope heuristics (no vision model, no pipeline)
+    doctor light [--keep]   build the frozen light-background fixture end to end
+                            (no vision model) and score it
     doctor regress          prove the shipped pipeline is intact: run the repo's
                             own qa/verify.sh and report A/B/C PASS/FAIL
     doctor run [png]        run one design end to end, in-process, printing every
@@ -20,6 +22,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -47,7 +50,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
 
 from app import config  # noqa: E402
-from app.config import PIPELINE_DIR, REPO_ROOT  # noqa: E402
+from app.config import PIPELINE_DIR, REPO_ROOT, STUDIO_DIR  # noqa: E402
 
 OK, BAD, WARN = "ok  ", "FAIL", "warn"
 _failures = 0
@@ -271,16 +274,20 @@ def cmd_polarity(_args: list[str]) -> int:
           f"{one[0]:.1f}px over {one[1]} line(s)")
 
     # The extraction scope filter keeps page copy and drops illustration text.
+    # `part=artwork` wins regardless of role; the size backstop applies only to
+    # the ambiguous `other` role.
     from app.extract import Block
-    keep = Block("Open source · Community driven", "other", (49, 481, 318, 507))
-    drop = Block("Plant Pigment", "other", (559, 344, 619, 356))
-    cta = Block("Get Started", "cta", (778, 466, 810, 480))
-    ok = (generate.is_page_text(keep) and not generate.is_page_text(drop)
-          and not generate.is_page_text(cta))
+    footer = Block("Open source · Community driven", "other", (49, 481, 318, 507))
+    caption = Block("Plant Pigment", "other", (559, 344, 619, 356))
+    word = Block("antseed", "brand", (88, 170, 182, 194))    # small but real copy
+    mock = Block("Get Started", "cta", (778, 466, 810, 480), part="artwork")
+    checks = {"wide footer": generate.is_page_text(footer),
+              "small wordmark": generate.is_page_text(word),
+              "small caption": not generate.is_page_text(caption),
+              "artwork CTA": not generate.is_page_text(mock)}
+    ok = all(checks.values())
     _line(OK if ok else BAD, "page copy vs artwork",
-          f"kept footer={generate.is_page_text(keep)}, dropped caption="
-          f"{generate.is_page_text(drop)}, dropped mockup CTA="
-          f"{generate.is_page_text(cta)}")
+          ", ".join(f"{k}={v}" for k, v in checks.items()))
 
     # The studio's vision model + its fallbacks, as configured.
     v = config.vision.describe()
@@ -294,6 +301,80 @@ def cmd_polarity(_args: list[str]) -> int:
     else:
         print("all checks passed")
     return 1 if _failures else 0
+
+
+# --------------------------------------------------------------------------
+# light: the frozen light-background fixture, end to end
+# --------------------------------------------------------------------------
+# A saved extraction (studio/fixtures/light-blocks.json) replayed against a
+# light reference.  The vision model is never called, so this is deterministic
+# and free; it is what guards the polarity work in CI and on a fresh checkout.
+LIGHT_FIXTURE = STUDIO_DIR / "fixtures"
+LIGHT_TARGET = 6.6
+
+
+def cmd_light(args: list[str]) -> int:
+    """Build the light fixture end to end (no model) and score it.
+
+    Set `--keep` to leave the job directory behind for `doctor job <id>`.
+    """
+    ref = LIGHT_FIXTURE / "light-ref.png"
+    blocks = LIGHT_FIXTURE / "light-blocks.json"
+    if not ref.is_file() or not blocks.is_file():
+        print(f"missing fixture: {ref} / {blocks}")
+        return 2
+
+    keep = "--keep" in args
+    print(f"light fixture: {ref.name} + {blocks.name} (no vision model)\n")
+
+    from app.jobs import JobStore
+    from app.runner import PipelineRunner
+
+    runner = PipelineRunner(None)
+    store = JobStore(runner)
+    runner.store = store
+
+    os.environ["STUDIO_FAKE_BLOCKS"] = str(blocks)
+    try:
+        job = store.create(ref.read_bytes(), filename="light-ref.png")
+    finally:
+        os.environ.pop("STUDIO_FAKE_BLOCKS", None)
+
+    last, t0 = None, time.time()
+    while time.time() - t0 < 1800:
+        j = store.get(job.id)
+        if j.stage != last:
+            print(f"  [{j.progress*100:5.1f}%] {j.stage:11s} {j.message}")
+            last = j.stage
+        if j.status in ("done", "failed"):
+            break
+        time.sleep(0.5)
+
+    j = store.get(job.id)
+    print()
+    print(f"status : {j.status}")
+    if j.score is None:
+        print("\nlog tail:")
+        print("\n".join(j.logs[-30:]))
+        return 1
+
+    # The page-copy scope filter is the other thing this guards: the fixture
+    # carries 12 artwork blocks that must NOT become DOM.
+    page = [b for b in (j.blocks or []) if b.get("part") == "page"]
+    art = [b for b in (j.blocks or []) if b.get("part") == "artwork"]
+    ok = j.score <= LIGHT_TARGET and len(page) == 8 and not art
+    print(f"score  : {j.score:.2f}  (target <= {LIGHT_TARGET})")
+    print(f"blocks : {len(page)} page, {len(art)} artwork left to the tracer")
+    print(f"job dir: {j.dir}")
+    if not keep:
+        shutil.rmtree(j.dir, ignore_errors=True)
+    print()
+    if ok:
+        print("light fixture PASS")
+        return 0
+    print("light fixture FAIL (score too high, or scope filter regressed)")
+    print("\n".join(j.logs[-20:]))
+    return 1
 
 
 # --------------------------------------------------------------------------
@@ -401,6 +482,7 @@ def cmd_jobs(_args: list[str]) -> int:
 COMMANDS = {
     "env": cmd_env,
     "polarity": cmd_polarity,
+    "light": cmd_light,
     "regress": cmd_regress,
     "run": cmd_run,
     "job": cmd_job,
