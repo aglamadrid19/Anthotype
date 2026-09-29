@@ -171,8 +171,14 @@ def _check_vision() -> None:
         _line(WARN, "vision model", f"not configured ({v['model']}); set studio/backend/.env")
         return
     base = v["base_url"].rstrip("/")
-    _line(OK, "vision config", f"{v['provider']} {v['model']} @ {base}")
-    # If it is the local AntSeed proxy, prove it is up.
+    fb = v.get("fallbacks") or []
+    _line(OK, "vision config",
+          f"{v['provider']} {v['model']} (+{len(fb)} fallback)" if fb
+          else f"{v['provider']} {v['model']} (no fallback)")
+    # If it is the local AntSeed proxy, prove it is up *and* that a model on it
+    # actually answers -- a reachable proxy says nothing about whether the peer
+    # serving your model is up, which is exactly how a build fails at the
+    # extraction stage.
     if "127.0.0.1" in base or "localhost" in base:
         try:
             import httpx
@@ -182,9 +188,34 @@ def _check_vision() -> None:
                 _line(OK, "vision endpoint", f"reachable, {n} models")
             else:
                 _line(BAD, "vision endpoint", f"HTTP {r.status_code}")
+                return
         except Exception as exc:  # noqa: BLE001
             _line(BAD, "vision endpoint",
                   f"unreachable at {base} ({type(exc).__name__}) -- is the AntSeed proxy running?")
+            return
+
+        # Round-trip the text-only half of the real call for each configured
+        # model, so a peer that does not serve it is caught here rather than
+        # mid-build.
+        for model in config.vision.models:
+            try:
+                live = _probe_model(base, config.vision.api_key, model)
+                _line(OK if live else WARN, f"answers: {model}",
+                      "live" if live else "no reply (the fallbacks will be tried)")
+            except Exception as exc:  # noqa: BLE001
+                _line(WARN, f"answers: {model}",
+                      f"{type(exc).__name__}: {str(exc)[:90]}")
+
+
+def _probe_model(base: str, key: str, model: str) -> bool:
+    """True if `model` returns a chat completion from the proxy right now."""
+    import httpx
+    r = httpx.post(f"{base}/chat/completions",
+                   headers={"Authorization": f"Bearer {key}"},
+                   json={"model": model, "max_tokens": 4, "temperature": 0,
+                         "messages": [{"role": "user", "content": "say ok"}]},
+                   timeout=45)
+    return r.status_code < 400
 
 
 # --------------------------------------------------------------------------
