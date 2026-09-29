@@ -82,13 +82,29 @@ astro build                      # dist/index.html
 
 1. Send the normalized PNG to a vision model with a strict JSON schema prompt →
    blocks `{text, role: headline|subhead|tagline|cta|brand, bbox:[x0,y0,x1,y1]}`.
-2. **Sample colors locally** from the PNG inside each bbox (deterministic).
-3. Generate:
+   The image carries an overlaid, labelled 64 px **coordinate grid**: on a plain
+   mockup the model's boxes are biased by tens of pixels and move between
+   identical calls, which then misplaces the whole text layer. The grid makes
+   them accurate and repeatable. It is sent as WebP — a full-size PNG of the
+   grid is ~1 MB and the local proxy silently drops images that large.
+2. **Normalize roles by size.** The model is not stable about which line is the
+   headline (it labels the largest title `headline` on one call and `brand` on
+   the next); a `brand` block that is one of the largest lines is promoted.
+3. **Refine locally** from the PNG (all deterministic):
+   - snap each box onto the ink actually present, so a few pixels of box error
+     do not become a visible font-size error (size is solved from box width);
+   - split multi-colour runs (white "Ant" + green "Hosting") using the real
+     Inter advance widths to find the boundary;
+   - sample the ink colour of each run;
+   - measure a button's real rectangle — flood-fill for a solid fill, otherwise
+     treat it as an outline button (border ring, transparent interior).
+4. Generate:
    - `content-<id>.json` — `stage` = 1024×768, `markup` with each block
-     absolutely positioned; escaped text.
-   - `<id>.page.css` — per-block absolute position from the bbox, `font-size`
-     from box height, sampled color, Inter stack, same fit-to-viewport script.
-   - `designs/<id>.json` — `box` = full frame, `text` = OCR rects grown by a
+     absolutely positioned; escaped text, one `<span>` per colour run.
+   - `<id>.page.css` — per-block absolute position from the box, `font-size`
+     solved from box width against real Inter metrics, sampled colour, Inter
+     stack, same fit-to-viewport script.
+   - `designs/<id>.json` — `box` = full frame, `text` = box rects grown by a
      safety margin. Over-covering is safe: it only preserves more glow.
 
 The LLM's text boxes double as the `text`-exclusion rects `mkart.py` needs, so
@@ -150,8 +166,13 @@ Every job keeps its working tree (`data/jobs/<id>/workspace/`) and logs
 
 ## Risks
 
-- **Vision box accuracy is the weak link.** Mitigated by growing rects and
-  sampling colors locally; first-pass typography will not match hand-tuned A/B/C.
+- **Vision box accuracy is the weak link.** Mitigated by the coordinate grid,
+  size-based role normalization, and local ink-snapping. Measured against the
+  shipped references the studio now scores **a 2.72 / b 3.16 / c 3.34**, versus
+  hand-tuned 2.71 / 2.76 / 2.99 — A matches, B and C are close. The residual
+  gap is the model's box precision and its collapse of the reference's authored
+  detail (multi-layer glow, per-element tracking) that a one-box-per-run
+  extraction cannot express.
 - **Python 3.14** venv — FastAPI wheels are thin; `studio/.venv` is separate and
   a `python@3.12` fallback is available.
 - **`node_modules` symlink under Astro** — verified in milestone 1; fallback is a

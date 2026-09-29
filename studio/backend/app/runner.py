@@ -176,6 +176,13 @@ class PipelineRunner:
             blocks = extract(ref_png)
         except ExtractError as exc:
             raise RuntimeError(str(exc)) from exc
+        # Keep the model's raw boxes before any local refinement (the CTA box in
+        # particular is rewritten), so a bad extraction can be re-laid-out
+        # without another model call.
+        (JOBS_DIR / jid / "raw-blocks.json").write_text(json.dumps(
+            {"blocks": [{"text": b.text, "role": b.role,
+                         "bbox": [float(v) for v in b.bbox]} for b in blocks]},
+            indent=2) + "\n")
         return generate.decorate(blocks, ref_png, background)
 
     # -- verification ------------------------------------------------------

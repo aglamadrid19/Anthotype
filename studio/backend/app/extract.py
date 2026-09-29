@@ -20,9 +20,11 @@ Providers:
 from __future__ import annotations
 
 import base64
+import io
 import json
 import os
 import re
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,6 +55,20 @@ SYSTEM_PROMPT = (
     "No markdown, no commentary."
 )
 
+# A labelled coordinate grid is overlaid on the image before it is sent.  Boxes
+# read off a plain mockup are badly biased -- on the shipped references the
+# model put the headline tens of pixels below its true position, and moved it
+# again between identical calls -- which then misplaces the whole DOM text
+# layer.  With grid lines every 64 px the same model returns boxes within a few
+# pixels of the real ink, repeatably.
+GRID_STEP = 64
+GRID_NOTE = (
+    f"\n- The image is overlaid with magenta grid lines every {GRID_STEP} px, "
+    "each labelled with its pixel coordinate. Use those labels to report bbox "
+    "in image pixels. The grid is a measurement aid: never transcribe the "
+    "labels or treat the lines as artwork."
+)
+
 
 @dataclass
 class Block:
@@ -61,6 +77,7 @@ class Block:
     bbox: tuple[float, float, float, float]
     color: tuple[int, int, int] | None = None      # ink colour (sampled locally)
     fill: tuple[int, int, int] | None = None       # CTA button fill (sampled locally)
+    runs: list[tuple[str, tuple[int, int, int]]] = field(default_factory=list)
     meta: dict = field(default_factory=dict)
 
 
@@ -68,8 +85,29 @@ class ExtractError(RuntimeError):
     pass
 
 
-def _data_uri(png: Path) -> str:
-    return "data:image/png;base64," + base64.b64encode(png.read_bytes()).decode()
+def _gridded_data_uri(png: Path, step: int = GRID_STEP) -> str:
+    """Data URI with a labelled coordinate grid overlaid, as WebP.
+
+    See GRID_NOTE: the grid is what makes the model's bboxes accurate.
+
+    The encoding matters.  A full-size PNG of the grid is ~1 MB, and the local
+    proxy silently drops images at that size (the model then correctly reports
+    that no image arrived).  WebP is visually lossless at this scale and roughly
+    an eighth of the size, which the proxy delivers every time.
+    """
+    from PIL import Image, ImageDraw
+
+    img = Image.open(png).convert("RGB").copy()
+    d = ImageDraw.Draw(img)
+    for x in range(0, img.width, step):
+        d.line([(x, 0), (x, img.height)], fill=(255, 0, 255), width=1)
+        d.text((x + 2, 2), str(x), fill=(255, 255, 0))
+    for y in range(0, img.height, step):
+        d.line([(0, y), (img.width, y)], fill=(255, 0, 255), width=1)
+        d.text((2, y + 2), str(y), fill=(255, 255, 0))
+    buf = io.BytesIO()
+    img.save(buf, format="WEBP", quality=88, method=4)
+    return "data:image/webp;base64," + base64.b64encode(buf.getvalue()).decode()
 
 
 def _parse_blocks(raw: str) -> list[Block]:
@@ -115,10 +153,10 @@ def _openai(png: Path) -> str:
         "model": vision.model,
         "temperature": 0,
         "messages": [
-            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "system", "content": SYSTEM_PROMPT + GRID_NOTE},
             {"role": "user", "content": [
                 {"type": "text", "text": "Extract the text blocks."},
-                {"type": "image_url", "image_url": {"url": _data_uri(png)}},
+                {"type": "image_url", "image_url": {"url": _gridded_data_uri(png)}},
             ]},
         ],
     }
@@ -140,10 +178,10 @@ def _anthropic(png: Path) -> str:
     payload = {
         "model": vision.model,
         "max_tokens": 2048,
-        "system": SYSTEM_PROMPT,
+        "system": SYSTEM_PROMPT + GRID_NOTE,
         "messages": [{"role": "user", "content": [
-            {"type": "image", "source": {"type": "base64", "media_type": "image/png",
-                                         "data": _data_uri(png).split(",", 1)[1]}},
+            {"type": "image", "source": {"type": "base64", "media_type": "image/webp",
+                                         "data": _gridded_data_uri(png).split(",", 1)[1]}},
             {"type": "text", "text": "Extract the text blocks."},
         ]}],
     }
@@ -156,6 +194,30 @@ def _anthropic(png: Path) -> str:
         raise ExtractError(f"vision API {resp.status_code}: {resp.text[:400]}")
     parts = resp.json().get("content", [])
     return "".join(p.get("text", "") for p in parts if p.get("type") == "text")
+
+
+def normalize_roles(blocks: list[Block]) -> list[Block]:
+    """Make the roles consistent with the blocks' relative size.
+
+    The model is not stable about which line is the headline: on the same image
+    it labels the largest title "headline" on one call and "brand" on the next.
+    A brand wordmark is always *small*, so any block the model called `brand`
+    that is actually one of the largest lines is promoted to `headline`.  Roles
+    drive both the element (`h1` vs `div`) and the type scale, so this matters
+    more than the label alone suggests.
+    """
+    sized = [b for b in blocks if b.text]
+    if not sized:
+        return blocks
+    heights = sorted((b.bbox[3] - b.bbox[1]) for b in sized)
+    tallest = heights[-1]
+    if tallest <= 0:
+        return blocks
+    for b in blocks:
+        h = b.bbox[3] - b.bbox[1]
+        if b.role == "brand" and h >= 0.7 * tallest:
+            b.role = "headline"
+    return blocks
 
 
 def extract(png: Path) -> list[Block]:
@@ -180,8 +242,22 @@ def extract(png: Path) -> list[Block]:
             "and VISION_API_KEY in studio/backend/.env (or use VISION_PROVIDER=stub)"
         )
 
-    raw = _anthropic(png) if provider == "anthropic" else _openai(png)
-    blocks = _parse_blocks(raw)
-    if not blocks:
-        raise ExtractError("the model found no text blocks in this design")
-    return blocks
+    # The proxy occasionally drops the image and the model then (correctly)
+    # refuses to invent boxes.  That is a transport failure, not a design with
+    # no text, so retry before giving up.
+    last: Exception | None = None
+    for attempt in range(3):
+        raw = _anthropic(png) if provider == "anthropic" else _openai(png)
+        try:
+            blocks = _parse_blocks(raw)
+        except ExtractError as exc:
+            last = exc
+            if attempt < 2:
+                time.sleep(1.5 * (attempt + 1))
+            continue
+        if blocks:
+            return normalize_roles(blocks)
+        last = ExtractError("the model found no text blocks in this design")
+        if attempt < 2:
+            time.sleep(1.5 * (attempt + 1))
+    raise last or ExtractError("the model found no text blocks in this design")

@@ -20,7 +20,8 @@ from PIL import Image
 
 from .config import STAGE_H, STAGE_W
 from .extract import Block
-from .fontmetrics import cap_top_offset, fit_font_size
+from .fontmetrics import (cap_top_offset, char_at_x_fraction, fit_font_size,
+                          ink_height_em)
 
 # Safety growth on the mkart text-exclusion rects (stage px).
 TEXT_RECT_GROW = 6
@@ -48,6 +49,61 @@ def sample_ink(arr: np.ndarray, bbox: tuple[float, float, float, float],
         return tuple(int(v) for v in np.median(patch, axis=0))
     ink = patch[dist >= np.percentile(dist, 70)]
     return tuple(int(v) for v in np.median(ink, axis=0))
+
+
+def sample_runs(arr: np.ndarray, bbox: tuple[float, float, float, float], text: str,
+                background: tuple[int, int, int], weight: int = 400
+                ) -> list[tuple[str, tuple[int, int, int]]]:
+    """Split a block into colour runs, e.g. white "Ant" + green "Hosting".
+
+    A vision model reports one box per text run, but a run may be painted in two
+    colours (a neutral wordmark prefix and a coloured suffix).  A single median
+    sample collapses those to one colour, which reads as a visible error.  The
+    ink is clustered into a neutral and a saturated group; when both are
+    substantial the x boundary between them is mapped back to a character index
+    with the real Inter advance widths, giving [(run_text, colour), ...].
+    """
+    x0, y0, x1, y1 = (int(round(v)) for v in bbox)
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(STAGE_W, x1), min(STAGE_H, y1)
+    sub = arr[y0:y1, x0:x1]
+    if sub.size == 0 or not text:
+        return [(text, sample_ink(arr, bbox, background))]
+
+    dist = np.linalg.norm(sub - np.array(background, dtype=np.float32), axis=2)
+    ink = dist > max(28.0, float(np.percentile(dist, 60)))
+    if int(ink.sum()) < 20:
+        return [(text, sample_ink(arr, bbox, background))]
+
+    px = sub[ink]
+    core = px[px.mean(axis=1) >= np.percentile(px.mean(axis=1), 65)]
+    sat = core.max(axis=1) - core.min(axis=1)
+    neutral, coloured = core[sat < 26], core[sat >= 26]
+    # Both groups must be real, not a few stray antialiased pixels.  Measured by
+    # pixel count AND by horizontal extent: a coloured suffix must occupy a
+    # meaningful slice of the line, not just a highlight on one glyph.
+    w = max(1, sub.shape[1])
+    if len(neutral) < 0.10 * len(core) or len(coloured) < 0.10 * len(core):
+        pick = neutral if len(neutral) >= len(coloured) else coloured
+        if len(pick) == 0:
+            pick = core
+        return [(text, tuple(int(v) for v in np.median(pick, axis=0)))]
+
+    # The saturated pixels mark where the coloured run starts.
+    mask_sat = ink & ((sub.max(axis=2) - sub.min(axis=2)) >= 26)
+    mask_neu = ink & ~mask_sat
+    sat_cols = np.nonzero(mask_sat.sum(axis=0) > 0)[0]
+    neu_cols = np.nonzero(mask_neu.sum(axis=0) > 0)[0]
+    if len(sat_cols) == 0 or len(neu_cols) == 0:
+        return [(text, tuple(int(v) for v in np.median(core, axis=0)))]
+    if len(sat_cols) < 0.12 * w or len(neu_cols) < 0.12 * w:
+        pick = neutral if len(neutral) >= len(coloured) else coloured
+        return [(text, tuple(int(v) for v in np.median(pick, axis=0)))]
+    frac = float(sat_cols.min()) / w
+    idx = char_at_x_fraction(text, frac, weight)
+    idx = max(1, min(len(text) - 1, idx))
+    return [(text[:idx], tuple(int(v) for v in np.median(neutral, axis=0))),
+            (text[idx:], tuple(int(v) for v in np.median(coloured, axis=0)))]
 
 
 def sample_fill(arr: np.ndarray, bbox: tuple[float, float, float, float],
@@ -147,8 +203,13 @@ def refine_button_bbox(arr: np.ndarray, bbox: tuple[float, float, float, float],
         return bbox
     fx0, fy0, fx1, fy1 = found
     bw, bh = fx1 - fx0, fy1 - fy0
-    # Sanity: the button must contain the label and be a plausible size.
-    if bw < (x1 - x0) or bh < (y1 - y0) or bw > 4 * (x1 - x0) + 80:
+    # Sanity: the button must contain the label and be a plausible size.  Both
+    # dimensions are checked -- a fill colour close to the background can leak
+    # out of the button and flood the whole frame, which the width bound alone
+    # would not catch.
+    if bw < (x1 - x0) or bh < (y1 - y0):
+        return bbox
+    if bw > 4 * (x1 - x0) + 80 or bh > 4 * (y1 - y0) + 80:
         return bbox
     return (wx0 + fx0, wy0 + fy0, wx0 + fx1, wy0 + fy1)
 
@@ -168,9 +229,90 @@ def _role_rank(role: str) -> int:
             "cta": 4, "other": 5}.get(role, 5)
 
 
+def measure_button_bbox(arr: np.ndarray, label: tuple[float, float, float, float],
+                        background: tuple[int, int, int],
+                        padx: int = 90, pady: int = 30) -> tuple[int, int, int, int] | None:
+    """Full button rectangle for an *outline* (bordered) button.
+
+    A solid-fill button is found by flood-filling its fill colour
+    (`refine_button_bbox`), but an outline button has no fill to flood -- only a
+    border.  Its border and label are the only non-background pixels around the
+    label box, so the bounding box of that ink (measured in a window wide enough
+    to include the whole button, but not so tall that neighbouring lines leak
+    in) is the button.
+    """
+    x0, y0, x1, y1 = (int(round(v)) for v in label)
+    wx0, wy0 = max(0, x0 - padx), max(0, y0 - pady)
+    wx1, wy1 = min(STAGE_W, x1 + padx), min(STAGE_H, y1 + pady)
+    win = arr[wy0:wy1, wx0:wx1]
+    if win.size == 0:
+        return None
+    dist = np.linalg.norm(win - np.array(background, dtype=np.float32), axis=2)
+    mask = dist > 22.0
+    if not mask.any():
+        return None
+    ys, xs = np.nonzero(mask)
+    bx0, by0 = wx0 + int(xs.min()), wy0 + int(ys.min())
+    bx1, by1 = wx0 + int(xs.max()) + 1, wy0 + int(ys.max()) + 1
+    # The button must contain the label and be a plausible size.
+    if bx1 - bx0 < x1 - x0 or by1 - by0 < y1 - y0:
+        return None
+    if (bx1 - bx0) > 4 * (x1 - x0) + 80 or (by1 - by0) > 4 * (y1 - y0) + 80:
+        return None
+    return (bx0, by0, bx1, by1)
+
+
+def snap_to_ink(arr: np.ndarray, bbox: tuple[float, float, float, float],
+                background: tuple[int, int, int], pad: int = 10,
+                thr: float = 40.0) -> tuple[float, float, float, float]:
+    """Tighten a model box onto the glyphs actually present in the reference.
+
+    Even with the coordinate grid the model's boxes are a few pixels loose or
+    shifted.  The type is the only ink inside its own box, so measuring it
+    locally removes that residual error -- and because font-size is solved from
+    the box width, a few pixels of width error becomes a visible size error.
+    """
+    x0, y0, x1, y1 = bbox
+    wx0, wy0 = max(0, int(x0) - pad), max(0, int(y0) - pad)
+    wx1, wy1 = min(STAGE_W, int(x1) + pad), min(STAGE_H, int(y1) + pad)
+    if wx1 - wx0 < 3 or wy1 - wy0 < 3:
+        return bbox
+    sub = arr[wy0:wy1, wx0:wx1]
+    ink = sub.mean(axis=2) > (np.array(background, dtype=np.float32).mean() + thr)
+    if not ink.any():
+        return bbox
+    # Keep only the ink connected to the reported box, so a neighbouring line
+    # cannot drag the fit.
+    seed = np.zeros(ink.shape, bool)
+    seed[max(0, int(y0) - wy0):int(y1) - wy0,
+         max(0, int(x0) - wx0):int(x1) - wx0] = True
+    region = seed & ink
+    if not region.any():
+        return bbox
+    for _ in range(500):
+        grown = region.copy()
+        grown[1:, :] |= region[:-1, :]
+        grown[:-1, :] |= region[1:, :]
+        grown[:, 1:] |= region[:, :-1]
+        grown[:, :-1] |= region[:, 1:]
+        grown &= ink
+        if np.array_equal(grown, region):
+            break
+        region = grown
+    ys, xs = np.nonzero(region)
+    sx0, sy0 = wx0 + int(xs.min()), wy0 + int(ys.min())
+    sx1, sy1 = wx0 + int(xs.max()) + 1, wy0 + int(ys.max()) + 1
+    # Refuse a fit that clearly left the box (it caught a different element).
+    if sx1 - sx0 < 0.4 * (x1 - x0) or sy1 - sy0 < 0.4 * (y1 - y0):
+        return bbox
+    if sx1 - sx0 > 2.0 * (x1 - x0) + 20 or sy1 - sy0 > 2.0 * (y1 - y0) + 20:
+        return bbox
+    return (float(sx0), float(sy0), float(sx1), float(sy1))
+
+
 def decorate(blocks: list[Block], ref_png: Path,
              background: tuple[int, int, int]) -> list[Block]:
-    """Fill in each block's ink colour (and a CTA's fill) from the reference."""
+    """Fill in each block's ink colour(s) (and a CTA's fill) from the reference."""
     arr = _as_array(ref_png)
     for b in blocks:
         if b.role == "cta":
@@ -181,13 +323,29 @@ def decorate(blocks: list[Block], ref_png: Path,
             # The label box is mostly label, so the fill must be sampled from a
             # wider window where the button dominates.
             b.fill = sample_fill(arr, win, background)
-            b.color = sample_contrast(arr, b.bbox, b.fill)
             # Keep the label box (font-size comes from it) and grow the block to
             # the real button so the DOM button and its exclusion rect match.
             b.meta["label_bbox"] = b.bbox
-            b.bbox = refine_button_bbox(arr, b.bbox, b.fill)
+            solid = refine_button_bbox(arr, b.bbox, b.fill)
+            if solid != tuple(b.bbox):
+                # A solid fill region was found: the label is the minority colour
+                # inside it, so measure contrast against the fill.
+                b.color = sample_contrast(arr, b.bbox, b.fill)
+                b.bbox = solid
+            else:
+                # No solid fill to flood: the button is an outline.  Its border
+                # and label are the only ink, so measure the button from that,
+                # and take the label colour from the label box itself.
+                found = measure_button_bbox(arr, b.bbox, background)
+                if found:
+                    b.bbox = found
+                    b.meta["outline"] = True
+                b.color = sample_ink(arr, b.meta["label_bbox"], background)
+                b.meta["border"] = b.color
         else:
-            b.color = sample_ink(arr, b.bbox, background)
+            b.bbox = snap_to_ink(arr, b.bbox, background)
+            b.runs = sample_runs(arr, b.bbox, b.text, background)
+            b.color = b.runs[0][1] if len(b.runs) == 1 else None
     return blocks
 
 
@@ -195,10 +353,17 @@ def _element(block: Block, i: int) -> str:
     tag = {"headline": "h1", "subhead": "h2", "tagline": "p",
            "brand": "div", "cta": "a"}.get(block.role, "p")
     cls = f"blk blk-{i}"
-    text = html.escape(block.text)
+    if block.runs and len(block.runs) > 1:
+        # A multi-colour run: emit one span per colour so the wordmark prefix
+        # can be neutral while the suffix is coloured.
+        inner = "".join(
+            f'<span style="color: {_hex(c)}">{html.escape(t)}</span>'
+            for t, c in block.runs)
+    else:
+        inner = html.escape(block.text)
     if tag == "a":
-        return f'<a class="{cls} cta" href="#">{text}</a>'
-    return f'<{tag} class="{cls}">{text}</{tag}>'
+        return f'<a class="{cls} cta" href="#">{inner}</a>'
+    return f'<{tag} class="{cls}">{inner}</{tag}>'
 
 
 def build_markup(blocks: list[Block]) -> str:
@@ -242,19 +407,32 @@ def build_page_css(blocks: list[Block], background: tuple[int, int, int]) -> str
         x0, y0, x1, y1 = b.bbox
         if b.role == "cta":
             weight = 600
-            fs = fit_font_size(b.text, (b.meta.get("label_bbox") or b.bbox)[2]
-                               - (b.meta.get("label_bbox") or b.bbox)[0],
-                               y1 - y0, b.role, weight)
+            label = b.meta.get("label_bbox") or b.bbox
+            fs = fit_font_size(b.text, label[2] - label[0], label[3] - label[1],
+                               b.role, weight)
             color = _hex(b.color or (255, 255, 255))
-            fill = _hex(b.fill or (24, 196, 124))
             left, top = x0, y0
             bw, bh = x1 - x0, y1 - y0
-            lines += [
-                f".blk-{i} {{ left: {left:.0f}px; top: {top:.0f}px; width: {bw:.0f}px;",
-                f"  height: {bh:.0f}px; display: inline-flex; align-items: center;",
-                f"  justify-content: center; border-radius: 14px; text-decoration: none;",
-                f"  background: {fill}; color: {color}; font-size: {fs:.1f}px; font-weight: {weight}; }}",
-            ]
+            if b.meta.get("outline"):
+                # An outline button has no fill plate: a border ring plus the
+                # label.  Painting an opaque fill here would be a large, wrong
+                # patch of colour, so the interior stays transparent.
+                border = _hex(b.meta.get("border") or b.color or (24, 196, 124))
+                lines += [
+                    f".blk-{i} {{ left: {left:.0f}px; top: {top:.0f}px; width: {bw:.0f}px;",
+                    f"  height: {bh:.0f}px; display: inline-flex; align-items: center;",
+                    f"  justify-content: center; border-radius: 15px; text-decoration: none;",
+                    f"  border: 2px solid {border}; background: transparent;",
+                    f"  color: {color}; font-size: {fs:.1f}px; font-weight: {weight}; }}",
+                ]
+            else:
+                fill = _hex(b.fill or (24, 196, 124))
+                lines += [
+                    f".blk-{i} {{ left: {left:.0f}px; top: {top:.0f}px; width: {bw:.0f}px;",
+                    f"  height: {bh:.0f}px; display: inline-flex; align-items: center;",
+                    f"  justify-content: center; border-radius: 14px; text-decoration: none;",
+                    f"  background: {fill}; color: {color}; font-size: {fs:.1f}px; font-weight: {weight}; }}",
+                ]
         else:
             weight = 400
             fs = estimate_font_size(b, weight)

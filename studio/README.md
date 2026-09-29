@@ -79,6 +79,7 @@ Open **http://127.0.0.1:5173**, drop in a design PNG, and download the project.
 
 ```
 upload ─▶ normalize to 1024×768 ─▶ vision LLM extracts text + boxes
+       ─▶ refine locally (snap to ink, colour runs, button measure)
        ─▶ generate content-<id>.json, <id>.page.css, designs/<id>.json
        ─▶ qa/mkart.py  (trace the artwork with potrace)
        ─▶ gen-page.mjs (compose the self-contained page)
@@ -96,6 +97,22 @@ never collide and the shipped A/B/C regression suite is never touched.
 
 The vision model's text boxes double as the `text`-exclusion rectangles the
 tracer needs, so the artwork never bakes in a rasterised copy of the words.
+
+### Boxes are the hard part
+
+The model's boxes are what everything else is built from, and they are only
+approximate. Two things make them usable:
+
+- the image sent to the model has a **labelled 64 px coordinate grid** overlaid
+  (a plain mockup gives boxes biased by tens of pixels that move between
+  identical calls);
+- each box is then **snapped onto the ink actually in the reference**, and its
+  colours sampled from that ink — including splitting a two-tone run such as a
+  white "Ant" plus green "Hosting".
+
+Measured against the shipped references the studio scores **a 2.72 / b 3.16 /
+c 3.34** (hand-tuned A/B/C are 2.71 / 2.76 / 2.99). A matches; B and C are a
+real, editable starting point rather than the hand-authored fidelity.
 
 ## API
 
@@ -153,7 +170,8 @@ Every job also keeps its whole working tree at `studio/data/jobs/<id>/workspace/
 - **First-pass typography is approximate.** The model gives boxes, not font
   metrics, so the generated CSS positions and sizes each block from its box.
   It is a real, editable starting point — not the hand-tuned fidelity of the
-  repo's A/B/C examples.
+  repo's A/B/C examples. Runs are also not bit-identical: the model's boxes move
+  a little between calls, so the score varies by roughly ±0.1.
 - **One build at a time.** Builds are serialized (potrace + Astro are heavy);
   extra uploads queue.
 - Local tool: no auth, and uploads are trusted. The image type is validated and

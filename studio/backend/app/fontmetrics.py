@@ -51,6 +51,54 @@ def text_width_em(text: str, weight: int = DEFAULT_WEIGHT) -> float:
     return total / upm
 
 
+def char_at_x_fraction(text: str, frac: float, weight: int = DEFAULT_WEIGHT) -> int:
+    """Index of the character whose advance interval contains `frac` of the line.
+
+    Lets a measured pixel boundary inside a text box be turned into a split
+    point in the string (e.g. white "Ant" then green "Hosting"): the characters
+    before the returned index are the first run.
+    """
+    if frac <= 0:
+        return 0
+    total = text_width_em(text, weight)
+    if total <= 0:
+        return 0
+    acc = 0.0
+    for i, ch in enumerate(text):
+        acc += text_width_em(ch, weight)
+        if acc / total > frac:
+            return i
+    return len(text)
+
+
+def ink_height_em(text: str, weight: int = DEFAULT_WEIGHT) -> float:
+    """Height of the glyphs `text` actually draws, in em.
+
+    The box a vision model reports is the *ink* box, so this is what a
+    box-height estimate must divide by -- using the cap height alone is wrong
+    for any string with a descender ("Hosting") or a tall lowercase letter.
+    """
+    font = _font(weight)
+    upm = font["head"].unitsPerEm
+    cmap = font.getBestCmap()
+    glyf = font.get("glyf")
+    if glyf is None:
+        return cap_height_em(weight)
+    top = bottom = None
+    for ch in text:
+        gname = cmap.get(ord(ch))
+        if gname is None:
+            continue
+        glyph = glyf[gname]
+        if glyph.numberOfContours == 0:
+            continue
+        top = glyph.yMax if top is None else max(top, glyph.yMax)
+        bottom = glyph.yMin if bottom is None else min(bottom, glyph.yMin)
+    if top is None or bottom is None:
+        return cap_height_em(weight)
+    return (top - bottom) / upm
+
+
 def cap_height_em(weight: int = DEFAULT_WEIGHT) -> float:
     font = _font(weight)
     upm = font["head"].unitsPerEm
@@ -77,8 +125,10 @@ def fit_font_size(text: str, box_w: float, box_h: float, role: str,
         w_em = text_width_em(text, weight)
         if w_em > 0:
             return max(8.0, min(400.0, box_w / w_em))
-    # No text (or no width): approximate from the box height.
-    return max(11.0, min(220.0, box_h / cap_height_em(weight)))
+    # No text (or no width): approximate from the box height.  The *ink* height,
+    # not the cap height, is what the reported box spans.
+    h_em = ink_height_em(text, weight) if text else cap_height_em(weight)
+    return max(11.0, min(220.0, box_h / h_em))
 
 
 def cap_top_offset(fs: float, weight: int = DEFAULT_WEIGHT) -> float:
