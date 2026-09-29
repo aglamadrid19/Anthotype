@@ -54,8 +54,21 @@ class Vision:
     def __init__(self) -> None:
         self.provider = os.environ.get("VISION_PROVIDER", "openai")
         self.model = os.environ.get("VISION_MODEL", "")
+        # Comma-separated fallbacks tried in order when a model/peer fails.
+        self.fallback_models = [m.strip() for m in
+                                os.environ.get("VISION_FALLBACK_MODELS", "").split(",")
+                                if m.strip()]
         self.api_key = os.environ.get("VISION_API_KEY", "")
         self.base_url = os.environ.get("VISION_BASE_URL", "https://api.openai.com/v1")
+
+    @property
+    def models(self) -> list[str]:
+        """The configured model followed by its fallbacks, de-duplicated."""
+        seen: list[str] = []
+        for m in [self.model, *self.fallback_models]:
+            if m and m not in seen:
+                seen.append(m)
+        return seen
 
     @property
     def configured(self) -> bool:
@@ -65,6 +78,7 @@ class Vision:
         return {
             "provider": self.provider,
             "model": self.model or "(unset)",
+            "fallbacks": self.fallback_models,
             "configured": self.configured,
             "base_url": self.base_url,
         }

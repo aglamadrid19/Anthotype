@@ -12,7 +12,7 @@ and the two invariants (potrace polarity, cumulative masks) are untouched.
 
 | | |
 |---|---|
-| Text source | Auto-extract with a **vision LLM** — the local **AntSeed proxy** (`127.0.0.1:8377`), model `deepseek-v4-1-flash` |
+| Text source | Auto-extract with a **vision LLM** — the local **AntSeed proxy** (`127.0.0.1:8377`), model `glm-5.3-flash` (with fallbacks) |
 | Output | **Full Astro project zip** + self-contained `index.html` |
 | Scope | **Local tool** on this Mac; no auth, no cloud storage |
 | Stack | **FastAPI** backend + **React/Vite** frontend |
@@ -127,14 +127,16 @@ Zip = full Astro project: `src/pages/index.astro`, `astro.config.mjs`
 ## Config
 
 `studio/backend/.env` (gitignored): `VISION_PROVIDER`, `VISION_MODEL`,
-`VISION_API_KEY`, `VISION_BASE_URL`. A provider-agnostic OpenAI-compatible
-adapter is used, so any vision model can be dropped in.
+`VISION_FALLBACK_MODELS`, `VISION_API_KEY`, `VISION_BASE_URL`. A
+provider-agnostic OpenAI-compatible adapter is used, so any vision model can be
+dropped in.
 
 On this machine the provider is the local **AntSeed proxy**:
 
 ```sh
 VISION_PROVIDER=openai
-VISION_MODEL=deepseek-v4-1-flash
+VISION_MODEL=glm-5.3-flash
+VISION_FALLBACK_MODELS=deepseek-v4-1-flash,gpt-5.6-luna
 VISION_API_KEY=antseed-local
 VISION_BASE_URL=http://127.0.0.1:8377/v1
 ```

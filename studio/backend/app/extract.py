@@ -157,9 +157,10 @@ def _parse_blocks(raw: str) -> list[Block]:
     return out
 
 
-def _openai(png: Path) -> str:
+def _chat_once(model: str, png: Path) -> str:
+    """One OpenAI-compatible vision call.  Raises ExtractError on any failure."""
     payload = {
-        "model": vision.model,
+        "model": model,
         "temperature": 0,
         "messages": [
             {"role": "system", "content": SYSTEM_PROMPT + GRID_NOTE},
@@ -181,6 +182,25 @@ def _openai(png: Path) -> str:
         return data["choices"][0]["message"]["content"] or ""
     except (KeyError, IndexError, TypeError) as exc:
         raise ExtractError(f"unexpected response shape: {str(data)[:300]}") from exc
+
+
+def _openai(png: Path) -> str:
+    """Call the configured model, falling back to the next candidate on failure.
+
+    On a peer-to-peer marketplace a request can fail for reasons that have
+    nothing to do with the request -- the chosen peer does not serve the model,
+    is offline, or is out of credit.  Retrying the same model can land on the
+    same bad peer, so the fallbacks are *different* models that are known to
+    handle this task; the first reply that parses wins.
+    """
+    tried: list[str] = []
+    for model in vision.models:
+        try:
+            return _chat_once(model, png)
+        except (ExtractError, httpx.HTTPError) as exc:
+            tried.append(f"{model}: {exc}")
+            continue
+    raise ExtractError("no vision model answered -- " + " | ".join(tried))
 
 
 def _anthropic(png: Path) -> str:
