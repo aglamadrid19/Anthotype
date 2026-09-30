@@ -5,22 +5,34 @@
 
 This is a software anthotype: a picture goes in, a real website comes out, and
 the picture is not part of the result. The reference image is **input** to
-recover geometry, never an embedded asset — by the time the page ships, the
-image itself has been entirely consumed.
+recover geometry and colour, never an embedded asset.
 
-Turn a flat design PNG into a **real, code-native website** — DOM text, CSS and
-SVG geometry, with no raster images in the output.
+Turn a flat design PNG into a **real, code-native website** — a responsive,
+semantic page with DOM text, CSS and traced SVG geometry, and no raster images
+in the output.
 
-The output is not a screenshot. Every glyph is selectable text, every shape is a
-vector path, and the page scales, re-colours and animates like any other site.
+## The north star: a website, not a poster
 
-This repo contains the pipeline plus three fully-worked examples (A/B/C) that
-demonstrate it end to end and act as the regression suite.
+The output is **not a pixel copy of the mockup**, and it is not a screenshot.
+It is a website:
+
+- **The artwork** is traced into real vector geometry (the landing page's
+  decorative backdrop).
+- **The page** is semantic and responsive — `header`, `nav`, a hero, one
+  `section` per page region, a `footer` — in normal document flow, with a
+  role-based type scale and real links.
+- **The copy** is authored DOM text in the site's own type, read from the
+  reference by a vision model. The reference's own typeface is *not*
+  reproduced; imitating it glyph-for-glyph is not the art of the landing page.
+
+The reference PNG is consumed entirely: by the time the page ships there is no
+raster image left in it.
 
 ## What it does
 
-The reference is exposed, banded, and traced; the pigment is CSS; the fixer is
-Astro. Nothing of the original plate survives into the print.
+The reference is exposed, banded, and traced; the palette is sampled; the page
+is assembled as semantic HTML. Nothing of the original plate survives into the
+site as a bitmap.
 
 ```
 design.png
@@ -28,16 +40,58 @@ design.png
    ├─ qa/mkart.py        band the artwork by luminance, trace each band to SVG
    │                     paths with potrace, paint darkest-first         -> art.svg
    │
-   ├─ content.json       the text layer: headline, tagline, CTA (real DOM)
-   │  <v>.page.css       type metrics and layout, tuned against the reference
+   ├─ vision model       recover the page's sections, roles and copy
+   │  content-<n>.json   the page markup (semantic sections, real DOM)
+   │  <n>.page.css       the stylesheet (flow layout, role-based type scale)
    │
-   ├─ gen-page.mjs       compose  art + content + css  into one self-contained
-   │                     page (fonts inlined, no network requests)       -> page.html
+   ├─ gen-page.mjs       compose  art + page  into one self-contained file
+   │                     (fonts inlined, no network requests)            -> page.html
    │
    ├─ to-astro.mjs       hand that page to the Astro project
    │
    └─ astro build        -> dist/index.html          ← the shipped artifact
 ```
+
+## Two measures, not one
+
+There used to be a single number — whole-page mean-abs-pixel-difference against
+the reference — and the text layer was tuned against it. That target is
+unwinnable by construction: the last measurable error was *font substitution*
+(the reference's typeface is not the vendored one), which no amount of sizing,
+weight or colour tuning removes. So the metric is now split:
+
+| layer | how it is judged |
+|---|---|
+| **the artwork** | pixel fidelity over the **art region** (the page-copy rects masked out). This is the moat — the tracer's job. |
+| **the website** | structure: landmarks, sections, one `h1`, resolving links, flow layout, and reflow at phone/tablet/desktop widths. |
+
+`studio/backend/app/structure.py` reads the built page and reports the second;
+`verify.py` reports the first. Neither is collapsed into the other.
+
+For a `"page"` layout the art score is taken by **rendering the traced SVG by
+itself** at 1024×768 against the reference, not by screenshotting the reflowing
+page: a responsive document's first viewport is a layout choice, not a tracing
+result, so scoring it would measure the layout instead of the artwork. The
+page-wide number is still reported alongside it (`whole_score`) for reference.
+The A/B/C posters — fixed stages — keep scoring the page screenshot, which *is*
+their artwork's frame.
+
+## The tracer's regression suite (A/B/C)
+
+The three AntHosting designs are the tracer's **regression suite**, not a
+website: they are the fixed 1024×768 posters the tracer has always been scored
+against. `gen-page.mjs` keeps them on the original fixed `stage` (a design with
+no `<!--ART-->` placeholder, or `"layout": "poster"`, builds as a poster).
+
+Mean absolute pixel difference against the reference (1024×768, lower is better):
+
+| | naive hand-authored art | **this pipeline** | payload |
+|---|---|---|---|
+| A | 12.17 | **2.71** | 6.4 MB / 870 KB gz |
+| B | 16.92 | **2.76** | 3.4 MB / 523 KB gz |
+| C | 15.09 | **2.99** | 7.7 MB / 1051 KB gz |
+
+Scores are stable to ±0.01 across repeated runs; `qa/verify.sh` enforces them.
 
 ## The one fact that matters most (the polarity rule)
 
@@ -52,19 +106,6 @@ than the disjoint band `{e_i <= lum < e_{i+1}}`. Painted darkest-first the two
 are mathematically identical, but each cumulative mask is one solid nested region
 instead of a scatter of 1px slivers — potrace reproduces it far better, with no
 seams, at roughly half the file size.
-
-## Results on the three examples
-
-Mean absolute pixel difference against the reference (1024×768, lower is better):
-
-| | naive hand-authored art | **this pipeline** | payload |
-|---|---|---|---|
-| A | 12.17 | **2.71** | 6.4 MB / 870 KB gz |
-| B | 16.92 | **2.76** | 3.4 MB / 523 KB gz |
-| C | 15.09 | **2.99** | 7.7 MB / 1051 KB gz |
-
-`pct>30` (share of pixels off by more than 30/255) is 1.13% / 1.59% / 1.57%.
-Scores are stable to ±0.01 across repeated runs; `qa/verify.sh` enforces them.
 
 ## Quick start
 
@@ -93,9 +134,10 @@ cp studio/backend/.env.example studio/backend/.env   # set your vision-model key
 
 Upload a design PNG, watch the pipeline run stage by stage, then download the
 code-native site (a single self-contained `index.html` plus the full Astro
-project). Text is extracted from the reference with a vision model; each job
-runs in its own isolated copy of the pipeline, so the A/B/C regression suite is
-never touched. See `studio/README.md`.
+project). A vision model recovers the page's **structure and copy** — its
+sections, reading order and text — which is emitted as a responsive, semantic
+page; each job runs in its own isolated copy of the pipeline, so the A/B/C
+regression suite is never touched. See `studio/README.md`.
 
 ## Adding a new design
 
@@ -109,8 +151,8 @@ python qa/newdesign.py mydesign path/to/design.png      # config + ref + content
 
 That writes `designs/mydesign.json` (the only per-design config), copies the
 reference to `qa/ref-mydesign.png`, creates `content-mydesign.json` and
-`mydesign.page.css` for your copy and layout, and scaffolds a ready-to-build
-Astro project at `sites/variant-mydesign/`. Then:
+`mydesign.page.css` for your page, and scaffolds a ready-to-build Astro project
+at `sites/variant-mydesign/`. Then:
 
 ```sh
 python qa/mkart.py mydesign --out mydesign.svg          # trace the artwork
@@ -119,7 +161,13 @@ node gen-page.mjs mydesign && node to-astro.mjs mydesign
 ./qa/verify.sh mydesign
 ```
 
-Only two things in `designs/mydesign.json` are genuinely per-design and worth
+A design's `layout` chooses the page shape: **`"page"`** (the default for
+scaffolded designs) emits a responsive website with the traced art as the hero
+backdrop; **`"poster"`** keeps the historical fixed 1024×768 stage — which is
+what A/B/C use, because they are the tracer's regression suite rather than a
+website.
+
+Two things in `designs/mydesign.json` are genuinely per-design and worth
 checking by hand:
 
 - **`box`** — the artwork region. Everything inside it is repainted by traced
@@ -143,8 +191,8 @@ automatically in `build.sh`, `bootstrap.sh`, the preview gallery at
 pipeline/
   lib/designs.mjs      THE design registry: enumerates designs/*.json for every
                        other tool (list / site / show). Single source of truth.
-  designs/<n>.json     per-design config: ref, site, content, target, trace box,
-                       text rects, tracing params, optional regions
+  designs/<n>.json     per-design config: ref, site, content, layout, target,
+                       trace box, text rects, tracing params, optional regions
   qa/INDEX.md          what every tool does, and which ones matter
   qa/mkart.py          the art tracer (the heart of this repo)
   qa/newdesign.py      scaffold a whole new design (config + content + site)
@@ -154,14 +202,16 @@ pipeline/
   site-template/       what newdesign.py stamps out for a new design
   fonts/               vendored Inter (inlined at build time)
   {a,b,c}.svg          the traced artwork (committed — regenerating needs potrace)
-  gen-page.mjs         compose the self-contained page
+  gen-page.mjs         compose the self-contained page (page or poster layout)
   to-astro.mjs         copy that page into the design's Astro project
   build.sh             build every configured design end to end
 content.json           the shared text layer for the three shipped examples
-content-<n>.json       a new design's own text layer (isolated from the above)
-sites/variant-{a,b,c}/ the three worked examples
+content-<n>.json       a new design's own page definition (isolated from the above)
+sites/variant-{a,b,c}/ the three worked examples (the tracer's regression suite)
 preview/               one static server for all builds + a generated gallery
 studio/                the upload -> site web app (FastAPI + React)
+  backend/app/         extract (structure), generate (semantic page), runner,
+                       verify (art fidelity) + structure (page structure)
 docs/HANDOFF.md        full engineering history: what was tried, what worked,
                        what is exhausted, and the landmines
 ```
@@ -178,16 +228,30 @@ docs/HANDOFF.md        full engineering history: what was tried, what worked,
   protocol the QA scripts screenshot with.
 - **A single-file deliverable.** Each page is one `index.html` with no external
   assets, so it renders identically from a URL or straight off disk.
-- **The artwork is decorative** (`aria-hidden`), because the headline, tagline
-  and CTA are real text and carry all the meaning.
+- **The artwork is decorative** (`aria-hidden`), because the copy and the CTA are
+  real text and carry all the meaning.
+- **Only the vendored font weights are asked for.** The generated stylesheet uses
+  400/500/600 because those are the weights in `pipeline/fonts/`; a page that
+  requested 700 would silently get a synthetic bold.
 
 ## Known gaps
 
-- **The CTA has no destination.** `href="#waitlist"` and no such element exists,
-  so the button does nothing. The design specifies only its appearance; set the
-  real URL in `content.json`.
-- **Band quantisation is the accuracy floor.** The residual is dominated by the
-  reference's own colour banding; the tracer's measured overhead above an
+- **The CTA links in-page.** The reference specifies only the button's
+  appearance, so no real destination is recoverable from it. The studio points it
+  at the most relevant section that exists on the page (never `#`); the A/B/C
+  posters still carry `href="#waitlist"`. Set the real URL in the generated
+  `content-*.json` (or `content.json`) once it is known.
+- **The artwork is one backdrop, not per-section art.** The traced SVG is the
+  hero's full-bleed decorative layer; lower sections sit on solid background
+  tones derived from the reference. Cropping the trace per section would be more
+  faithful to the mockup and considerably more fragile.
+- **Structure inference is a heuristic.** The vision model returns sections and
+  reading order, and the generator falls back to clustering the blocks by
+  vertical gap and eyebrow labels when the model is vague. A page it gets wrong
+  is reported (`structure_issues`, `doctor fixtures`) rather than shipped
+  silently — but it is not a guarantee.
+- **Band quantisation is the tracer's accuracy floor.** The residual is dominated
+  by the reference's own colour banding; the tracer's measured overhead above an
   oracle reconstruction is +0.24 / +0.10 / +0.16 mean. Payload and parity trade
   off along one dial (`bands`), roughly 1 KB of gzip per 0.001 mean.
 

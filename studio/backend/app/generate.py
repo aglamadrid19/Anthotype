@@ -1,18 +1,25 @@
 """Turn extracted text blocks into the three files the pipeline consumes.
 
-  * `content-<id>.json`  -- the text layer (title, description, markup, stage)
-  * `<id>.page.css`      -- per-block absolute layout derived from the boxes
+  * `content-<id>.json`  -- the page (title, description, semantic markup, stage)
+  * `<id>.page.css`      -- the site's stylesheet (flow layout, role-based scale)
   * `designs/<id>.json`  -- box = full frame, text = exclusion rects
 
-The last one is the reuse that matters: the model's text boxes are exactly the
-rectangles `mkart.py` must exclude so the trace does not bake a rasterised copy
-of the words into the artwork.  Growing them slightly is safe -- it only
-preserves a little more of the glow the type sits on.
+The output is a **real website**: semantic sections (`header`/`nav`/`main` with
+one `section` per region/`footer`) in normal document flow, responsive, with a
+role-based type scale.  It is deliberately *not* a pixel-placed poster -- the
+reference's glyphs are not reproduced, they are replaced by authored copy in the
+site's own type.
+
+The one place the reference pixels still matter is `mkart.py`'s exclusion rects:
+the model's text boxes are exactly the rectangles the tracer must exclude so the
+traced artwork does not bake in a rasterised copy of the words.  Growing them
+slightly is safe -- it only preserves a little more of the glow the type sits on.
 """
 from __future__ import annotations
 
 import html
 import json
+import re
 from pathlib import Path
 
 import numpy as np
@@ -20,11 +27,15 @@ from PIL import Image
 
 from .config import STAGE_H, STAGE_W
 from .extract import Block
-from .fontmetrics import (cap_top_offset, char_at_x_fraction, fit_block_type,
-                          fit_font_size, ink_height_em)
+from .fontmetrics import char_at_x_fraction
 
 # Safety growth on the mkart text-exclusion rects (stage px).
 TEXT_RECT_GROW = 6
+
+# How far apart two blocks can be (as a multiple of the taller block) and still
+# be considered part of the same visual group when the model gives no usable
+# section.  Used only as a backstop -- see `group_sections`.
+GROUP_GAP = 2.5
 
 
 def _as_array(png: Path) -> np.ndarray:
@@ -414,132 +425,14 @@ def snap_to_ink(arr: np.ndarray, bbox: tuple[float, float, float, float],
     return (float(sx0), float(sy0), float(sx1), float(sy1))
 
 
-def measure_lines(arr: np.ndarray, bbox: tuple[float, float, float, float],
-                  background: tuple[int, int, int]
-                  ) -> tuple[int, float | None, list[tuple[int, int]]]:
-    """Count the text lines inside `bbox` from the reference pixels.
-
-    The model reports a wrapped block as ONE box, and neither the box's width nor
-    its height says how many lines it holds -- so the layout used to guess, and
-    on the Montiva hero it guessed one 14 px line where the reference sets two
-    ~22 px ones.  The reference itself is unambiguous: each text line is a run of
-    ink rows separated by a clear gap, so a horizontal ink projection counts
-    them and measures the leading at the same time.
-
-    Returns `(line_count, pitch_px, runs)`; `runs` are the `(row0, row1)` ink
-    bands in stage coordinates (used to sample each line's own colour) and
-    `pitch_px` is the median baseline-to-baseline distance.  Conservative --
-    returns `(1, None, [])` unless the structure is clear, so a genuinely
-    single-line block, or one whose ink is a single blob, is left to the width
-    solve rather than mis-split.
-    """
-    x0, y0, x1, y1 = (int(round(v)) for v in bbox)
-    x0, y0 = max(0, x0), max(0, y0)
-    x1, y1 = min(STAGE_W, x1), min(STAGE_H, y1)
-    if x1 - x0 < 4 or y1 - y0 < 4:
-        return 1, None, []
-    grey = arr[y0:y1, x0:x1].mean(axis=2)
-    bg_mean = float(np.array(background, dtype=np.float32).mean())
-    # Polarity-aware, like `snap_to_ink`: the ink may be either side of the
-    # background, and a fixed threshold misses faint small print on a near-white
-    # page entirely.
-    d = np.abs(grey - bg_mean)
-    base = float(d.max())
-    if base < 6.0:
-        return 1, None, []
-    thr = max(10.0, 0.35 * base)
-    ink = d > thr
-    row_any = ink.sum(axis=1) >= 1
-    runs: list[tuple[int, int]] = []
-    start: int | None = None
-    for i, on in enumerate(row_any):
-        if on and start is None:
-            start = i
-        elif not on and start is not None:
-            runs.append((start, i - 1))
-            start = None
-    if start is not None:
-        runs.append((start, len(row_any) - 1))
-    # A real line is at least 2 px of ink; a lone anti-aliased edge row is not.
-    runs = [(a, b) for a, b in runs if b - a + 1 >= 2]
-    if len(runs) < 2:
-        return 1, None, []
-    # Wrapped lines are similar heights.  A second "line" that is a descender
-    # sliver, a stray icon, or a neighbouring element is much shorter, and
-    # treating it as a line would shatter a single-line block.
-    heights = [b - a + 1 for a, b in runs]
-    if max(heights) > 3.5 * min(heights):
-        return 1, None, []
-    gaps = [runs[i + 1][0] - runs[i][1] - 1 for i in range(len(runs) - 1)]
-    if min(gaps) < 2:
-        return 1, None, []
-    centres = [(a + b) / 2.0 for a, b in runs]
-    pitches = [centres[i + 1] - centres[i] for i in range(len(centres) - 1)]
-    if min(pitches) <= 0:
-        return 1, None, []
-    abs_runs = [(y0 + a, y0 + b) for a, b in runs]
-    return len(runs), float(np.median(pitches)), abs_runs
-
-
-def sample_line_colors(arr: np.ndarray, runs: list[tuple[int, int]],
-                       x0: float, x1: float,
-                       background: tuple[int, int, int]
-                       ) -> list[tuple[int, int, int]]:
-    """Ink colour of each measured line band (for a multi-colour wrapped block).
-
-    A wrapped display headline is often painted per line -- the Montiva hero is
-    navy on line 1 and blue on line 2 -- and sampling the whole block collapses
-    that to one colour, which reads as a large error on the most prominent
-    element of the page.
-    """
-    return [sample_ink(arr, (x0, ry0, x1, ry1 + 1), background)
-            for (ry0, ry1) in runs]
-
-
-def ink_coverage(grey: np.ndarray, background: float,
-                 thr: float = 6.0) -> float | None:
-    """Fraction of the ink box of `grey` that is actually ink.
-
-    The reference-side half of `fontmetrics.detect_weight`: the same statistic is
-    measured on the reference glyphs and on the string rasterised in each
-    vendored weight, and the closest weight wins.
-    """
-    d = np.abs(grey - background)
-    base = float(d.max())
-    if base < 6.0:
-        return None
-    ink = d > max(thr, 0.35 * base)
-    n = int(ink.sum())
-    if n < 10:
-        return None
-    ys, xs = np.nonzero(ink)
-    h = int(ys.max() - ys.min() + 1)
-    w = int(xs.max() - xs.min() + 1)
-    if h < 2 or w < 2:
-        return None
-    return n / float(h * w)
-
-
-def measure_weight(arr: np.ndarray, bbox: tuple[float, float, float, float],
-                   text: str, background: tuple[int, int, int]) -> int:
-    """Pick the Inter weight the reference sets `text` in (see `detect_weight`)."""
-    from . import fontmetrics
-    x0, y0, x1, y1 = (int(round(v)) for v in bbox)
-    x0, y0 = max(0, x0), max(0, y0)
-    x1, y1 = min(STAGE_W, x1), min(STAGE_H, y1)
-    if x1 - x0 < 4 or y1 - y0 < 4 or not text.strip():
-        return fontmetrics.DEFAULT_WEIGHT
-    grey = arr[y0:y1, x0:x1].mean(axis=2)
-    bg_mean = float(np.array(background, dtype=np.float32).mean())
-    cov = ink_coverage(grey, bg_mean)
-    if cov is None:
-        return fontmetrics.DEFAULT_WEIGHT
-    return fontmetrics.detect_weight(text, cov)
-
-
 def decorate(blocks: list[Block], ref_png: Path,
              background: tuple[int, int, int]) -> list[Block]:
-    """Fill in each block's ink colour(s) (and a CTA's fill) from the reference."""
+    """Fill in each block's real colour(s) (and a CTA's fill) from the reference.
+
+    The reference is no longer reproduced glyph-for-glyph, but its *palette* is
+    still the design: sampling the ink colour per block keeps the generated page
+    in the reference's colours without imitating its type.
+    """
     arr = _as_array(ref_png)
     for b in blocks:
         if b.role == "cta":
@@ -554,8 +447,8 @@ def decorate(blocks: list[Block], ref_png: Path,
             wide = sample_fill(arr, win, background)
             plate = sample_plate_fill(arr, b.bbox, background)
             b.fill = plate if _sat(plate) > _sat(wide) + 40 else wide
-            # Keep the label box (font-size comes from it) and grow the block to
-            # the real button so the DOM button and its exclusion rect match.
+            # Keep the label box (used to size the exclusion rect) and grow the
+            # block to the real button so the traced art does not bake it in.
             b.meta["label_bbox"] = b.bbox
             solid = refine_button_bbox(arr, b.bbox, b.fill)
             if solid != tuple(b.bbox):
@@ -577,173 +470,593 @@ def decorate(blocks: list[Block], ref_png: Path,
             b.bbox = snap_to_ink(arr, b.bbox, background)
             b.runs = sample_runs(arr, b.bbox, b.text, background)
             b.color = b.runs[0][1] if len(b.runs) == 1 else None
-            # How many lines the reference actually sets this block on.  The
-            # model reports a wrapped block as one box, and the box width alone
-            # cannot distinguish it from a single long line (see `measure_lines`).
-            n, pitch, line_runs = measure_lines(arr, b.bbox, background)
-            b.meta["n_lines"] = n
-            if pitch:
-                b.meta["pitch"] = pitch
-            if n > 1 and line_runs:
-                b.meta["line_colors"] = sample_line_colors(
-                    arr, line_runs, b.bbox[0], b.bbox[2], background)
-            # How heavy the reference sets it.  A display headline is bold and a
-            # body line is not, and the difference is the single largest source
-            # of error once the text lands in the right place.
-            b.meta["weight"] = measure_weight(arr, b.bbox, b.text, background)
     return blocks
 
 
-def _element(block: Block, i: int) -> str:
-    tag = {"headline": "h1", "subhead": "h2", "tagline": "p",
-           "brand": "div", "cta": "a"}.get(block.role, "p")
-    cls = f"blk blk-{i}"
-    if block.runs and len(block.runs) > 1:
-        # A multi-colour run: emit one span per colour so the wordmark prefix
-        # can be neutral while the suffix is coloured.
-        inner = "".join(
-            f'<span style="color: {_hex(c)}">{html.escape(t)}</span>'
-            for t, c in block.runs)
+def _mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[int, int, int]:
+    return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
+
+
+def palette(blocks: list[Block], background: tuple[int, int, int]) -> dict:
+    """A small design system (bg/ink/muted/accent/surface) from the reference.
+
+    The reference's *colours* are the design, so they are sampled; its *type* is
+    not reproduced.  The result is enough for a coherent page -- body ground,
+    text, a muted tone and one accent -- without imitating the mockup.
+    """
+    bg = tuple(int(v) for v in background)
+    light = sum(bg) / 3.0 >= 128
+    colors = [tuple(b.color) for b in blocks if b.color]
+    fills = [tuple(b.fill) for b in blocks if b.fill]
+    accents = [c for c in colors + fills if _sat(c) >= 40]
+    accent = max(accents, key=_sat) if accents else ((14, 150, 100) if light else (25, 210, 130))
+    headline = next((b for b in blocks if b.role == "headline" and b.color), None)
+    if headline:
+        ink = tuple(headline.color)
+    elif colors:
+        ink = max(colors, key=lambda c: abs(sum(c) / 3.0 - sum(bg) / 3.0))
     else:
-        inner = html.escape(block.text)
-    if tag == "a":
-        return f'<a class="{cls} cta" href="#">{inner}</a>'
-    return f'<{tag} class="{cls}">{inner}</{tag}>'
+        ink = (17, 24, 32) if light else (244, 255, 249)
+    toward = (0, 0, 0) if light else (255, 255, 255)
+    return {
+        "light": light,
+        "bg": bg,
+        "ink": ink,
+        "muted": _mix(ink, bg, 0.42),
+        "accent": accent,
+        "accent_ink": (6, 20, 14) if sum(accent) / 3.0 > 140 else (255, 255, 255),
+        "surface": _mix(bg, toward, 0.05 if light else 0.07),
+        "border": _mix(bg, ink, 0.16),
+    }
 
 
-def build_markup(blocks: list[Block]) -> str:
-    ordered = sorted(enumerate(blocks), key=lambda kv: (_role_rank(kv[1].role), kv[0]))
-    return "\n".join("      " + _element(b, i) for i, b in ordered)
+# Sections, in the order they are laid out down the page.
+SECTION_ORDER = ["header", "hero", "nav", "features", "testimonials",
+                 "pricing", "contact", "footer", "other"]
+KNOWN_SECTIONS = [s for s in SECTION_ORDER if s != "other"]
+GRID_SECTIONS = {"features", "testimonials", "pricing"}
+# How far apart two blocks can be (as a multiple of the taller block) and still
+# belong to the same visual group when the model gave no usable section.
+GROUP_GAP = 2.0
+
+SECTION_TITLE = {
+    "hero": "", "features": "What we offer", "testimonials": "What people say",
+    "pricing": "Pricing", "contact": "Get in touch", "other": "",
+}
 
 
-def build_content(blocks: list[Block], name: str) -> dict:
+def _reading_order(blocks: list[Block]) -> list[Block]:
+    """Sort by vertical position then horizontal -- how a person reads a page."""
+    return sorted(blocks, key=lambda b: (round(b.bbox[1]), round(b.bbox[0])))
+
+
+def _is_eyebrow(b: Block) -> bool:
+    """A short all-caps line: an eyebrow/kicker that marks a new section."""
+    t = b.text.strip()
+    letters = [c for c in t if c.isalpha()]
+    if len(letters) < 3 or len(t) > 52:
+        return False
+    return sum(1 for c in letters if c.isupper()) / len(letters) > 0.8
+
+
+def _cluster_by_gap(blocks: list[Block]) -> list[list[Block]]:
+    """Split a reading-ordered run into visual groups.
+
+    A new group starts at a clear vertical gap, at an eyebrow/kicker line (the
+    all-caps label a landing page puts above each section title), or at a brand
+    line in the bottom quarter of the page (the footer bar starts there).  Real
+    landing pages separate sections mostly with those labels, not with large
+    whitespace, so gap alone collapses the whole page into one group.
+    """
+    if not blocks:
+        return []
+    page_bottom = max(b.bbox[3] for b in blocks)
+    groups = [[blocks[0]]]
+    for prev, b in zip(blocks, blocks[1:]):
+        hp = prev.bbox[3] - prev.bbox[1]
+        hb = b.bbox[3] - b.bbox[1]
+        # Measure the gap against the *smaller* of the two rows.  Using the
+        # taller one is too permissive: a short nav row above a big hero
+        # headline would swallow the headline into the nav.
+        h = max(min(hp, hb), 1.0)
+        new = b.bbox[1] - prev.bbox[3] > GROUP_GAP * h
+        if (not new and b.role == "brand" and prev.role != "brand"
+                and b.bbox[1] > 0.8 * page_bottom):
+            new = True
+        if not new and _is_eyebrow(b) and not _is_eyebrow(prev) and len(groups[-1]) >= 2:
+            new = True
+        if new:
+            groups.append([b])
+        else:
+            groups[-1].append(b)
+    return groups
+
+
+def _columns(blocks: list[Block]) -> list[list[Block]]:
+    """Group a card grid into columns by horizontal overlap.
+
+    A card grid reads in rows (`title1 title2 ... titleN` then the descriptions),
+    so consecutive blocks are not the same card.  Blocks that share an x-range are
+    the same column, which is what reconstructs one card per column.
+    """
+    cols: list[list[Block]] = []
+    for b in sorted(blocks, key=lambda b: (b.bbox[0], b.bbox[1])):
+        placed = False
+        for col in cols:
+            x0 = min(x.bbox[0] for x in col)
+            x1 = max(x.bbox[2] for x in col)
+            overlap = min(x1, b.bbox[2]) - max(x0, b.bbox[0])
+            if overlap > 0.15 * max(1.0, min(x1 - x0, b.bbox[2] - b.bbox[0])):
+                col.append(b)
+                placed = True
+                break
+        if not placed:
+            cols.append([b])
+    cols.sort(key=lambda c: min(x.bbox[0] for x in c))
+    for c in cols:
+        c.sort(key=lambda b: b.bbox[1])
+    return cols
+
+
+def _infer_sections(blocks: list[Block]) -> list[tuple[str, list[Block]]]:
+    """Name sections by position and eyebrow keywords when the model declared none.
+
+    Landing pages separate sections with an all-caps eyebrow label above each
+    title ("OUR SERVICES", "WHAT OUR CLIENTS SAY"), so the label is the strongest
+    signal for what a group *is*.  Falls back to position: the first group with a
+    headline is the hero, the last group is the footer, anything between is a
+    feature section.
+    """
+    groups = _cluster_by_gap(_reading_order(blocks))
+    if not groups:
+        return []
+    page_bottom = max(b.bbox[3] for b in blocks)
+    out: list[tuple[str, list[Block]]] = []
+    seen_hero = False
+    # The top row is a header when it is mostly links/wordmark, not a title.
+    # Splitting a fused top row: if the first group mixes a link row and a
+    # headline, the row above the first headline is the header.
+    if groups:
+        g0 = groups[0]
+        if len(g0) >= 2 and "headline" not in {g0[0].role}:
+            split = None
+            for i, b in enumerate(g0):
+                if b.role in {"headline", "subhead"} and i >= 2:
+                    split = i
+                    break
+            if split is not None and sum(1 for b in g0[:split] if _is_navish(b)) >= 1:
+                groups[0] = g0[split:]
+                groups.insert(0, g0[:split])
+            elif "headline" not in {b.role for b in g0}:
+                groups.pop(0)
+                out.append(("header", g0))
+    for i, g in enumerate(groups):
+        roles = {b.role for b in g}
+        eyebrow = next((b.text.lower() for b in g if _is_eyebrow(b)), "")
+        name = ""
+        for key, sect in (("testimonial", "testimonials"), ("review", "testimonials"),
+                          ("client", "testimonials"), ("say", "testimonials"),
+                          ("pricing", "pricing"), ("plan", "pricing"),
+                          ("contact", "contact"), ("get in touch", "contact"),
+                          ("reach", "contact"), ("serving", "contact"),
+                          ("question", "contact"),
+                          ("service", "features"), ("feature", "features"),
+                          ("offer", "features"), ("choose", "features")):
+            if key in eyebrow:
+                name = sect
+                break
+        if not name:
+            first_is_brand = g[0].role == "brand"
+            if i == 0 and (roles & {"headline", "subhead", "cta"}):
+                name = "hero"
+            elif first_is_brand and g[0].bbox[1] > 0.75 * page_bottom:
+                name = "footer"
+            elif "headline" in roles and not seen_hero:
+                name = "hero"
+            else:
+                name = "features"
+        if name == "hero":
+            seen_hero = True
+        out.append((name, g))
+    # Anything after the footer bar (a legal row, a tagline) is part of the
+    # footer -- it must not become another feature section.
+    for i in range(len(out) - 1, 0, -1):
+        if out[i - 1][0] == "footer":
+            out[i - 1][1].extend(out[i][1])
+            del out[i]
+    return out
+
+
+def group_sections(blocks: list[Block]) -> list[tuple[str, list[Block]]]:
+    """Ordered `[(section, [blocks])]` for the page's own copy.
+
+    Prefers the model's `section`.  A block the model left unspecified is
+    attached to the nearest declared section by vertical position; when the
+    model declared nothing at all, the blocks are clustered by vertical gap and
+    named by position (see `_infer_sections`).
+
+    A section name may repeat (a landing page often has several feature bands),
+    so this returns an ordered *list* of groups, never a name-keyed dict.
+    """
+    page = [b for b in blocks if is_page_text(b)]
+    if not page:
+        return []
+    declared = [b for b in page if b.section in KNOWN_SECTIONS]
+    if not declared:
+        return _infer_sections(page)
+
+    pending: list[tuple[str, list[Block]]] = []
+    for b in _reading_order(page):
+        if b.section in KNOWN_SECTIONS:
+            pending.append((b.section, [b]))
+            continue
+        # Attach an unspecified block to the nearest declared block *above* it,
+        # else below -- by vertical position, so reading order survives.
+        cy = (b.bbox[1] + b.bbox[3]) / 2.0
+        above = [p for p in pending if (p[1][0].bbox[1] + p[1][0].bbox[3]) / 2.0 <= cy]
+        target = above[-1] if above else (pending[0] if pending else None)
+        if target is None:
+            pending.append(("other", [b]))
+        else:
+            target[1].append(b)
+
+    # Merge adjacent blocks that share a name into ONE section.  The model
+    # declares a section per block ("features" on the eyebrow, on the heading and
+    # on each card), so emitting one group per block would ship 25 `<section>`s
+    # where the page has 4.  A new group starts only when the name changes;
+    # the rank sort then fixes the *order* of the names (a hero the model
+    # labelled after the nav still renders first).
+    groups: list[tuple[str, list[Block]]] = []
+    for name, blk in pending:
+        if groups and groups[-1][0] == name:
+            groups[-1][1].extend(blk)
+        else:
+            groups.append((name, list(blk)))
+    rank = {s: i for i, s in enumerate(SECTION_ORDER)}
+    groups.sort(key=lambda sg: rank.get(sg[0], 99))
+    return groups
+
+
+def _inline(b: Block) -> str:
+    """The block's inner HTML: escape the text, or emit one span per colour run."""
+    if b.runs and len(b.runs) > 1:
+        return "".join(
+            f'<span style="color: {_hex(c)}">{html.escape(t)}</span>'
+            for t, c in b.runs)
+    return html.escape(b.text)
+
+
+def _attr(value: str) -> str:
+    return html.escape(value, quote=True)
+
+
+def _is_navish(b: Block) -> bool:
+    """A short `other` block in a nav/footer row is a link, not a paragraph."""
+    return b.role == "other" and len(b.text) <= 32 and len(b.text.split()) <= 4
+
+
+def _cta_html(b: Block, href: str, cls: str = "cta") -> str:
+    color = _hex(b.color or (255, 255, 255))
+    if b.meta.get("outline"):
+        border = _hex(b.meta.get("border") or b.color or (24, 196, 124))
+        style = f' style="color: {color}; border-color: {border}"'
+        return f'<a class="{cls} outline" href="{_attr(href)}"{style}>{_inline(b)}</a>'
+    fill = _hex(b.fill or (24, 196, 124))
+    style = f' style="background: {fill}; color: {color}"'
+    return f'<a class="{cls}" href="{_attr(href)}"{style}>{_inline(b)}</a>'
+
+
+def _card_html(col: list[Block], heading_used: list[bool],
+               cta_href: str = "#top") -> str:
+    """One card: a title line plus any body lines that share its column.
+
+    The card title is an `h3` -- the page's only `h1` lives in the hero and the
+    section eyebrow is its `h2`-level label.
+    """
+    title_done = False
+    parts: list[str] = []
+    for b in col:
+        if b.role == "cta":
+            parts.append(_cta_html(b, cta_href, "cta small"))
+        elif not title_done:
+            parts.append(f"<h3>{_inline(b)}</h3>")
+            title_done = True
+        else:
+            parts.append(f"<p>{_inline(b)}</p>")
+    return '<div class="card">\n        ' + "\n        ".join(parts) + "\n      </div>"
+
+
+def _section_body(name: str, blocks: list[Block], heading_used: list[bool],
+                  cta_href: str) -> str:
+    """The inner markup of one non-hero section.
+
+    A section's *eyebrow* (a short all-caps kicker) becomes its visible title;
+    the reference's own repeated section headline is not re-emitted as an `h1`
+    (there is exactly one `h1` on the page, in the hero), so it is demoted to a
+    lead paragraph when it duplicates the eyebrow's meaning.
+    """
+    eyebrow = next((b for b in blocks if _is_eyebrow(b)), None)
+    out: list[str] = []
+    if eyebrow is not None:
+        out.append(f'<p class="eyebrow">{_inline(eyebrow)}</p>')
+        if _title_equivalent(SECTION_TITLE.get(name, ""), eyebrow.text):
+            out.append(f'<h2 class="section-title">{html.escape(SECTION_TITLE[name])}</h2>')
+
+    rest = [b for b in blocks if b is not eyebrow]
+
+    if name in GRID_SECTIONS:
+        heads = [b for b in rest if b.role in {"headline", "subhead"}]
+        body = [b for b in rest if b not in heads]
+        for h in heads:
+            out.append(f'<p class="lead">{_inline(h)}</p>')
+        if body:
+            cards = [_card_html(c, heading_used, cta_href) for c in _columns(body)]
+            out.append('<div class="cards">\n      ' + "\n      ".join(cards) + "\n    </div>")
+        return "\n    ".join(out)
+
+    for b in rest:
+        if b.role == "cta":
+            out.append(_cta_html(b, cta_href))
+        elif b.role in {"headline", "subhead"}:
+            out.append(f'<p class="lead">{_inline(b)}</p>')
+        else:
+            out.append(f'<p class="lead">{_inline(b)}</p>')
+    return "\n    ".join(out)
+
+
+def _title_equivalent(a: str, b: str) -> bool:
+    """Are two section labels the same idea?  ("Features" vs "OUR SERVICES")"""
+    aw = {w for w in re.findall(r"[a-z]+", a.lower()) if len(w) > 3}
+    bw = {w for w in re.findall(r"[a-z]+", b.lower()) if len(w) > 3}
+    return bool(aw & bw) or not aw
+
+
+def _hero_html(blocks: list[Block], cta_href: str) -> str:
+    out = []
+    for b in blocks:
+        if b.role == "headline":
+            out.append(f'<h1>{_inline(b)}</h1>')
+        elif b.role == "subhead":
+            out.append(f'<p class="subhead">{_inline(b)}</p>')
+        elif b.role == "cta":
+            out.append(_cta_html(b, cta_href))
+        elif b.role == "brand":
+            out.append(f'<span class="brand">{_inline(b)}</span>')
+        elif _is_eyebrow(b):
+            out.append(f'<p class="eyebrow">{_inline(b)}</p>')
+        else:
+            out.append(f'<p class="lede">{_inline(b)}</p>')
+    return "\n      ".join(out)
+
+
+def _header_html(brand: Block | None, links: list[Block], cta_href: str) -> str:
+    left = (f'<a class="brand" href="#top">{_inline(brand)}</a>' if brand
+            else '<a class="brand" href="#top">Home</a>')
+    nav = "".join(
+        _cta_html(b, cta_href, "cta small") if b.role == "cta"
+        else f'<a href="{_attr(cta_href)}">{_inline(b)}</a>'
+        for b in links)
+    return (f'<div class="wrap">\n      {left}\n'
+            f'      <nav class="site-nav" aria-label="Primary">{nav}</nav>\n    </div>')
+
+
+def _stable_id(name: str, used: dict[str, int]) -> str:
+    """A unique in-page id for a section (`features`, `features-2`, ...)."""
+    used[name] = used.get(name, 0) + 1
+    return name if used[name] == 1 else f"{name}-{used[name]}"
+
+
+def build_markup(sections: list[tuple[str, list[Block]]],
+                 cta_href: str) -> str:
+    """The page's body markup: a header, a hero, the sections, a footer.
+
+    Section names may repeat, so every section gets a unique id and each CTA
+    links to a real anchor on the page (never `#`).
+    """
+    heading_used = [False]
+    parts: list[str] = []
+    used: dict[str, int] = {}
+    anchors: list[tuple[str, str]] = []   # (section name, id), in page order
+
+    header = [(n, g) for n, g in sections if n in ("header", "nav")]
+    header_blocks = [b for _, g in header for b in g]
+    if header_blocks:
+        brand = next((b for b in header_blocks if b.role == "brand"), None)
+        links = [b for b in header_blocks
+                 if b is not brand and (_is_navish(b) or b.role == "cta")]
+        parts.append('<header class="site-header" id="top">\n    '
+                     + _header_html(brand, links, cta_href) + "\n  </header>")
+
+    hero_groups = [(n, g) for n, g in sections if n == "hero"]
+    hero = [b for _, g in hero_groups for b in g]
+    if hero:
+        parts.append('<section class="hero" id="hero">\n      '
+                     '<div class="hero-art" aria-hidden="true"><!--ART--></div>\n'
+                     '      <div class="wrap hero-copy">\n      '
+                     + _hero_html(hero, cta_href) + "\n      </div>\n    </section>")
+        anchors.append(("hero", "hero"))
+
+    middle = []
+    for name, blocks in sections:
+        if name in ("header", "nav", "hero", "footer"):
+            continue
+        sid = _stable_id(name, used)
+        anchors.append((name, sid))
+        body = _section_body(name, blocks, heading_used, cta_href)
+        if not body:
+            continue
+        middle.append(f'<section class="section sec-{name}" id="{sid}">\n'
+                      f'    <div class="wrap">\n    {body}\n    </div>\n  </section>')
+    if middle:
+        parts.append('<main id="main">\n  ' + "\n  ".join(middle) + "\n  </main>")
+
+    footer = [b for name, g in sections if name == "footer" for b in g]
+    if footer:
+        items = []
+        for b in footer:
+            if b.role == "cta":
+                items.append(_cta_html(b, cta_href, "cta small"))
+            elif _is_navish(b):
+                items.append(f'<a href="#top">{_inline(b)}</a>')
+            else:
+                items.append(f"<p>{_inline(b)}</p>")
+        parts.append('<footer class="site-footer" id="footer">\n    '
+                     '<div class="wrap">\n      ' + "\n      ".join(items)
+                     + "\n    </div>\n  </footer>")
+    return "\n  ".join(parts)
+
+
+def cta_target(sections: list[tuple[str, list[Block]]],
+               markup: str) -> str:
+    """The CTA's destination: a real anchor that exists on the generated page.
+
+    The reference only specifies the button's *appearance*, so there is no real
+    URL to recover.  Linking to the most relevant section that was actually
+    emitted is always valid -- unlike the poster's dead `href="#"`.
+    """
+    ids = set(re.findall(r'\bid="([^"]+)"', markup))
+    names = [s for s, _ in sections]
+    for want in ("contact", "features", "testimonials", "pricing"):
+        if want in names and want in ids:
+            return f"#{want}"
+    if "hero" in ids:
+        return "#hero"
+    if "main" in ids:
+        return "#main"
+    return "#top"
+
+
+def build_content(sections: list[tuple[str, list[Block]]], name: str) -> dict:
+    blocks = [b for _, group in sections for b in group]
     headline = next((b for b in blocks if b.role == "headline"), None)
     tagline = next((b for b in blocks if b.role == "tagline"), None)
     cta = next((b for b in blocks if b.role == "cta"), None)
     title = headline.text if headline else f"{name} — coming soon"
+    # Two passes: build the sections first so the CTA can link to a real anchor
+    # that the markup actually created, then build the markup with that target.
+    sections = [(s, _reading_order(g)) for s, g in sections]
+    probe = build_markup(sections, "#top")
+    href = cta_target(sections, probe)
     return {
         "title": title,
         "description": tagline.text if tagline else "Built from a design reference.",
-        "eyebrow": "Coming soon",
-        "tagline": tagline.text if tagline else "",
         "cta": cta.text if cta else "",
+        "cta_href": href,
         "stage": [STAGE_W, STAGE_H],
-        "markup": build_markup(blocks),
+        "sections": [s for s, _ in sections],
+        "markup": build_markup(sections, href),
     }
 
 
-def build_page_css(blocks: list[Block], background: tuple[int, int, int]) -> str:
-    bg = _hex(background)
-    # Picked from the design, not hardcoded: a light mockup should get a light
-    # scheme, so form controls and scrollbars match the page the artwork implies.
-    scheme = "light" if sum(background) / 3.0 >= 128 else "dark"
-    lines = [
-        f":root {{ color-scheme: {scheme}; }}",
-        "* { box-sizing: border-box; margin: 0; padding: 0; }",
-        "html, body { width: 100%; height: 100%; }",
-        f"body {{ background: {bg}; font-family: Inter, system-ui, sans-serif;",
-        "  overflow: hidden; -webkit-font-smoothing: antialiased; }",
-        f".stage {{ position: absolute; left: 50%; top: 50%; width: {STAGE_W}px;",
-        f"  height: {STAGE_H}px; transform-origin: center center;",
-        f"  background: {bg}; overflow: hidden; }}",
-        ".content { position: absolute; inset: 0; z-index: 3; }",
-        ".art { position: absolute; inset: 0; z-index: 2; }",
-        f".art > svg {{ display: block; width: {STAGE_W}px; height: {STAGE_H}px; overflow: visible; }}",
-        ".blk { position: absolute; white-space: nowrap; font-weight: 400; line-height: 1; }",
-    ]
-    for i, b in enumerate(blocks):
-        x0, y0, x1, y1 = b.bbox
-        if b.role == "cta":
-            weight = 600
-            label = b.meta.get("label_bbox") or b.bbox
-            fs = fit_font_size(b.text, label[2] - label[0], label[3] - label[1],
-                               b.role, weight)
-            color = _hex(b.color or (255, 255, 255))
-            left, top = x0, y0
-            bw, bh = x1 - x0, y1 - y0
-            if b.meta.get("outline"):
-                # An outline button has no fill plate: a border ring plus the
-                # label.  Painting an opaque fill here would be a large, wrong
-                # patch of colour, so the interior stays transparent.
-                border = _hex(b.meta.get("border") or b.color or (24, 196, 124))
-                lines += [
-                    f".blk-{i} {{ left: {left:.0f}px; top: {top:.0f}px; width: {bw:.0f}px;",
-                    f"  height: {bh:.0f}px; display: inline-flex; align-items: center;",
-                    f"  justify-content: center; border-radius: 15px; text-decoration: none;",
-                    f"  border: 2px solid {border}; background: transparent;",
-                    f"  color: {color}; font-size: {fs:.1f}px; font-weight: {weight}; }}",
-                ]
-            else:
-                fill = _hex(b.fill or (24, 196, 124))
-                lines += [
-                    f".blk-{i} {{ left: {left:.0f}px; top: {top:.0f}px; width: {bw:.0f}px;",
-                    f"  height: {bh:.0f}px; display: inline-flex; align-items: center;",
-                    f"  justify-content: center; border-radius: 14px; text-decoration: none;",
-                    f"  background: {fill}; color: {color}; font-size: {fs:.1f}px; font-weight: {weight}; }}",
-                ]
-        else:
-            weight = b.meta.get("weight", 400)
-            bw, bh = x1 - x0, y1 - y0
-            fs, nlines = fit_block_type(b.text, bw, bh, b.role, weight,
-                                        n_lines=b.meta.get("n_lines"))
-            color = _hex(b.color or (255, 255, 255))
-            if nlines > 1:
-                # The model reports a wrapped block as ONE box, so the lines must
-                # be laid out by wrapping inside it, with the leading spread to
-                # fill the box height -- but never tighter than the glyphs.
-                # Prefer the leading measured from the reference (`pitch`), which
-                # is exact; fall back to spreading the box height over the lines.
-                lh = b.meta.get("pitch") or max(bh / nlines, fs)
-                top = max(0.0, y0 - cap_top_offset(fs, weight, lh))
-                # A wrapped *display* line is often painted per line (the Montiva
-                # hero is navy, then blue).  One colour for the whole block is a
-                # large error on the page's most prominent element.  Only worth
-                # doing for large type, though: on 8 px body copy the per-line
-                # medians differ only by anti-aliasing, and a gradient there just
-                # smears the colour.
-                line_cols = b.meta.get("line_colors") or []
-                paint = ""
-                if (fs >= 18 and len(line_cols) >= 2
-                        and _max_channel_spread(line_cols) > 24):
-                    n = len(line_cols)
-                    # Hard stops, not a smooth ramp: each measured line is a flat
-                    # colour in the reference, so the transition belongs on the
-                    # boundary between lines (a ramp would tint the top of line 1
-                    # and the bottom of line 2).
-                    stops = []
-                    for k, c in enumerate(line_cols):
-                        a, b = k * 100.0 / n, (k + 1) * 100.0 / n
-                        stops.append(f"{_hex(c)} {a:.1f}%")
-                        stops.append(f"{_hex(c)} {b:.1f}%")
-                    color = "transparent"
-                    paint = (f"background: linear-gradient(180deg, {', '.join(stops)}); "
-                             f"-webkit-background-clip: text; background-clip: text;")
-                lines.append(
-                    f".blk-{i} {{ left: {x0:.0f}px; top: {top:.1f}px; width: {bw:.0f}px; "
-                    f"white-space: normal; font-size: {fs:.1f}px; line-height: {lh:.1f}px; "
-                    f"font-weight: {weight}; color: {color}; {paint}}}"
-                )
-            else:
-                top = max(0.0, y0 - cap_top_offset(fs, weight))
-                lines.append(
-                    f".blk-{i} {{ left: {x0:.0f}px; top: {top:.1f}px; "
-                    f"font-size: {fs:.1f}px; font-weight: {weight}; color: {color}; }}"
-                )
-    return "\n".join(lines) + "\n"
+def build_page_css(palette_: dict) -> str:
+    """The generated site's stylesheet: normal flow, responsive, role-based scale."""
+    p = palette_
+    scheme = "light" if p["light"] else "dark"
+    return f"""/* Generated by Anthotype Studio.  A real website: flow layout, responsive,
+   role-based type scale.  No absolute positioning, no fixed stage. */
+:root {{
+  color-scheme: {scheme};
+  --bg: {_hex(p['bg'])};
+  --ink: {_hex(p['ink'])};
+  --muted: {_hex(p['muted'])};
+  --accent: {_hex(p['accent'])};
+  --accent-ink: {_hex(p['accent_ink'])};
+  --surface: {_hex(p['surface'])};
+  --border: {_hex(p['border'])};
+  --maxw: 1120px;
+}}
+* {{ box-sizing: border-box; margin: 0; padding: 0; }}
+html {{ scroll-behavior: smooth; }}
+body {{
+  background: var(--bg); color: var(--ink);
+  font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.55; -webkit-font-smoothing: antialiased;
+}}
+h1, h2, h3 {{ line-height: 1.1; letter-spacing: -0.02em; }}
+a {{ color: inherit; }}
+.wrap {{ width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }}
+.muted, .lead {{ color: var(--muted); }}
+
+.site-header {{
+  position: sticky; top: 0; z-index: 20;
+  background: var(--bg); border-bottom: 1px solid var(--border);
+}}
+.site-header .wrap {{
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 24px; min-height: 68px; flex-wrap: wrap;
+}}
+.brand {{ font-weight: 600; font-size: 18px; text-decoration: none; }}
+.site-nav {{ display: flex; gap: 22px; flex-wrap: wrap; }}
+.site-nav a {{ color: var(--muted); text-decoration: none; font-size: 15px; }}
+.site-nav a:hover {{ color: var(--ink); }}
+
+.hero {{ position: relative; overflow: hidden; border-bottom: 1px solid var(--border); }}
+.hero-art {{ position: absolute; inset: 0; z-index: 0; opacity: 1; }}
+.hero-art svg {{ width: 100%; height: 100%; display: block; }}
+.hero-copy {{
+  position: relative; z-index: 1; display: grid; gap: 18px; justify-items: start;
+  padding-top: 104px; padding-bottom: 104px; max-width: 760px;
+}}
+.hero h1 {{ font-size: clamp(38px, 6.5vw, 74px); font-weight: 600; }}
+.hero .subhead {{ font-size: clamp(19px, 2.6vw, 28px); font-weight: 600; }}
+.hero .lede {{ font-size: clamp(16px, 1.7vw, 20px); color: var(--muted); max-width: 62ch; }}
+.hero .brand {{ font-size: 20px; font-weight: 600; }}
+
+.section {{ padding: 84px 0; border-bottom: 1px solid var(--border); }}
+.section > .wrap {{ display: grid; gap: 26px; }}
+.section-title {{ font-size: clamp(25px, 3.6vw, 38px); font-weight: 600; }}
+.eyebrow {{
+  text-transform: uppercase; letter-spacing: 0.14em;
+  font-size: 13px; font-weight: 600; color: var(--accent);
+}}
+.lead {{ font-size: clamp(16px, 1.6vw, 19px); max-width: 68ch; }}
+
+.cards {{
+  display: grid; gap: 20px;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+}}
+.card {{
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 16px; padding: 24px; display: grid; gap: 10px; align-content: start;
+}}
+.card h3 {{ font-size: 18px; font-weight: 600; }}
+.card .lead, .card p {{ color: var(--muted); font-size: 15px; line-height: 1.5; }}
+
+.cta {{
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  padding: 14px 28px; border-radius: 12px; text-decoration: none;
+  background: var(--accent); color: var(--accent-ink);
+  font-weight: 600; font-size: 16px; width: fit-content; border: 2px solid transparent;
+}}
+.cta:hover {{ filter: brightness(1.06); }}
+.cta.outline {{ background: transparent; border: 2px solid var(--accent); }}
+.cta.small {{ padding: 10px 18px; font-size: 15px; }}
+
+.site-footer {{ padding: 48px 0; }}
+.site-footer .wrap {{
+  display: flex; flex-wrap: wrap; gap: 18px 28px;
+  align-items: center; justify-content: space-between; color: var(--muted);
+}}
+.site-footer a {{ color: var(--muted); text-decoration: none; }}
+.site-footer a:hover {{ color: var(--ink); }}
+
+@media (max-width: 620px) {{
+  .hero-copy {{ padding-top: 72px; padding-bottom: 72px; }}
+  .section {{ padding: 60px 0; }}
+}}
+"""
 
 
 # A block the model called `other` must be at least this big to be page copy
-# rather than a caption inside the artwork.  A backstop for the model's `part`
-# judgement: a small step caption scored against a wrong box is worse than
-# leaving it to the tracer.
+# rather than a caption inside the artwork.  The model's `part` is the primary
+# signal; this is only a backstop for a stray fragment.
 #
-# Only `other` is gated.  `headline`/`subhead`/`tagline` are the page's copy by
-# definition, and a `brand` wordmark or a `cta` label is legitimately small (the
-# reference's brand is 94 px, its button label 110 px).  `other` is the catch-all
-# where a stray illustration caption lands, and those are far narrower than any
-# real page line.
-MIN_OTHER_W = 100
-MIN_OTHER_H = 6
+# It is deliberately small.  For a *website* the cost of the two errors is not
+# symmetric: emitting a stray illustration caption is a cosmetic extra line,
+# while dropping a real navigation link ("Home", "Services") or a card title
+# breaks the page.  So the floor only rejects genuinely tiny specks.
+MIN_OTHER_W = 18
+MIN_OTHER_H = 5
 
 
 def is_page_text(b: Block) -> bool:
@@ -754,11 +1067,8 @@ def is_page_text(b: Block) -> bool:
     wrong place, and its exclusion rect punches a hole through the busiest part
     of the traced art.  Leaving it out lets the tracer reproduce it instead.
 
-    The model's `part` is the primary signal.  The size backstop only applies to
-    `other`, the catch-all role: a wordmark (`brand`) or a button label (`cta`)
-    is legitimately small -- the brand here is a 94 px wordmark -- so gating on
-    size would drop real copy.  `other` is where a stray illustration caption
-    would land, and those are far narrower than any real page line.
+    The model's `part` is the primary signal; the size backstop only applies to
+    the catch-all `other` role, and only rejects genuinely tiny fragments.
     """
     if getattr(b, "part", "page") == "artwork":
         return False
@@ -786,21 +1096,57 @@ def text_rects(blocks: list[Block]) -> list[list[int]]:
     return out
 
 
+def describe(sections: list[tuple[str, list[Block]]], markup: str) -> list[dict]:
+    """A machine-readable summary of the generated structure (for the API/UI)."""
+    out = []
+    for name, blocks in sections:
+        out.append({
+            "name": name,
+            "blocks": len(blocks),
+            "text": [b.text for b in blocks][:8],
+        })
+    return out
+
+
+def structure_issues(sections: list[tuple[str, list[Block]]], markup: str) -> list[str]:
+    """Self-check: report structural problems rather than shipping a bad page."""
+    issues: list[str] = []
+    names = [s for s, _ in sections]
+    if not sections:
+        return ["no page copy was recovered from this design"]
+    if "hero" not in names and "header" not in names:
+        issues.append("no hero/header section was found")
+    if markup.count("<h1") == 0:
+        issues.append("no <h1> was generated")
+    if markup.count("<h1") > 1:
+        issues.append(f"{markup.count('<h1')} <h1> elements (should be one)")
+    if 'href="#"' in markup:
+        issues.append("a link points at '#' (dead)")
+    if 'position: absolute' in markup or "position:absolute" in markup:
+        issues.append("absolutely-positioned content (not flow layout)")
+    return issues
+
+
 def write_all(pipeline: Path, name: str, blocks: list[Block],
               background: tuple[int, int, int]) -> dict:
     """Write content/page.css/design config into the job's pipeline copy."""
-    blocks = page_blocks(blocks)
-    content = build_content(blocks, name)
+    sections = group_sections(blocks)
+    content = build_content(sections, name)
     (pipeline / f"content-{name}.json").write_text(
         json.dumps(content, indent=2, ensure_ascii=False) + "\n")
 
-    (pipeline / f"{name}.page.css").write_text(build_page_css(blocks, background))
+    (pipeline / f"{name}.page.css").write_text(build_page_css(palette(blocks, background)))
 
+    # The exclusion rects are ALL page blocks (the ones emitted as DOM), so the
+    # traced artwork never bakes in a rasterised copy of the page's own copy.
+    # Artwork-internal text is deliberately left to the tracer.
+    page = [b for b in blocks if is_page_text(b)]
     cfg_path = pipeline / "designs" / f"{name}.json"
     cfg = json.loads(cfg_path.read_text()) if cfg_path.is_file() else {"name": name}
     cfg["name"] = name
+    cfg["layout"] = "page"                       # a real website, not a poster
     cfg["box"] = [0, 0, STAGE_W, STAGE_H]        # full frame: exclude_text protects the type
-    cfg["text"] = text_rects(blocks)
+    cfg["text"] = text_rects(page)
     cfg.setdefault("params", {})
     # Polarity-aware text exclusion.  `text_bg_lum` tells the tracer where the
     # page background sits, so it drops the bands that are *ink* (away from the
@@ -817,4 +1163,8 @@ def write_all(pipeline: Path, name: str, blocks: list[Block],
         cfg["params"]["text_bg_lum"] = bg_lum
         cfg["params"]["text_lum_margin"] = 45.0
     cfg_path.write_text(json.dumps(cfg, indent=2) + "\n")
+    # Structure is returned, not written into content-*.json: the file stays a
+    # clean, editable page definition.
+    content["_structure"] = describe(sections, content["markup"])
+    content["_issues"] = structure_issues(sections, content["markup"])
     return content

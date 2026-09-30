@@ -8,12 +8,33 @@ The pipeline stays the engine. The studio is an orchestrator around it and does
 **not** modify `pipeline/`, `sites/` or `preview/` — the A/B/C regression suite
 and the two invariants (potrace polarity, cumulative masks) are untouched.
 
+## The output: a website, not a poster
+
+The studio builds a **real, responsive website**: a header, a hero, one
+`<section>` per inferred page region, and a footer, in normal document flow, with
+a role-based type scale and real links. The traced artwork is the hero's
+decorative backdrop.
+
+It deliberately does **not** pixel-match the mockup. The previous approach placed
+each text block absolutely from a measured box and tuned it against a whole-page
+pixel metric; its residual was ultimately **font substitution** (the reference's
+typeface is not the vendored Inter), which is unwinnable. That layer was retired.
+
+The page is judged on two separate things:
+
+| layer | judged on |
+|---|---|
+| artwork | pixel fidelity over the **art region** (page-copy rects masked) |
+| website | **structure** — landmarks, sections, one `h1`, resolving links, flow layout |
+
 ## Decisions (locked)
 
 | | |
 |---|---|
-| Text source | Auto-extract with a **vision LLM** — the local **AntSeed proxy** (`127.0.0.1:8377`), model `glm-5.3-flash` (with fallbacks) |
+| Structure source | A **vision LLM** recovers the page's sections, roles and copy |
+| Text source | The same call (the copy comes with the structure) |
 | Output | **Full Astro project zip** + self-contained `index.html` |
+| Page shape | Responsive, semantic, normal flow; art as hero backdrop |
 | Scope | **Local tool** on this Mac; no auth, no cloud storage |
 | Stack | **FastAPI** backend + **React/Vite** frontend |
 | Code location | `studio/` in this repo |
@@ -27,24 +48,28 @@ studio/
       main.py        FastAPI app: upload, status, preview, download
       jobs.py        job store (JSON on disk) + serialized 1-worker pool
       runner.py      pipeline orchestration (the stages below)
-      extract.py     vision-LLM call -> copy + boxes + roles
-      generate.py    boxes+colors -> content-<id>.json + <id>.page.css + design config
+      extract.py     vision-LLM call -> sections + roles + copy + boxes
+      generate.py    structure+copy -> semantic markup, the stylesheet, the
+                     design config (trace box + exclusion rects)
+      structure.py   read the built DOM: landmarks, sections, headings, links
+      verify.py      art-region fidelity + the structure report
       workspace.py   per-job isolated pipeline copy
       imageutil.py   validate / normalize the upload
       config.py      env, keys, paths
     requirements.txt
     .env.example
-  frontend/          React + Vite (upload, progress, preview, download)
+  frontend/          React + Vite (upload, progress, live preview, download)
   data/jobs/<id>/    uploads, workspace, artifacts, status.json   (gitignored)
 ```
 
 ## The 1024×768 decision (important)
 
-`mkart.py` hardcodes `viewBox="0 0 1024 768"` for the emitted art, and the
-shipped pages are a fixed 1024×768 stage scaled to the viewport. So the studio
+`mkart.py` hardcodes `viewBox="0 0 1024 768"` for the emitted art. So the studio
 **normalizes every upload to 1024×768** (aspect-fit onto a background-matched
-canvas). This keeps the whole existing toolchain valid, keeps the art trace box
-honest, and means OCR boxes come back in stage coordinates with no rescaling.
+canvas). This keeps the tracer valid and means the model's boxes come back in
+stage coordinates with no rescaling — and those boxes are what the tracer's
+exclusion rects are built from. The *page* is no longer a 1024×768 stage: it is a
+normal responsive document, and 1024×768 is only the artwork's coordinate space.
 
 ## Job lifecycle
 
@@ -81,61 +106,66 @@ astro build                      # dist/index.html
 ## Extraction → generation
 
 1. Send the normalized PNG to a vision model with a strict JSON schema prompt →
-   blocks `{text, role: headline|subhead|tagline|cta|brand, bbox:[x0,y0,x1,y1]}`.
-   The image carries an overlaid, labelled 64 px **coordinate grid**: on a plain
-   mockup the model's boxes are biased by tens of pixels and move between
-   identical calls, which then misplaces the whole text layer. The grid makes
-   them accurate and repeatable. It is sent as WebP — a full-size PNG of the
-   grid is ~1 MB and the local proxy silently drops images that large.
+   blocks `{text, role, section, part, bbox:[x0,y0,x1,y1]}`. The image carries an
+   overlaid, labelled 64 px **coordinate grid** so the grouping is stable between
+   identical calls. It is sent as WebP — a full-size PNG of the grid is ~1 MB and
+   the local proxy silently drops images that large (the retry escalates the
+   encoding: WebP → JPEG → PNG).
 2. **Normalize roles by size.** The model is not stable about which line is the
    headline (it labels the largest title `headline` on one call and `brand` on
    the next); a `brand` block that is one of the largest lines is promoted.
 3. **Refine locally** from the PNG (all deterministic):
-   - snap each box onto the ink actually present, so a few pixels of box error
-     do not become a visible font-size error (size is solved from box width);
-   - **measure the line count and leading from the reference's own ink rows**
-     (`measure_lines`): the model reports a wrapped block as one box, and the box
-     alone cannot say how many lines it holds — the Montiva hero box (273×43)
-     whose text fits on one 14 px line is set on two ~25 px lines;
-   - **measure the weight** (`measure_weight`) by matching the reference's ink
-     coverage against the same string rasterised in each vendored Inter weight;
-   - split multi-colour runs (white "Ant" + green "Hosting") using the real
-     Inter advance widths to find the boundary, and refuse a split that is not a
-     word boundary (a highlight on one glyph is not a run);
-   - sample the ink colour of each run, **per measured line** — a wrapped display
-     headline is often two-tone (navy line 1, blue line 2);
+   - snap each box onto the ink actually present — not to place glyphs, but so
+     the tracer's exclusion rect covers the type exactly;
+   - sample the ink **colours** (per run, so a two-tone wordmark keeps both) and
+     a CTA's fill/label — the page is authored in the reference's palette;
    - measure a button's real rectangle — flood-fill for a solid fill, otherwise
-     treat it as an outline button (border ring, transparent interior).  A flood
+     treat it as an outline button (border ring, transparent interior). A flood
      region *shorter* than its label is the surrounding artwork, not a button.
-4. Generate:
-   - `content-<id>.json` — `stage` = 1024×768, `markup` with each block
-     absolutely positioned; escaped text, one `<span>` per colour run.
-   - `<id>.page.css` — per-block absolute position from the box, `font-size`
-     solved against real Inter metrics (by width for one line, by width + the
-     measured line count for a wrapped block), measured weight and colour, a
-     hard-stop per-line gradient when a wrapped block is two-tone, Inter stack,
-     same fit-to-viewport script.
-   - `designs/<id>.json` — `box` = full frame, `text` = box rects grown by a
-     safety margin. Over-covering is safe: it only preserves more glow.
+4. **Group into sections.** Prefer the model's `section`; attach unspecified
+   blocks to the nearest declared section above them; merge adjacent blocks that
+   share a name into one group (the model declares a section per block, so
+   without the merge a 75-block page would ship 75 `<section>`s); when the model
+   declares nothing, cluster by vertical gap and by **eyebrow labels**
+   ("OUR SERVICES") and name groups by position. Card grids are rebuilt by
+   grouping blocks that share an x-range (`_columns`).
+5. Generate:
+   - `content-<id>.json` — the page: `title`, `description`, `cta_href`,
+     `sections`, and `markup` — a header (brand + nav), a hero, one `<section>`
+     per group, and a footer, with exactly one `<h1>` and real anchors.
+   - `<id>.page.css` — the site's stylesheet: role-based type scale, `clamp()`-ed
+     display sizes, an auto-fit card grid, breakpoints. No absolute positioning,
+     no fixed stage.
+   - `designs/<id>.json` — `layout: "page"`, `box` = full frame, `text` = the
+     page blocks' rects grown by a safety margin.
 
-The LLM's text boxes double as the `text`-exclusion rects `mkart.py` needs, so
-they never have to be hand-tuned per design.
+The LLM's boxes double as the `text`-exclusion rects `mkart.py` needs, so the
+traced art never bakes in a rasterised copy of the page's own copy.
 
-### Not baking a ghost of the words
+### Not baking a ghost of the copy
 
 `mkart.py` **inpaints the glyph ink out of the reference** inside those rects
 before tracing (gated on `text_bg_lum`, i.e. only for a light background, so the
 shipped dark designs are byte-identical).  The background is measured locally
 (a median filter wider than the glyphs), because a real page has type on a dark
 footer panel and over a photo, not just on the page ground.  This is strictly
-better than the earlier band-dropping rule: same layout, Montiva **8.78** vs
-**12.32**.
+better than the earlier band-dropping rule: Montiva **8.78** vs **12.32** on the
+old whole-page metric.
 
 ## Verification
 
-Headless Chrome screenshot → Lanczos downsample to 1024×768 (reuse
-`qa/downsample.py`) → mean abs diff vs the reference, plus the no-network check.
-The score is reported in the UI.
+Two checks, deliberately not blended:
+
+- **Art fidelity**: the traced SVG is rendered at 1024×768 (headless Chrome →
+  Lanczos downsample, reusing `qa/downsample.py`) and compared to the reference
+  over the **art region** (the page-copy exclusion rects masked out). Rendering
+  the SVG alone — rather than screenshotting the reflowing page — is what makes
+  this a measure of the *tracer*; the page-wide diff is still reported for
+  reference. Existing posters (`layout: "poster"`, a fixed stage) keep scoring
+  the page screenshot, because there the page *is* the artwork's frame.
+- **Structure**: `app/structure.py` reads the built DOM and reports landmarks,
+  sections, heading counts, link resolution and whether the content is in flow,
+  plus any problems. Reported in the UI and as job warnings.
 
 ## Packaging
 
@@ -169,12 +199,12 @@ VISION_BASE_URL=http://127.0.0.1:8377/v1
 - `env` — every dependency (repo venv, node/npm, potrace, Chrome, fonts, the
   pipeline files) plus the vision endpoint and a live probe of each configured
   model; non-zero exit on failure.
-- `polarity` — synthetic light/dark checks for the ink, wrapping and extraction
-  scope heuristics, plus the reference-driven line-count, per-line-colour and
-  weight measurements (no vision model, no pipeline).
+- `polarity` — synthetic light/dark checks for the ink and extraction scope, plus
+  the generator's structure logic: section grouping, header/hero/footer naming,
+  a clean generated page, and the palette following the ground (no model).
 - `fixtures` — replays the saved extractions (light, montiva, antho) through the
-  whole local pipeline and asserts each score and the page-copy scope filter.
-  This is the end-to-end regression suite for the studio text layer.
+  whole local pipeline and asserts each page's **structure** and art fidelity.
+  This is the end-to-end regression suite for the studio page builder.
 - `light` — the light fixture alone (kept as a stable entry point).
 - `regress` — runs the repo's own `qa/verify.sh` to prove the shipped pipeline
   is still intact (A/B/C PASS). This is the guard against a studio change
@@ -189,11 +219,38 @@ Every job keeps its working tree (`data/jobs/<id>/workspace/`) and logs
 
 1. Backend skeleton + workspace isolation; drive the pipeline end to end on a
    fixed reference (prove isolation before adding the LLM).
-2. Extraction + generation (content/CSS/design config from the LLM).
+2. Extraction + generation.
 3. Packaging + quality self-check.
 4. React UI.
 5. Smoke-test the whole flow; confirm `pipeline/` untouched and
    `qa/verify.sh` still 2.71/2.76/2.99.
+
+### Done: the website pivot
+
+6. Extraction asks for **structure** (sections + roles + copy), not just boxes.
+7. Generation emits a **semantic, responsive page** in normal flow with a
+   role-based type scale; the text-metrics layer is retired.
+8. `gen-page.mjs` gains a `"page"` layout (art as the hero backdrop) alongside
+   the `"poster"` layout A/B/C keep for the tracer's regression.
+9. Verification splits into **art-region fidelity** + a **structure report**.
+10. `doctor polarity` / `fixtures` re-targeted at structure; A/B/C still PASS.
+11. Same-name blocks merge into one section (a 75-block page shipped 75
+    `<section>`s before this), and a `"page"` layout scores the **traced SVG**
+    rather than the reflowing page.
+
+## Risks
+
+- **Structure inference is a heuristic.** A vision model plus clustering can miss
+  or misorder a section. Mitigation: deterministic gap/eyebrow clustering as a
+  backstop, and a structure self-check that *reports* problems (missing `h1`,
+  dead links, no sections) instead of shipping silently.
+- **No font is recovered.** The page is authored in Inter; the reference's
+  typeface is not imitated. This is by design, not a gap.
+- **The artwork is one backdrop.** Per-section art would be more faithful and
+  much more fragile.
+- **Long builds** — serialized worker, timeouts, live progress.
+- **Python 3.14** venv — FastAPI wheels are thin; `studio/.venv` is separate and
+  a `python@3.12` fallback is available.
 
 ## Risks
 

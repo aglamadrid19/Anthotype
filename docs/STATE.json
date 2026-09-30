@@ -1,7 +1,22 @@
 {
- "task": "Design-to-site pipeline: turn a flat design PNG into a code-native website. Design-agnostic -- three worked examples (A/B/C) are the regression suite.",
- "deliverable": "a reusable PNG -> code-native-site pipeline packaged as a repo, with A/B/C kept as examples and the regression suite",
- "status": "DONE and verified. All three sites build clean; qa/verify.sh scores each variant's real Astro dist/index.html. Re-running qa/mkart.py from the committed PARAMS reproduces the shipped SVGs byte-for-byte (deterministic pipeline).",
+ "task": "Design-to-site pipeline: turn a flat design PNG into a REAL website -- a responsive, semantic page in normal flow, with the traced artwork as the hero backdrop and the copy as authored DOM. Design-agnostic -- three worked examples (A/B/C) remain as the TRACER's regression suite.",
+ "deliverable": "a reusable PNG -> website pipeline packaged as a repo, plus a local studio (upload -> site). A/B/C are the tracer's regression suite: fixed 1024x768 POSTERS (layout: poster) scored on pixels exactly as before.",
+ "status": "DONE and verified. A/B/C posters build clean and qa/verify.sh scores each real Astro dist/index.html (2.71 / 2.76 / 2.99 PASS). The studio builds a real responsive page end to end (doctor fixtures: light/montiva/antho PASS; doctor polarity PASS; doctor regress PASS). Re-running qa/mkart.py from the committed PARAMS reproduces the shipped SVGs byte-for-byte (deterministic pipeline).",
+ "north_star": {
+  "what": "image in -> real website out. The reference PNG is INPUT; the shipped page contains no raster image.",
+  "not": "a pixel copy of the mockup. Pixel parity with the reference's TYPEFACE is deliberately not the target -- its residual was font substitution, which no sizing/weight/colour tuning removes.",
+  "two_measures": {
+   "artwork": "mean abs pixel diff over the ART REGION only (page-copy rects masked out) -- the tracer's job (studio/backend/app/verify.py). For a 'page' layout the art is scored by rendering the TRACED SVG alone at 1024x768, not by screenshotting the reflowing page (a page screenshot would measure layout, not tracing). A 'poster' (A/B/C) keeps scoring the page screenshot, which IS the artwork's frame.",
+   "website": "structure: landmarks, sections, one h1, resolving links, flow layout, reflow -- studio/backend/app/structure.py."
+  },
+  "retired": "the text-metrics layer: measure_lines, measure_weight, sample_line_colors, ink_coverage, per-line hard-stop gradients, glow tuning, cap_top_offset placement, width-solved font sizes.",
+  "kept": "art colour sampling (sample_ink/sample_runs/sample_fill/sample_plate_fill/sample_contrast), refine_button_bbox/measure_button_bbox/snap_to_ink -- now only for the palette and the tracer's exclusion rects.",
+  "page_shapes": {
+   "page": "responsive semantic website, art as the hero backdrop via the <!--ART--> splice. Default for scaffolded designs and what the studio emits.",
+   "poster": "the historical fixed 1024x768 stage. A/B/C use it, which is why qa/verify.sh still scores the traced art unchanged."
+  },
+  "structure_merge": "The vision model tags a section on EVERY block, so group_sections merges adjacent blocks that share a name into one group and ranks the names. Without it a 75-block landing page shipped 75 <section> elements; with it, 3 (features/testimonials/contact) plus header/hero/footer. Guarded by `doctor polarity`."
+ },
  "scores": {
   "a": 2.71,
   "b": 2.76,
@@ -17,7 +32,7 @@
   "b": 1.59,
   "c": 1.57
  },
- "metric": "mean abs pixel diff over the 1024x768 stage vs the reference PNG (lower = closer)",
+ "metric": "A/B/C posters: mean abs pixel diff over the 1024x768 stage vs the reference PNG (lower = closer). Studio pages: art-region pixel fidelity + a structural read of the built DOM (two measures, not one).",
  "realistic_floor": "~3.0-3.4. The band-paint oracle beats the SVG render mainly on A and C because their bright bands are fragmented into 1-5px specks (78.9% of A bright ink, 57.2% of C) that vector tracing reproduces poorly; B is 26.0% and its oracle and render nearly agree. Raising `up` recovers this (A up=6 -> 3.67) at linear cost in file size.",
  "breakthrough": "the art layer is no longer hand-authored SVG shapes: it is real vector geometry recovered from the reference with potrace (qa/mkart.py), emitted through the normal page pipeline. Cut art error ~3-4x.",
  "pipeline": "pipeline/ (lib/designs.mjs is the design registry; designs/*.json is per-design config)",
@@ -308,7 +323,7 @@
  "font_loading": "self-hosted (was: Google Fonts CDN). See self_hosted_fonts.",
  "non_pixel_fixes": {
   "artwork_a11y": "The traced SVG was announced as aria-label='AntHosting {v} artwork', leaking the internal variant letter. Now aria-hidden='true' focusable='false' (the art is decorative). Geometry byte-identical; scores unchanged. Fixed in qa/mkart.py.",
-  "cta_dead_link": "OPEN: the CTA is href='#waitlist' but no element with that id exists on any variant, so the button does nothing. The design PNGs specify only its appearance, so the real destination is a product decision. Set it in pipeline/content.json markup strings."
+  "cta_dead_link": "A/B/C POSTERS: the CTA is href='#waitlist' but no element with that id exists, so the button does nothing. Those are fixed posters (the tracer's regression suite), not a website. The STUDIO's generated pages no longer have this gap -- their CTAs point at a real in-page anchor. Set a real URL in the returned content-<id>.json."
  },
  "scores_previous_scaler": {
   "note": "produced with `sips -z`; the shipped scorer is now PIL Lanczos (qa/downsample.py)",
@@ -374,7 +389,8 @@
   "trace": "python qa/mkart.py <name> --out <name>.svg",
   "build": "node gen-page.mjs <name> && node to-astro.mjs <name> && (cd ../sites/variant-<name> && npm install && npm run build)",
   "score": "./qa/verify.sh <name>",
-  "note": "build.sh / bootstrap.sh / verify.sh / preview gallery auto-discover designs/*.json"
+  "note": "build.sh / bootstrap.sh / verify.sh / preview gallery auto-discover designs/*.json",
+  "layout": "newdesign.py scaffolds layout: 'page' -- a responsive website with the traced art as the hero backdrop (the <!--ART--> placeholder). Pass through design.layout='poster' only to keep the historical fixed 1024x768 stage (what A/B/C use)."
  },
  "status_notes": [],
  "targets": {

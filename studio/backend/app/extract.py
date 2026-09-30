@@ -1,13 +1,16 @@
-"""Extract the text layer from a design PNG with a vision LLM.
+"""Extract the page's structure and text from a design PNG with a vision LLM.
 
 The design reference is a flat raster concept: the pipeline recovers its
-*geometry* by tracing, but the words are a separate layer that must be authored.
-This module asks a vision model for the words, their roles and their bounding
-boxes, in stage coordinates.
+*geometry* by tracing, but the page's *content* -- its sections, reading order
+and copy -- must be authored.  This module asks a vision model for exactly that:
+the page's sections in reading order, and the text blocks inside them.
 
-Three consumers depend on the result:
-  * the copy itself (headline / tagline / CTA),
-  * the per-block layout CSS (`generate.py`), and
+The result is used to build a **real website** (semantic sections in normal
+flow), not a pixel-placed poster.  The vision boxes are therefore a hint about
+grouping and order, not coordinates to reproduce glyph-for-glyph.
+
+Two consumers depend on the result:
+  * the page structure and copy (`generate.py` builds the DOM), and
   * the `text` exclusion rects `mkart.py` needs, so the trace does not bake a
     rasterised copy of the words into the artwork.
 
@@ -34,21 +37,32 @@ from .config import vision
 
 ROLES = {"headline", "subhead", "tagline", "cta", "brand", "other"}
 PARTS = {"page", "artwork"}
+# The page-level region a block belongs to.  These become real DOM sections, so
+# the model is asked for the structure of the page, not just its words.
+SECTIONS = {"header", "nav", "hero", "features", "testimonials", "pricing",
+            "contact", "footer", "other"}
 
 SYSTEM_PROMPT = (
-    "You are a meticulous UI reverse-engineer. You are shown a flat design "
-    "mockup of a web page. Extract every piece of visible TEXT, exactly as "
-    "written, and report it as JSON.\n\n"
-    "For each text block give:\n"
+    "You are a meticulous web designer reverse-engineering a page from a "
+    "screenshot/mockup. The image is a flat design of a landing page. Recover "
+    "its STRUCTURE and its COPY so the page can be rebuilt as a real website.\n\n"
+    "Report the page as a list of text blocks. For each block give:\n"
     '  "text": the exact string (no commentary),\n'
     '  "role": one of headline | subhead | tagline | cta | brand | other,\n'
+    '  "section": which part of the page it belongs to -- one of header | nav | '
+    "hero | features | testimonials | pricing | contact | footer | other,\n"
     '  "part": one of page | artwork,\n'
     '  "bbox": [x0, y0, x1, y1] in pixels of the image you are shown.\n\n'
     "Rules:\n"
-    "- bbox must tightly enclose the visible glyphs, not the surrounding space.\n"
+    "- bbox must tightly enclose the visible glyphs, not the surrounding space. "
+    "It is used only to group and order the copy, so approximate is fine.\n"
     "- role headline = the largest/most prominent title; subhead = a secondary "
     "line directly under it; tagline = body/supporting sentence; cta = the "
     "label inside a button; brand = a logo wordmark.\n"
+    "- section is the page region: header = top bar with the logo; nav = the "
+    "menu links; hero = the main intro headline/subhead/buttons; features = a "
+    "grid/list of services or features; testimonials = quotes; pricing = "
+    "plans; contact = a contact/get-in-touch block; footer = the bottom bar.\n"
     "- part page = the page's own copy (title, navigation, body, button labels, "
     "footer). part artwork = text that is part of an illustration, a device "
     "mockup, a screenshot or a product card in the design.\n"
@@ -56,17 +70,15 @@ SYSTEM_PROMPT = (
     "- If a block wraps across several lines, report it as ONE block whose bbox "
     "spans all its lines.\n"
     "- Output ONLY a JSON object of the form "
-    '{"blocks": [{"text": "...", "role": "...", "part": "...", '
-    '"bbox": [0,0,0,0]}]}. '
+    '{"blocks": [{"text": "...", "role": "...", "section": "...", '
+    '"part": "...", "bbox": [0,0,0,0]}]}. '
     "No markdown, no commentary."
 )
 
-# A labelled coordinate grid is overlaid on the image before it is sent.  Boxes
-# read off a plain mockup are badly biased -- on the shipped references the
-# model put the headline tens of pixels below its true position, and moved it
-# again between identical calls -- which then misplaces the whole DOM text
-# layer.  With grid lines every 64 px the same model returns boxes within a few
-# pixels of the real ink, repeatably.
+# A labelled coordinate grid is overlaid on the image before it is sent.  The
+# boxes are no longer placement coordinates -- they only group blocks into
+# sections and order them -- but a grid still makes the model's grouping
+# stable between identical calls, which keeps the inferred structure steady.
 GRID_STEP = 64
 GRID_NOTE = (
     f"\n- The image is overlaid with magenta grid lines every {GRID_STEP} px, "
@@ -82,8 +94,10 @@ class Block:
     role: str
     bbox: tuple[float, float, float, float]
     part: str = "page"                             # page copy | artwork
+    section: str = "other"                         # page region (header/nav/hero/...)
     color: tuple[int, int, int] | None = None      # ink colour (sampled locally)
     fill: tuple[int, int, int] | None = None       # CTA button fill (sampled locally)
+    href: str | None = None                        # link target, when known
     runs: list[tuple[str, tuple[int, int, int]]] = field(default_factory=list)
     meta: dict = field(default_factory=dict)
 
@@ -167,9 +181,11 @@ def _parse_blocks(raw: str) -> list[Block]:
             y0, y1 = y1, y0
         role = str(it.get("role", "other")).strip().lower()
         part = str(it.get("part", "page")).strip().lower()
+        section = str(it.get("section", "other")).strip().lower()
         out.append(Block(text=text_val, role=role if role in ROLES else "other",
                          bbox=(x0, y0, x1, y1),
-                         part=part if part in PARTS else "page"))
+                         part=part if part in PARTS else "page",
+                         section=section if section in SECTIONS else "other"))
     return out
 
 
@@ -271,9 +287,11 @@ def _blocks_from_json(data: object) -> list[Block]:
     out: list[Block] = []
     for b in items:  # type: ignore[union-attr]
         part = str(b.get("part", "page")).strip().lower()
+        section = str(b.get("section", "other")).strip().lower()
         out.append(Block(text=str(b["text"]), role=str(b.get("role", "other")),
                          bbox=tuple(float(v) for v in b["bbox"]),
-                         part=part if part in PARTS else "page"))
+                         part=part if part in PARTS else "page",
+                         section=section if section in SECTIONS else "other"))
     return out
 
 

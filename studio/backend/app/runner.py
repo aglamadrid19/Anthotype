@@ -89,19 +89,26 @@ class PipelineRunner:
         self.store.advance(jid, "extracting")
         blocks = self._extract(jid, norm.path, norm.background)
 
-        # ---- 4. generate content + layout + exclusion rects -------------
+        # ---- 4. generate the page structure + stylesheet ----------------
         self.store.advance(jid, "generating")
-        generate.write_all(ws.pipeline, jid, blocks, norm.background)
+        content = generate.write_all(ws.pipeline, jid, blocks, norm.background)
         page = generate.page_blocks(blocks)
         self.store.update(jid, blocks=[
             {"text": b.text, "role": b.role, "part": getattr(b, "part", "page"),
+             "section": getattr(b, "section", "other"),
              "bbox": [round(v) for v in b.bbox],
              "color": list(b.color) if b.color else None}
             for b in page
-        ])
+        ], structure=content.get("_structure"),
+            structure_issues=content.get("_issues"))
         skipped = len(blocks) - len(page)
         note = f", {skipped} artwork block(s) left to the tracer" if skipped else ""
-        self.store.log(jid, f"generated text layer: {len(page)} block(s){note}")
+        sections = content.get("sections") or []
+        self.store.log(jid, f"generated page: {len(page)} block(s) across "
+                            f"{len(sections)} section(s) "
+                            f"[{', '.join(sections) or 'none'}]{note}")
+        for issue in content.get("_issues") or []:
+            self.store.log(jid, f"  structure: {issue}")
 
         # ---- 5. trace the artwork ---------------------------------------
         self.store.advance(jid, "tracing")
@@ -125,7 +132,16 @@ class PipelineRunner:
 
         # ---- 8. verify ---------------------------------------------------
         self.store.advance(jid, "verifying")
-        self._verify(jid, ws, norm.path)
+        self._verify(jid, ws, norm.path, norm.background)
+
+        # ---- 9. structure self-check ------------------------------------
+        # The pixel number no longer grades the page (it grades the *art* and
+        # the palette).  What makes the output a website is its structure, so a
+        # structural problem is surfaced as a warning rather than hidden behind
+        # a good-looking score.
+        structure = self._structure(jid, ws)
+        if structure:
+            self.store.update(jid, structure=structure)
 
         # ---- 9. package --------------------------------------------------
         self.store.advance(jid, "packaging")
@@ -190,22 +206,55 @@ class PipelineRunner:
         return generate.decorate(blocks, ref_png, background)
 
     # -- verification ------------------------------------------------------
-    def _verify(self, jid: str, ws: workspace.Workspace, ref_png: Path) -> None:
-        """Screenshot the built page and score it against the reference.
+    def _verify(self, jid: str, ws: workspace.Workspace, ref_png: Path,
+                background: tuple[int, int, int] | None = None) -> None:
+        """Score the built page against the reference and check its structure.
 
-        Optional: a missing Chrome or a screenshot failure is a warning, not a
-        build failure -- the site itself is still valid and downloadable.
+        The pixel score now measures how faithfully the *artwork* and palette
+        were recovered -- not how exactly the type was imitated.  A missing
+        Chrome or a screenshot failure is a warning, not a build failure: the
+        site itself is still valid and downloadable.
         """
         try:
             from . import verify
-            score, pct = verify.score(jid, ws.dist_page, ref_png)
+            cfg = {}
+            try:
+                cfg = json.loads(
+                    (ws.pipeline / "designs" / f"{jid}.json").read_text())
+            except Exception:  # noqa: BLE001
+                pass
+            result = verify.assess(
+                jid, ws.dist_page, ref_png, pipeline=ws.pipeline,
+                art_svg=ws.pipeline / f"{jid}.svg",
+                layout=cfg.get("layout", "page"),
+                background=background)
         except Exception as exc:  # noqa: BLE001 - never fail a job over scoring
             self.store.log(jid, f"score skipped: {exc}")
             self.store.update(jid, warnings=(self.store.get(jid).warnings or [])
                               + [f"self-check unavailable: {exc}"])
             return
-        self.store.update(jid, score=score, pct_over_30=pct)
-        self.store.log(jid, f"fidelity: mean {score:.2f}, pct>30 {pct:.2f}%")
+        self.store.update(jid, score=result.get("art_score"),
+                          pct_over_30=result.get("art_pct"),
+                          whole_score=result.get("whole_score"),
+                          whole_pct=result.get("whole_pct"))
+        self.store.log(
+            jid, f"fidelity: art region mean {result['art_score']:.2f} "
+                 f"(pct>30 {result['art_pct']:.2f}%, "
+                 f"from the {result.get('art_source', 'page')}), "
+                 f"whole page mean {result['whole_score']:.2f}")
+        for issue in result.get("issues") or []:
+            self.store.log(jid, f"  structure: {issue}")
+            self.store.update(jid, warnings=(self.store.get(jid).warnings or [])
+                              + [f"structure: {issue}"])
+        self.store.update(jid, structure=result.get("structure"))
+
+    def _structure(self, jid: str, ws: workspace.Workspace) -> dict | None:
+        try:
+            from . import structure
+            return structure.summarize(ws.dist_page, ws.pipeline / f"{jid}.page.css")
+        except Exception as exc:  # noqa: BLE001
+            self.store.log(jid, f"structure check skipped: {exc}")
+            return None
 
     # -- packaging ---------------------------------------------------------
     def _package(self, jid: str, ws: workspace.Workspace) -> Path:

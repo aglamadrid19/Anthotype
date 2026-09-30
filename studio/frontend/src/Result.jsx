@@ -1,26 +1,31 @@
 import { useState } from 'react';
 import { downloadUrl, previewUrl, refUrl } from './api.js';
 
+const SECTION_LABEL = {
+  header: 'Header', nav: 'Navigation', hero: 'Hero', features: 'Features',
+  testimonials: 'Testimonials', pricing: 'Pricing', contact: 'Contact',
+  footer: 'Footer', other: 'Section',
+};
+
 export default function Result({ job, onReset }) {
   const [view, setView] = useState('preview'); // preview | reference
-  const score = job.score;
-  // A whole-landing-page mockup or a design whose typeface is not Inter lands
-  // well above the hand-tuned band.  Saying "your site is ready" over a 12.04
-  // reads as a success when the text layer is in fact wrong, so grade it and
-  // warn where it counts.
-  const grade =
-    score == null ? null : score < 3 ? 'good' : score < 6 ? 'ok' : 'rough';
-  const rough = score != null && score >= 6;
+  const [width, setWidth] = useState('full');  // full | tablet | phone
+  const info = typeof job.structure === 'object' && job.structure !== null
+    ? job.structure : {};
+  const sections = info.sections || [];
+  const issues = job.structure_issues || info.issues || [];
 
   return (
     <div className="result">
       <div className="card">
         <div className="row between wrap">
           <div>
-            <h2>{rough ? 'Your site is built — check the text' : 'Your site is ready'}</h2>
+            <h2>{issues.length ? 'Your site is built — review the notes' : 'Your site is built'}</h2>
             <p className="hint">
-              One self-contained <code>index.html</code> plus the full Astro
-              project.
+              A responsive, semantic page in normal flow —{' '}
+              <code>header</code>, <code>nav</code>, <code>section</code>s and a{' '}
+              <code>footer</code> — plus the full Astro project. The traced
+              artwork is the hero backdrop; the copy is real DOM.
             </p>
           </div>
           <div className="actions">
@@ -33,61 +38,60 @@ export default function Result({ job, onReset }) {
           </div>
         </div>
 
-        {rough && (
-          <p className="hint warn">
-            The rendered page differs from the reference more than usual
-            (fidelity {score.toFixed(2)}). The artwork is traced and the copy is
-            real DOM, but the layout of the text is approximate — open the
-            preview against the reference below and adjust
-            <code> content-*.json</code> / <code> *.page.css</code> in the
-            download.
-          </p>
-        )}
-
-        <div className="stats">
-          <div className="stat">
-            <span className="label">Fidelity</span>
-            <span className={`value ${grade || ''}`}>
-              {score == null ? 'n/a' : score.toFixed(2)}
-            </span>
-            <span className="unit">mean abs diff, lower is better</span>
-          </div>
-          <div className="stat">
-            <span className="label">Pixels off &gt;30</span>
-            <span className="value">
-              {job.pct_over_30 == null ? 'n/a' : `${job.pct_over_30.toFixed(2)}%`}
-            </span>
-            <span className="unit">of the 1024×768 stage</span>
-          </div>
-          <div className="stat">
-            <span className="label">Source</span>
-            <span className="value small">
-              {job.src?.width}×{job.src?.height}
-            </span>
-            <span className="unit">normalized to 1024×768</span>
-          </div>
-          <div className="stat">
-            <span className="label">Page size</span>
-            <span className="value small">
-              {job.artifacts?.page_bytes
-                ? `${Math.round(job.artifacts.page_bytes / 1024)} KB`
-                : '—'}
-            </span>
-            <span className="unit">single file, zero requests</span>
-          </div>
-        </div>
-
-        {job.warnings?.length > 0 && (
+        {issues.length > 0 && (
           <ul className="warnings">
-            {job.warnings.map((w, i) => (
+            {issues.map((w, i) => (
               <li key={i}>{w}</li>
             ))}
           </ul>
         )}
+
+        <div className="stats">
+          <div className="stat">
+            <span className="label">Sections</span>
+            <span className="value">{sections.length || (info.all_sections?.length ?? 0)}</span>
+            <span className="unit">
+              {sections.length
+                ? [...new Set(sections)].map((s) => SECTION_LABEL[s] || s).join(' · ')
+                : 'hero only'}
+            </span>
+          </div>
+          <div className="stat">
+            <span className="label">Headings</span>
+            <span className="value small">
+              {info.headings
+                ? `h1×${info.headings.h1} h2×${info.headings.h2} h3×${info.headings.h3}`
+                : '—'}
+            </span>
+            <span className="unit">one h1, ordered below it</span>
+          </div>
+          <div className="stat">
+            <span className="label">Links</span>
+            <span className="value">{info.links ?? '—'}</span>
+            <span className="unit">
+              {info.dead_links?.length ? `${info.dead_links.length} dead` : 'all resolve'}
+            </span>
+          </div>
+          <div className="stat">
+            <span className="label">Artwork</span>
+            <span className="value small">{info.has_art ? 'traced' : '—'}</span>
+            <span className="unit">
+              {job.score == null
+                ? 'art fidelity —'
+                : `art fidelity ${job.score.toFixed(2)}`}
+            </span>
+          </div>
+        </div>
+        <p className="hint">
+          <strong>Fidelity {job.score == null ? '—' : job.score.toFixed(2)}</strong>{' '}
+          measures the <em>traced artwork</em> (and the palette) against the
+          reference — not the type. The page is authored in its own type scale,
+          not a pixel copy of the mockup's typeface.
+        </p>
       </div>
 
       <div className="card">
-        <div className="row between">
+        <div className="row between wrap">
           <div className="tabs">
             <button
               className={view === 'preview' ? 'tab active' : 'tab'}
@@ -102,11 +106,24 @@ export default function Result({ job, onReset }) {
               Reference
             </button>
           </div>
+          {view === 'preview' && (
+            <div className="tabs">
+              {['full', 'tablet', 'phone'].map((w) => (
+                <button
+                  key={w}
+                  className={width === w ? 'tab active' : 'tab'}
+                  onClick={() => setWidth(w)}
+                >
+                  {w === 'full' ? 'Desktop' : w === 'tablet' ? 'Tablet' : 'Phone'}
+                </button>
+              ))}
+            </div>
+          )}
           <a className="ghost small" href={previewUrl(job.id)} target="_blank" rel="noreferrer">
             Open in new tab ↗
           </a>
         </div>
-        <div className="stage-frame">
+        <div className={`stage-frame ${width}`}>
           <iframe
             title={view}
             src={view === 'preview' ? previewUrl(job.id) : refUrl(job.id)}
@@ -117,27 +134,28 @@ export default function Result({ job, onReset }) {
 
       {job.blocks?.length > 0 && (
         <div className="card">
-          <h2>Extracted text layer</h2>
+          <h2>Extracted content</h2>
           <p className="hint">
-            These are real DOM elements in the output, not baked into the artwork.
+            Real DOM elements in the output, grouped into the page&apos;s sections
+            — not baked into the artwork.
           </p>
           <table className="blocks">
             <thead>
               <tr>
+                <th>Section</th>
                 <th>Role</th>
                 <th>Text</th>
-                <th>Box</th>
                 <th>Colour</th>
               </tr>
             </thead>
             <tbody>
               {job.blocks.map((b, i) => (
                 <tr key={i}>
+                  <td className="mono">{b.section || '—'}</td>
                   <td>
                     <span className={`role role-${b.role}`}>{b.role}</span>
                   </td>
                   <td className="text">{b.text}</td>
-                  <td className="mono">{b.bbox.join(', ')}</td>
                   <td>
                     {b.color && (
                       <span className="swatch-wrap">
@@ -145,9 +163,6 @@ export default function Result({ job, onReset }) {
                           className="swatch"
                           style={{ background: `rgb(${b.color.join(',')})` }}
                         />
-                        <span className="mono">
-                          {b.color.join(',')}
-                        </span>
                       </span>
                     )}
                   </td>

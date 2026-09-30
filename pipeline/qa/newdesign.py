@@ -85,44 +85,78 @@ def content_stub(name, ref_w, ref_h):
     Deliberately plain: the point is that the whole pipeline (trace -> page ->
     astro build -> verify) runs end to end from minute one, so you tune against
     a real render instead of guessing.  Replace the copy and the CSS.
+
+    The shape is a real page -- a header, a hero and a footer in normal flow --
+    because that is what this pipeline produces.  The `<!--ART-->` placeholder is
+    where `gen-page.mjs` splices the traced artwork in.
     """
     return {
-        'title': f'{name} \u2014 coming soon',
+        'title': f'{name} — coming soon',
         'description': 'Built from a design reference.',
-        'eyebrow': 'Coming soon',
-        'tagline': 'Replace this tagline with your copy.',
-        'cta': 'Join the waitlist',
+        'cta': 'Get started',
+        'cta_href': '#top',
         'stage': [ref_w, ref_h],
+        'sections': ['header', 'hero', 'footer'],
         'markup': (
-            '      <h1 class="white-space">Your <span class="green">Headline</span></h1>\n'
-            '      <h2>Coming soon</h2>\n'
-            '      <p class="white-space">Replace this tagline with your copy.</p>\n'
-            '      <a class="cta" href="#">Join the waitlist</a>'
+            '  <header class="site-header" id="top">\n'
+            '    <div class="wrap">\n'
+            '      <a class="brand" href="#top">Your Brand</a>\n'
+            '      <nav class="site-nav" aria-label="Primary">\n'
+            '        <a href="#top">Home</a>\n'
+            '        <a href="#top">Contact</a>\n'
+            '      </nav>\n'
+            '    </div>\n'
+            '  </header>\n'
+            '  <section class="hero" id="hero">\n'
+            '    <div class="hero-art" aria-hidden="true"><!--ART--></div>\n'
+            '    <div class="wrap hero-copy">\n'
+            '      <h1>Your headline here</h1>\n'
+            '      <p class="lede">Replace this with your copy.</p>\n'
+            '      <a class="cta" href="#top">Get started</a>\n'
+            '    </div>\n'
+            '  </section>\n'
+            '  <footer class="site-footer" id="footer">\n'
+            '    <div class="wrap"><p>© Your Brand</p></div>\n'
+            '  </footer>'
         ),
     }
 
 
 def content_stub_css(stage_w, stage_h):
+    """A minimal stylesheet for the stub page (replace it with your own).
+
+    `studio/backend/app/generate.py::build_page_css` is the reference for what a
+    full generated stylesheet looks like -- this is only the skeleton.
+    """
     return (
-        ':root { color-scheme: dark; --green: #19d283; --ink: #f4fff9; }\n'
+        ':root { color-scheme: dark; --bg: #000a07; --ink: #f4fff9;\n'
+        '  --muted: #9fb8ad; --accent: #19d283; --accent-ink: #02150f;\n'
+        '  --surface: #06120e; --border: #123026; --maxw: 1120px; }\n'
         '* { box-sizing: border-box; margin: 0; padding: 0; }\n'
-        'html, body { width: 100%; height: 100%; }\n'
-        'body { background: #000a07; font-family: Inter, system-ui, sans-serif;\n'
-        '  overflow: hidden; -webkit-font-smoothing: antialiased; }\n'
-        f'.stage {{ position: absolute; left: 50%; top: 50%; width: {stage_w}px;'
-        f' height: {stage_h}px;\n'
-        '  transform-origin: center center; background: #000a07; overflow: hidden; }\n'
-        '.content { position: absolute; left: 56px; top: 245px; width: 480px; z-index: 3; }\n'
-        '.white-space { white-space: nowrap; }\n'
-        'h1 { color: var(--ink); font-size: 80px; font-weight: 400; letter-spacing: -.028em; line-height: 1; }\n'
-        'h1 .green { color: var(--green); }\n'
-        'h2 { margin-top: 11px; color: var(--green); font-size: 46px; font-weight: 400; line-height: 1; }\n'
-        '.content p { margin-top: 16px; color: rgba(240,255,248,.80); font-size: 19.5px; line-height: 1.15; }\n'
-        '.cta { display: inline-flex; align-items: center; justify-content: center; width: 250px; height: 55px;\n'
-        '  margin-top: 28px; border-radius: 14px; text-decoration: none;\n'
-        '  background: linear-gradient(180deg, #18c47c, #13b26e); color: #02150f; font-size: 21px; font-weight: 600; }\n'
-        '.art { position: absolute; inset: 0; z-index: 2; }\n'
-        f'.art > svg {{ display: block; width: {stage_w}px; height: {stage_h}px; overflow: visible; }}\n'
+        'body { background: var(--bg); color: var(--ink);\n'
+        '  font-family: Inter, system-ui, sans-serif; line-height: 1.55;\n'
+        '  -webkit-font-smoothing: antialiased; }\n'
+        'h1, h2, h3 { line-height: 1.1; letter-spacing: -0.02em; }\n'
+        '.wrap { width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }\n'
+        '.site-header { position: sticky; top: 0; z-index: 20; background: var(--bg);\n'
+        '  border-bottom: 1px solid var(--border); }\n'
+        '.site-header .wrap { display: flex; align-items: center; justify-content: space-between;\n'
+        '  gap: 24px; min-height: 68px; flex-wrap: wrap; }\n'
+        '.brand { font-weight: 600; font-size: 18px; text-decoration: none; }\n'
+        '.site-nav { display: flex; gap: 22px; }\n'
+        '.site-nav a { color: var(--muted); text-decoration: none; font-size: 15px; }\n'
+        '.hero { position: relative; overflow: hidden; }\n'
+        '.hero-art { position: absolute; inset: 0; z-index: 0; }\n'
+        '.hero-art svg { width: 100%; height: 100%; display: block; }\n'
+        '.hero-copy { position: relative; z-index: 1; display: grid; gap: 18px;\n'
+        '  justify-items: start; padding-top: 104px; padding-bottom: 104px; max-width: 760px; }\n'
+        'h1 { font-size: clamp(38px, 6.5vw, 74px); font-weight: 600; }\n'
+        '.lede { font-size: clamp(16px, 1.7vw, 20px); color: var(--muted); max-width: 62ch; }\n'
+        '.cta { display: inline-flex; align-items: center; padding: 14px 28px; border-radius: 12px;\n'
+        '  text-decoration: none; background: var(--accent); color: var(--accent-ink);\n'
+        '  font-weight: 600; width: fit-content; }\n'
+        '.site-footer { padding: 48px 0; color: var(--muted); }\n'
+        '@media (max-width: 620px) { .hero-copy { padding-top: 72px; padding-bottom: 72px; } }\n'
     )
 
 
@@ -149,7 +183,7 @@ def main():
     port = a.port or next_port()
     cfg = {'name': a.name, 'ref': f'qa/ref-{a.name}.png',
            'site': f'sites/variant-{a.name}', 'content': f'content-{a.name}.json',
-           'target': None, 'box': None, 'text': [],
+           'layout': 'page', 'target': None, 'box': None, 'text': [],
            'params': {'bands': a.bands, 'up': a.up, 'turdsize': 2,
                       'alphamax': 0.0, 'opttol': 0.0, 'minpx': None,
                       'exclude_text': True, 'text_lum_max': 200.0,

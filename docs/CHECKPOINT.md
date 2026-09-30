@@ -5,14 +5,30 @@ State at the end of the session that packaged this repo. Read this first, then
 
 ## What this is
 
-Turn a flat design PNG into a **real, code-native website** — DOM text, CSS and
-traced SVG geometry, no raster images in the output. The reference PNG is input
-to the pipeline, not an embedded asset.
+Turn a flat design PNG into a **real, code-native website** — a responsive,
+semantic page with traced SVG artwork, DOM text and CSS, and no raster images in
+the output. The reference PNG is input to the pipeline, not an embedded asset.
 
-Three worked examples (A/B/C) demonstrate it end to end and serve as the
-regression suite.
+**The north star changed.** This used to be a pixel-parity project: whole-page
+mean-abs-pixel-difference against the reference, with a large text-measurement
+layer tuned to make DOM glyphs land on the reference's pixels. That target is
+unwinnable — its largest residual was **font substitution** (the reference's
+typeface is not the vendored Inter), which no sizing or tuning removes. The
+metric is now split:
 
-## Status: done and pushed-ready
+- **the artwork** is scored on pixels, over the **art region** only (the page-copy
+  rects masked out) — the tracer's job;
+- **the website** is scored on **structure** — landmarks, sections, one `h1`,
+  resolving links, flow layout, reflow — which is what makes it a website.
+
+The retired text-metrics machinery (`measure_lines`, `measure_weight`,
+`sample_line_colors`, per-line gradients, glow, `cap_top_offset` placement,
+width-solved font sizes) is gone.
+
+Three worked examples (A/B/C) remain as the **tracer's** regression suite: they
+are fixed 1024×768 posters (`"layout": "poster"`) scored exactly as before.
+
+## Status: done and verified
 
 | | score (mean abs pixel diff, lower better) | payload |
 |---|---|---|
@@ -22,12 +38,32 @@ regression suite.
 
 `pct>30` = 1.13% / 1.59% / 1.57%. Stable to ±0.01 over repeated runs.
 
-- Branch `main`, working tree **clean**; see `docs/HOME.md` for the mirror + checkouts.
-- Published to GitHub: **https://github.com/aglamadrid19/Anthotype** (remote `origin`
-  on the canonical mirror and both checkouts).
-- Verified from a fresh `git clone`: `./bootstrap.sh`, regenerate pages, build
-  all three Astro sites, `qa/verify.sh` → PASS. The tracer also reproduces the
-  committed `{a,b,c}.svg` byte-identically from the committed references.
+- `qa/verify.sh` → **2.71 / 2.76 / 2.99 PASS** (unchanged: the poster shell and
+  the tracer are untouched).
+- `doctor polarity` → all checks pass (ink/box/two-tone/scope + the new
+  structure-inference checks).
+- `doctor fixtures` → **light / montiva / antho all PASS** (structure, not pixel
+  targets).
+- `doctor regress` → **regression PASS**.
+- The studio builds a real page end to end on the montiva fixture (a real vision
+  call): header + nav, hero, **3 content sections** (features / testimonials /
+  contact), footer; one `h1`; no dead links; flow layout; no structure issues.
+- Art fidelity is now taken by rendering the **traced SVG** at the reference
+  stage (the page reflows, so a page screenshot would measure layout, not
+  tracing). On the montiva fixture that reads **4.56** for the tracing itself,
+  where the page screenshot reads ~62 (its first viewport is one reflowed band).
+- Branch `main`; published to **https://github.com/aglamadrid19/Anthotype**
+  (remote `origin` on the canonical mirror and both checkouts).
+
+## The two page shapes
+
+`gen-page.mjs` builds one of two pages, chosen by the design's `layout`:
+
+- **`"page"`** (default for scaffolded designs, and what the studio emits) — a
+  responsive website: semantic sections in normal flow, a role-based type scale,
+  the traced art as the hero backdrop (`<!--ART-->` placeholder).
+- **`"poster"`** (A/B/C) — the historical fixed 1024×768 stage scaled to the
+  viewport, so `qa/verify.sh` keeps scoring the traced art as it always did.
 
 ## Design-agnostic: a design name is the only input
 
@@ -35,7 +71,7 @@ The pipeline knows nothing about A/B/C. `pipeline/lib/designs.mjs` enumerates
 `pipeline/designs/*.json`, and `build.sh`, `bootstrap.sh`, `qa/verify.sh` and the
 preview gallery all ask it — so adding a design needs no edits to any of them.
 
-Adding a design is one command:
+Adding a design is one command (it scaffolds a `"layout": "page"` website):
 
 ```sh
 python qa/newdesign.py <name> path/to/design.png    # config + ref + content + site
@@ -45,9 +81,9 @@ node gen-page.mjs <name> && node to-astro.mjs <name>
 ./qa/verify.sh <name>
 ```
 
-`designs/<n>.json` carries everything per-design: `ref`, `site`, `content`
-(a `content.json` key or a standalone file), `target` (the score `verify.sh`
-enforces), `box`, `text` rects, tracing `params`, and optional `regions`.
+`designs/<n>.json` carries everything per-design: `ref`, `site`, `content`,
+`layout`, `target` (the score `verify.sh` enforces), `box`, `text` rects, tracing
+`params`, and optional `regions`.
 
 ## The two things future work must not break
 
@@ -75,10 +111,12 @@ Gitignored: `pipeline/{v}-full.html` / `-static.html`, `sites/*/src/pages/`,
 
 ## Known gap (needs a product decision, not code)
 
-**The CTA has no destination.** `href="#waitlist"`, and no element with that id
-exists in any variant, so the button does nothing. The design PNGs specify only
-its appearance. Set the real URL in `pipeline/content.json` (the `href` lives
-inside each variant's `markup` string).
+**The A/B/C posters' CTA has no destination.** `href="#waitlist"`, and no element
+with that id exists in the poster variants, so the button does nothing. Those are
+the tracer's regression suite (fixed posters), not a website. The **studio's**
+generated pages no longer have this gap: their CTAs point at a real in-page
+anchor on the generated page. Set a real URL in the returned `content-<id>.json`
+when you have one.
 
 ## Earlier session's changes
 

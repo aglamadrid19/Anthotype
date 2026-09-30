@@ -21,12 +21,12 @@ from .config import JOBS_DIR
 # The stage machine, shared with the frontend so both agree on the stepper.
 STAGES: list[tuple[str, float, str]] = [
     ("received", 0.02, "Upload received"),
-    ("extracting", 0.10, "Extracting text with the vision model"),
-    ("generating", 0.22, "Generating the text layer and layout"),
+    ("extracting", 0.10, "Reading the page's structure and copy"),
+    ("generating", 0.22, "Building the page structure and stylesheet"),
     ("tracing", 0.32, "Tracing the artwork with potrace"),
     ("composing", 0.68, "Composing the self-contained page"),
     ("building", 0.78, "Building the Astro site"),
-    ("verifying", 0.92, "Scoring the result"),
+    ("verifying", 0.92, "Checking the artwork and the page structure"),
     ("packaging", 0.97, "Packaging the download"),
     ("done", 1.00, "Done"),
 ]
@@ -46,10 +46,14 @@ class Job:
     logs: list[str] = field(default_factory=list)
     error: str | None = None
     warnings: list[str] = field(default_factory=list)
-    score: float | None = None
+    score: float | None = None      # fidelity of the ARTWORK region (lower better)
     pct_over_30: float | None = None
+    whole_score: float | None = None  # whole-stage mean, informational only
+    whole_pct: float | None = None
     src: dict | None = None         # source image info
     blocks: list[dict] = field(default_factory=list)
+    structure: list[dict] | dict | None = None   # page structure summary
+    structure_issues: list[str] = field(default_factory=list)
     artifacts: dict = field(default_factory=dict)   # {zip, preview, ...} relative paths
 
     @property

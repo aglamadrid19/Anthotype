@@ -5,17 +5,21 @@ When something looks wrong, start here.
 
     doctor env              check every dependency (venv, node, potrace, chrome,
                             fonts, the vision model / AntSeed proxy)
-    doctor polarity         synthetic light/dark checks for the ink, wrapping and
-                            scope heuristics (no vision model, no pipeline)
-    doctor fixtures [name]  build every saved extraction end to end and score it
-                            (no vision model): the light fixture plus the two
-                            real designs that regressed
+    doctor polarity         synthetic light/dark checks for the ink sampling and
+                            page-copy scope, plus the generator's structure
+                            logic: grouping, header/hero/footer naming, a clean
+                            generated page, palette polarity (no model, no pipeline)
+    doctor fixtures [name]  build every saved extraction end to end and assert its
+                            STRUCTURE and that the art survives (no vision model):
+                            light (hero-only), montiva (multi-section), antho
+                            (photorealistic hero)
     doctor light [--keep]   the light fixture alone (kept for the README)
     doctor regress          prove the shipped pipeline is intact: run the repo's
                             own qa/verify.sh and report A/B/C PASS/FAIL
     doctor run [png]        run one design end to end, in-process, printing every
                             stage and its timing (no HTTP, no queue)
-    doctor job <id>         inspect a studio job: status, score, artifacts, logs
+    doctor job <id>         inspect a studio job: status, art fidelity, structure,
+                            artifacts, logs
     doctor jobs             list recent jobs
 
 Exit code is non-zero if any check fails, so it is CI-able.
@@ -296,69 +300,89 @@ def cmd_polarity(_args: list[str]) -> int:
         _line(OK if ok else BAD, f"two-tone wordmark ({name})",
               " / ".join(f"{t}={c}" for t, c in runs) or "one run")
 
-    # Wrapped block: many lines, and not clamped to the old 8 px floor.
-    tagline = ("A tool inspired by the anthotype process — sunlight, plant "
-               "pigment, and time — to transform an image into a real website.")
-    fs, n = fontmetrics.fit_block_type(tagline, 331, 53, "tagline")
-    _line(OK if n > 1 and fs >= 9 else BAD, "wrapped block sizing",
-          f"{fs:.1f}px over {n} line(s)")
-    one = fontmetrics.fit_block_type("Coming soon", 270, 42, "subhead")
-    _line(OK if one[1] == 1 else BAD, "single-line block sizing",
-          f"{one[0]:.1f}px over {one[1]} line(s)")
-
     # The extraction scope filter keeps page copy and drops illustration text.
     # `part=artwork` wins regardless of role; the size backstop applies only to
-    # the ambiguous `other` role.
+    # the ambiguous `other` role.  The backstop is deliberately lax now: for a
+    # *website* dropping a real nav link is worse than emitting a stray caption.
     from app.extract import Block
     footer = Block("Open source · Community driven", "other", (49, 481, 318, 507))
     caption = Block("Plant Pigment", "other", (559, 344, 619, 356))
     word = Block("antseed", "brand", (88, 170, 182, 194))    # small but real copy
+    nav = Block("Services", "other", (419, 105, 446, 114))   # a real nav link
     mock = Block("Get Started", "cta", (778, 466, 810, 480), part="artwork")
     checks = {"wide footer": generate.is_page_text(footer),
               "small wordmark": generate.is_page_text(word),
-              "small caption": not generate.is_page_text(caption),
+              "nav link": generate.is_page_text(nav),
+              "tiny speck": not generate.is_page_text(
+                  Block("x", "other", (10, 10, 12, 12))),
               "artwork CTA": not generate.is_page_text(mock)}
     ok = all(checks.values())
     _line(OK if ok else BAD, "page copy vs artwork",
           ", ".join(f"{k}={v}" for k, v in checks.items()))
 
-    # Reference-driven line measurement: a wrapped block is two ink bands in the
-    # reference, and the count must be read from the pixels -- the box alone
-    # cannot tell a wrapped block from a single long line (the Montiva hero).
-    from PIL import Image, ImageDraw, ImageFont
-    stage = Image.new("RGB", (config.STAGE_W, config.STAGE_H), (248, 249, 247))
-    d = ImageDraw.Draw(stage)
-    d.text((100, 100), "First line of the headline", fill=(20, 24, 40),
-           font=fontmetrics.pil_font(600, 30))
-    d.text((100, 142), "Second line of the headline", fill=(20, 90, 220),
-           font=fontmetrics.pil_font(600, 30))
-    arr = np.asarray(stage).astype(np.float32)
-    n_lines, pitch, runs = generate.measure_lines(arr, (95, 92, 420, 182), (248, 249, 247))
-    _line(OK if n_lines == 2 and pitch and 30 <= pitch <= 48 else BAD,
-          "line count from the reference",
-          f"{n_lines} line(s), pitch {pitch and round(pitch, 1)}")
-    if n_lines == 2:
-        cols = generate.sample_line_colors(arr, runs, 95, 420, (248, 249, 247))
-        spread = generate._max_channel_spread(cols)
-        _line(OK if spread > 60 else BAD, "per-line colour (two-tone headline)",
-              " / ".join(str(c) for c in cols))
+    # Structure inference: a flat page with an eyebrow-labelled sections list must
+    # come back as named sections in reading order, with a header row split off
+    # the top and a footer at the bottom.  This is what makes the output a
+    # website rather than a pile of absolutely-positioned text.
+    synthetic = [
+        Block("Acme", "brand", (24, 20, 80, 32)),
+        Block("Home", "other", (200, 20, 240, 30)),
+        Block("Services", "other", (260, 20, 320, 30)),
+        Block("Big headline", "headline", (24, 90, 600, 140)),
+        Block("Sub line", "tagline", (24, 150, 400, 190)),
+        Block("OUR SERVICES", "tagline", (24, 260, 140, 272)),
+        Block("Computer Repair", "other", (24, 280, 160, 292)),
+        Block("We fix computers.", "tagline", (24, 300, 180, 330)),
+        Block("WHAT PEOPLE SAY", "tagline", (24, 420, 160, 432)),
+        Block("Great service!", "tagline", (24, 440, 200, 470)),
+        Block("Acme", "brand", (24, 700, 80, 712)),
+        Block("© 2026 Acme", "other", (200, 702, 300, 712)),
+    ]
+    sections = generate.group_sections(synthetic)
+    names = [s for s, _ in sections]
+    _line(OK if "header" in names else BAD, "header split from the top row",
+          f"{names}")
+    _line(OK if "hero" in names else BAD, "hero identified", f"{names}")
+    _line(OK if "footer" in names else BAD, "footer identified", f"{names}")
+    _line(OK if len(sections) >= 4 else BAD, "sections split on eyebrows",
+          f"{len(sections)} section(s): {names}")
 
-    # Weight is measured, not assumed: a bold line covers more of its box than a
-    # regular one, and the studio must pick the heavier vendored face for it.
-    reg = Image.new("RGB", (900, 120), (248, 249, 247))
-    ImageDraw.Draw(reg).text((20, 20), "Complete IT Services", fill=(10, 12, 20),
-                             font=fontmetrics.pil_font(400, 48))
-    bold = Image.new("RGB", (900, 120), (248, 249, 247))
-    ImageDraw.Draw(bold).text((20, 20), "Complete IT Services", fill=(10, 12, 20),
-                              font=fontmetrics.pil_font(600, 48))
-    w_reg = generate.measure_weight(np.asarray(reg).astype(np.float32),
-                                    (15, 15, 500, 80), "Complete IT Services",
-                                    (248, 249, 247))
-    w_bold = generate.measure_weight(np.asarray(bold).astype(np.float32),
-                                     (15, 15, 500, 80), "Complete IT Services",
-                                     (248, 249, 247))
-    _line(OK if w_bold > w_reg else BAD, "weight from the reference",
-          f"regular->{w_reg}, bold->{w_bold}")
+    # Adjacent blocks the model tagged with the SAME section name are one section.
+    # The model declares a section per block, so without the merge a 75-block
+    # landing page ships one `<section>` per block; this caught exactly that.
+    declared = [
+        Block("LOCAL, RELIABLE", "tagline", (148, 133, 300, 145), section="hero"),
+        Block("Local IT Help", "headline", (148, 145, 422, 188), section="hero"),
+        Block("OUR SERVICES", "tagline", (149, 311, 260, 323), section="features"),
+        Block("Computer Repair", "headline", (102, 372, 167, 381), section="features"),
+        Block("Data Transfer", "headline", (246, 372, 302, 379), section="features"),
+        Block("WHAT OUR CLIENTS SAY", "tagline", (90, 519, 260, 531), section="testimonials"),
+        Block("Great service!", "tagline", (90, 531, 260, 560), section="testimonials"),
+        Block("Get in touch", "tagline", (582, 593, 700, 608), section="contact"),
+        Block("Book an Appointment", "cta", (834, 601, 954, 640), section="contact"),
+    ]
+    merged = [s for s, _ in generate.group_sections(declared)]
+    ok = merged == ["hero", "features", "testimonials", "contact"]
+    if ok:
+        markup = generate.build_content(
+            generate.group_sections(declared), "merge")["markup"]
+        ok = markup.count('<section class="section sec-') == 3
+    _line(OK if ok else BAD, "same-name blocks merge into one section", f"{merged}")
+
+    # The generated page must be a real, flowing document: one h1, sections, no
+    # dead links, nothing absolutely positioned.
+    markup = generate.build_content(sections, "polarity")["markup"]
+    issues = generate.structure_issues(sections, markup)
+    _line(OK if not issues else BAD, "generated page structure",
+          "; ".join(issues) or "clean")
+
+    # A light ground must produce a light palette (and a dark one a dark palette).
+    light_pal = generate.palette(synthetic, (248, 249, 247))
+    dark_pal = generate.palette(synthetic, (10, 12, 14))
+    _line(OK if light_pal["light"] and not dark_pal["light"] else BAD,
+          "palette polarity",
+          f"light bg -> light scheme={light_pal['light']}, "
+          f"dark bg -> light scheme={dark_pal['light']}")
 
     # Extraction resilience: the retry escalates the image encoding, so a peer
     # that cannot decode WebP is not a dead end.
@@ -386,34 +410,57 @@ def cmd_polarity(_args: list[str]) -> int:
 # light: the frozen light-background fixture, end to end
 # --------------------------------------------------------------------------
 # A saved extraction replayed against a reference.  The vision model is never
-# called, so these are deterministic and free; they guard the local layout,
-# tracing and scoring paths in CI and on a fresh checkout.
+# called, so these are deterministic and free; they guard the local *structure*
+# and tracing paths in CI and on a fresh checkout.
 #
-# `light` is the synthetic first light design; `montiva` and `antho` are real
-# uploads that failed badly (12.04 / 6.39) before the reference-driven line
-# measurement and the ink inpainting landed, so they are the regression suite
-# for exactly those two fixes.
+# These are no longer scored on whole-page pixels: the studio now builds a real
+# website whose copy is authored in the site's own type, so pixel parity with
+# the reference's typeface is deliberately not the target.  Each fixture instead
+# asserts the page's STRUCTURE (sections/hero/headings/links as reported by
+# `app.structure.inspect`) plus the artwork surviving into the page.
+#
+# `expect` is a list of substring requirements on the structure summary; a
+# fixture may also pin counts with `page` / `artwork`.
 FIXTURES: dict[str, dict] = {
     "light": dict(
-        ref="light-ref.png", blocks="light-blocks.json", target=6.6,
-        note="synthetic light ground; font substitution, not layout",
-        page=8, artwork=0,
+        ref="light-ref.png", blocks="light-blocks.json",
+        note="synthetic light ground: a hero-only page (structure + art)",
+        expect=["hero"], page=8, artwork=0,
     ),
     "montiva": dict(
-        ref="montiva-ref.png", blocks="montiva-blocks.json", target=9.2,
-        note="real multi-section landing page (was 12.04; reference face is not Inter)",
+        ref="montiva-ref.png", blocks="montiva-blocks.json",
+        note="real multi-section landing page (header/nav/hero/sections/footer)",
+        expect=["header", "nav", "main", "section", "footer",
+                "testimonials", "contact"],
     ),
     "antho": dict(
-        ref="antho-ref.png", blocks="antho-blocks.json", target=7.0,
-        note="real photorealistic hero (was 6.39; logo face is not Inter)",
+        ref="antho-ref.png", blocks="antho-blocks.json",
+        note="real photorealistic hero: a hero-only page",
+        expect=["header", "hero"], page=8,
     ),
 }
 LIGHT_FIXTURE = STUDIO_DIR / "fixtures"
-LIGHT_TARGET = FIXTURES["light"]["target"]
+# Kept for the README's `doctor light` entry point.
+LIGHT_TARGET = None
+
+
+def _fixture_ok(spec: dict, info: dict, page: list, art: list) -> list[str]:
+    """Return the structure expectations this build failed (empty = pass)."""
+    seen = " ".join(info.get("landmarks") or []) + " " + " ".join(info.get("sections") or [])
+    seen += " " + " ".join(info.get("all_sections") or [])
+    # A hero-only page has no `sec-*` class, so "hero" is checked via the DOM
+    # marker the generator emits (`id="hero"`); `_run_fixture` passes that in.
+    seen += " " + " ".join(spec.get("_dom", []))
+    failed = [want for want in spec.get("expect", []) if want not in seen]
+    if "page" in spec and len(page) != spec["page"]:
+        failed.append(f"page blocks {len(page)} != {spec['page']}")
+    if "artwork" in spec and len(art) != spec["artwork"]:
+        failed.append(f"artwork blocks {len(art)} != {spec['artwork']}")
+    return failed
 
 
 def _run_fixture(name: str, keep: bool = False) -> int:
-    """Build one saved extraction end to end (no model) and score it."""
+    """Build one saved extraction end to end (no model) and check its structure."""
     spec = FIXTURES[name]
     ref = LIGHT_FIXTURE / spec["ref"]
     blocks = LIGHT_FIXTURE / spec["blocks"]
@@ -422,7 +469,7 @@ def _run_fixture(name: str, keep: bool = False) -> int:
         return 2
 
     print(f"fixture {name}: {ref.name} + {blocks.name} (no vision model)")
-    print(f"  {spec['note']}; target <= {spec['target']}\n")
+    print(f"  {spec['note']}\n")
 
     from app.jobs import JobStore
     from app.runner import PipelineRunner
@@ -453,33 +500,52 @@ def _run_fixture(name: str, keep: bool = False) -> int:
     j = store.get(job.id)
     print()
     print(f"status : {j.status}")
-    if j.score is None:
+    if j.status != "done":
         print("\nlog tail:")
         print("\n".join(j.logs[-30:]))
         if not keep:
             shutil.rmtree(j.dir, ignore_errors=True)
         return 1
 
+    info = j.structure if isinstance(j.structure, dict) else {}
+    issues = list(j.structure_issues or []) + list(info.get("issues") or [])
     page = [b for b in (j.blocks or []) if b.get("part") == "page"]
     art = [b for b in (j.blocks or []) if b.get("part") == "artwork"]
-    ok = j.score <= spec["target"] and not art
-    # The light fixture pins an exact scope-filter result; the real fixtures only
-    # assert that the copy survived (their block sets are large and model-derived).
-    if "page" in spec:
-        ok = ok and len(page) == spec["page"] and len(art) == spec["artwork"]
-    else:
-        ok = ok and any(b.get("role") == "headline" for b in page)
 
-    print(f"score  : {j.score:.2f}  (target <= {spec['target']})")
-    print(f"blocks : {len(page)} page, {len(art)} artwork left to the tracer")
-    print(f"job dir: {j.dir}")
+    # A hero-only page has no `sec-*` class to read, so also match `expect`
+    # against the element ids the generator emits (hero/main/header/footer).
+    try:
+        html = (j.dir / "index.html").read_text(errors="replace")
+        from app import structure as _structure
+        dom = _structure.inspect(j.dir / "index.html")
+        info = {**info, **dom}
+        issues = list(j.structure_issues or []) + list(dom.get("issues") or [])
+    except Exception:  # noqa: BLE001
+        html, dom = "", {}
+    spec["_dom"] = [m for m in ("hero", "main", "header", "footer")
+                    if f'id="{m}"' in html]
+
+    print(f"structure: {', '.join(info.get('sections') or []) or '(none)'}")
+    print(f"landmarks: {', '.join(info.get('landmarks') or []) or '(none)'}")
+    print(f"headings : {info.get('headings')}")
+    print(f"art      : {'traced SVG present' if info.get('has_art') else 'MISSING'}")
+    print(f"fidelity : art region mean "
+          f"{j.score:.2f}" if j.score is not None else "fidelity : n/a")
+    print(f"blocks   : {len(page)} page, {len(art)} artwork left to the tracer")
+    print(f"job dir  : {j.dir}")
+
+    failed = _fixture_ok(spec, info, page, art) + issues
+    ok = j.status == "done" and not failed
+
     if not keep:
         shutil.rmtree(j.dir, ignore_errors=True)
     print()
     if ok:
         print(f"fixture {name} PASS")
         return 0
-    print(f"fixture {name} FAIL (score too high, or scope filter regressed)")
+    print(f"fixture {name} FAIL")
+    for i in failed:
+        print(f"  - {i}")
     print("\n".join(j.logs[-20:]))
     return 1
 
@@ -567,13 +633,19 @@ def cmd_run(args: list[str]) -> int:
     print()
     print(f"status : {j.status}")
     if j.score is not None:
-        print(f"score  : {j.score:.2f}  (pct>30 {j.pct_over_30:.2f}%)")
+        print(f"art fidelity: {j.score:.2f}  (pct>30 {j.pct_over_30:.2f}%)"
+              + (f"  whole {j.whole_score:.2f}" if j.whole_score is not None else ""))
+    info = j.structure if isinstance(j.structure, dict) else {}
+    if info:
+        print(f"structure: {', '.join(info.get('sections') or []) or '(none)'}")
     print(f"total  : {total:.0f}s")
     print(f"job dir: {j.dir}")
     if j.status != "done":
         print("\nlog tail:")
         print("\n".join(j.logs[-30:]))
         return 1
+    for issue in (j.structure_issues or []) + list(info.get("issues") or []):
+        print(f"structure: {issue}")
     print(f"artifacts: {json.dumps(j.artifacts, indent=2)}")
     return 0
 

@@ -1,19 +1,43 @@
 # Anthotype — engineering handoff
 
-**The project.** A pipeline that turns a flat design PNG into a *code-native*
-website — Astro + DOM text + CSS + traced SVG geometry, no raster images in the
-output. The reference PNG is pipeline *input*; it is never embedded.
+**The project.** A pipeline that turns a flat design PNG into a *real website* —
+a responsive, semantic page (header, nav, hero, sections, footer) in normal
+document flow, authored in DOM + CSS, with the artwork traced to SVG geometry as
+the hero's decorative backdrop. No raster images in the output. The reference PNG
+is pipeline *input*; it is never embedded.
+
+**The north star is a website, not a poster.** The output is *not* a pixel copy
+of the mockup and not a screenshot. Pixel parity with the reference's **typeface**
+is deliberately not a target: it is unwinnable (its residual is font
+substitution, which no sizing, weight or colour tuning removes). The metric is
+therefore split — **artwork** is scored on pixels over the art region only, and
+the **website** is scored on structure (landmarks, sections, one `h1`, resolving
+links, flow layout). See `README.md` §"Two measures, not one".
+
+**This changes the scope of this document.** Section 2 records the route we took;
+its final stage (Stage 6) is the website pivot. Sections 3–4 then describe the
+**tracer** (the artwork), which is unchanged and still enforced — but they are the
+record of the old pixel-fitting era, and so is their vocabulary: the text-metrics
+layer those measurements were tuned against (`measure_lines`, `measure_weight`,
+`sample_line_colors`, per-line gradients, glow tuning, absolute placement) has
+been **retired** and removed from the studio. Read them as what was measured and
+ruled out for the *posters*, not as the current text pipeline. What replaced it:
+the studio infers the page's structure with a vision model and emits real DOM —
+see `studio/README.md` and `docs/STUDIO-PLAN.md`.
 
 **This repo is design-agnostic.** `pipeline/lib/designs.mjs` enumerates
 `pipeline/designs/*.json`, and every orchestrator uses it, so adding a design is
 `python qa/newdesign.py <name> <ref.png>` plus a trace/build — no edits to the
-pipeline. The three AntHosting designs (A/B/C) are the worked examples and the
-regression suite, not the scope. See `README.md` for the one-command flow and
-`docs/CHECKPOINT.md` for current state.
+pipeline. New designs scaffold as `"layout": "page"` (a website). The three
+AntHosting designs (A/B/C) are the **tracer's regression suite**: fixed
+1024×768 posters (`"layout": "poster"`), not websites. See `README.md` for the
+one-command flow and `docs/CHECKPOINT.md` for current state.
 
-**Status: done and verified.** Every design builds clean, and
+**Status: done and verified.** A/B/C posters build clean, and
 `pipeline/qa/verify.sh` scores each real built `dist/index.html` against its
-reference. Nothing is in flight.
+reference (2.71 / 2.76 / 2.99 PASS). The studio builds a real responsive page end
+to end (`doctor fixtures` light/montiva/antho PASS, `doctor polarity` PASS,
+`doctor regress` PASS). Nothing is in flight.
 
 | Variant | at conversation start | **shipped now** | payload | page |
 |---|---|---|---|---|
@@ -24,8 +48,10 @@ reference. Nothing is in flight.
 Metric = mean absolute per-pixel RGB difference vs the reference PNG at
 1024x768, 0-255 units. Lower is closer; 0 would be a perfect match.
 `pct>30` = share of pixels off by more than 30, currently 1.13% / 1.59% / 1.57%.
-The scores above predate this session's glow re-sweep and self-hosted fonts;
-the intermediate table in section 3 is the older operating point.
+
+These three are **posters**, scored on whole-stage pixels as the tracer always
+was. A studio-generated page is scored differently (art-region fidelity +
+structure), because it reflows and is authored in its own type. See §2 Stage 6.
 
 ---
 
@@ -73,9 +99,16 @@ node gen-page.mjs <name> && node to-astro.mjs <name>
 
 The only per-design inputs that matter are `box` (the artwork region) and `text`
 (rectangles of DOM type the art must not bake in), both in
-`designs/<name>.json`. `designs/<name>.json` also carries `site`, `content` and
-`target`, so nothing else needs editing: `build.sh`, `bootstrap.sh`,
-`verify.sh` and the preview gallery all discover designs from that directory.
+`designs/<name>.json`. `designs/<name>.json` also carries `site`, `content`,
+`layout` and `target`, so nothing else needs editing: `build.sh`,
+`bootstrap.sh`, `verify.sh` and the preview gallery all discover designs from
+that directory.
+
+`layout` chooses the page shape: **`"page"`** (what `newdesign.py` scaffolds)
+emits a responsive semantic website with the traced art as the hero backdrop via
+the `<!--ART-->` placeholder; **`"poster"`** keeps the historical fixed 1024×768
+stage. A/B/C are `"poster"` because they are the tracer's regression suite, which
+is why `qa/verify.sh` still scores them on whole-stage pixels.
 
 ---
 
@@ -157,6 +190,40 @@ cause.
   the shipped payload is no larger than the old build while scoring ~1 mean
   better.
 
+### Stage 6 — the website pivot (the north-star change)
+
+Everything in Stages 0–5 tunes the **tracer**. Separately, the text layer had
+been chasing the whole-page pixel metric by placing each block absolutely from a
+measured box. Its residual was ultimately **font substitution** — the reference's
+typeface is not the vendored Inter — and no amount of sizing, weight, per-line
+colour or glow tuning removes it. That is an unwinnable target, so the project
+stopped aiming at it.
+
+What changed:
+
+- **The output is a website.** `gen-page.mjs` gained a `"page"` layout: a
+  responsive, semantic document in normal flow (header, nav, hero, one
+  `<section>` per region, footer), with a role-based type scale and real links.
+  The traced art is the hero's full-bleed decorative backdrop, spliced at the
+  `<!--ART-->` placeholder. A/B/C keep the historical `"poster"` layout, which is
+  why `qa/verify.sh` still scores the tracer exactly as before.
+- **The studio infers structure, not just boxes.** `extract.py` asks the vision
+  model for sections + roles + copy; `generate.py` turns that into semantic
+  markup and a normal stylesheet. When the model is vague, it falls back to
+  clustering blocks by vertical gap and by eyebrow labels, and rebuilds card
+  grids by x-range.
+- **The metric split.** `verify.py` reports art-region pixel fidelity (page-copy
+  rects masked) and `structure.py` reports a structural read of the built DOM.
+  Neither is collapsed into a single number.
+- **The text-metrics layer was deleted**: `measure_lines`, `measure_weight`,
+  `sample_line_colors`, `ink_coverage`, per-line hard-stop gradients, glow
+  tuning, `cap_top_offset` placement and width-solved font sizes. Art colour
+  sampling survives, now used only for the palette and the tracer's exclusion
+  rects.
+
+The history above is retained because the tracer is unchanged and its landmines
+still apply.
+
 ---
 
 ## 3. How to reproduce, verify, and change the art
@@ -201,6 +268,12 @@ $PY qa/tune.py b /tmp/spec.json --rounds 2   # real-pipeline CSS optimiser
 ---
 
 ## 4. Where the remaining error is (so nobody re-litigates it)
+
+> **Scoped to the A/B/C posters.** Everything in this section is a whole-stage
+> pixel measurement of the three posters, where the DOM text is still placed to
+> match the reference. It is why the posters score what they do. It does **not**
+> describe the studio's generated pages, which reflow and are authored in their
+> own type — those are judged on art-region fidelity plus structure (§2 Stage 6).
 
 Contribution to the overall mean, split by area:
 
@@ -346,8 +419,11 @@ different point is a one-parameter change: edit `PARAMS`, then re-run
 `qa/mkart.py` + `gen-page.mjs` + `qa.sh` (or just `qa/sweep_up.py`).
 
 ### Local optimum note
-The text residual is not fixable by tuning the current font stack. Moving it
-would need a genuinely different font, or a higher-resolution reference.
+On the A/B/C posters the text residual is not fixable by tuning the current font
+stack. Moving it would need a genuinely different font, or a higher-resolution
+reference. This is precisely why the studio no longer tries: it **authors** the
+page in the vendored Inter at a role-based scale instead of imitating the
+reference's typeface, and is judged on structure and on the artwork's fidelity.
 
 ---
 
@@ -398,6 +474,18 @@ would need a genuinely different font, or a higher-resolution reference.
     the *pages* silently matches nothing and ships stale pages — which happened
     once (in the now-removed `sync-bundle.sh`) and only surfaced via `cmp`.
     `pipeline/*-full.html` and `pipeline/*-static.html` are the real patterns.
+14. **The page layout is chosen by `design.layout` or by the markup.** A design
+    with `layout: "poster"` (A/B/C) builds the fixed 1024×768 stage and
+    `qa/verify.sh` keeps scoring it on whole-stage pixels. A design with
+    `layout: "page"` — or any markup containing `<!--ART-->` — builds the
+    responsive website and splices the artwork at that placeholder. Removing the
+    placeholder silently degrades a page build to a poster. The studio always
+    writes `layout: "page"`.
+15. **`doctor fixtures` asserts structure, not pixel parity.** The studio's
+    fixtures (`light`/`montiva`/`antho`) are replayed through the whole local
+    pipeline with no vision model; they check landmarks/sections/headings/links
+    and that the artwork survives. Comparing their scores to A/B/C's is
+    meaningless — a studio page reflows and is authored in its own type.
 
 ---
 
@@ -501,13 +589,14 @@ DOM.  Worth repeating after any change to the content layer.
   focusable="false"`.  Regenerating only changes the `<svg ...>` header; the
   traced path geometry is byte-identical, and scores are unchanged.
 
-**Open -- needs a product decision, not a code fix**
-- **The CTA is a dead link in all three variants.** `href="#waitlist"`, and no
-  element with `id="waitlist"` (or any target) exists on any page, so clicking
-  "Join the waitlist" does nothing.  The design PNGs only specify the button's
-  appearance, so no real destination is recoverable from them.  Set the real
+**Open -- needs a product decision, not a code fix**- **The CTA is a dead link on the A/B/C posters.** `href="#waitlist"`, and no
+  element with `id="waitlist"` (or any target) exists on those pages, so clicking
+  "Join the waitlist" does nothing. The design PNGs only specify the button's
+  appearance, so no real destination is recoverable from them. Set the real
   waitlist URL in `pipeline/content.json` (the `href` lives inside each
-  variant's `markup` string) once it is known.
+  variant's `markup` string) once it is known. The **studio's** generated pages
+  no longer have this gap: their CTAs point at a real in-page anchor that exists
+  on the generated page (never `#`).
 - **`<main>` has no heading landmark pairing beyond `h1`/`h2`** -- acceptable
   here, flagged only because the page is otherwise semantically clean.
 
