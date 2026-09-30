@@ -52,6 +52,13 @@ are fixed 1024×768 posters (`"layout": "poster"`) scored exactly as before.
   stage (the page reflows, so a page screenshot would measure layout, not
   tracing). On the montiva fixture that reads **4.56** for the tracing itself,
   where the page screenshot reads ~62 (its first viewport is one reflowed band).
+- The generated page has a **real visual design layer**: a role-based type scale,
+  a sticky header, a hero with the traced art under a directional scrim, section
+  title rows with action links, card grids, column bands and alternating section
+  surfaces. `palette()` samples the reference's colours but enforces contrast and
+  prefers the CTA's fill as the accent. `doctor polarity` guards palette polarity,
+  palette contrast on a dark ground, accent-follows-CTA, and that interleaved
+  same-name blocks still merge into one section.
 - Branch `main`; published to **https://github.com/aglamadrid19/Anthotype**
   (remote `origin` on the canonical mirror and both checkouts).
 
@@ -163,6 +170,36 @@ Verified from a fresh `git clone`: `./bootstrap.sh` → `./build.sh` →
 `./qa/verify.sh` scores 2.71 / 2.76 / 2.99, and `qa/mkart.py` reproduces all
 three committed SVGs byte-identically. A scaffolded fourth design was traced,
 built and scored end to end, then removed.
+
+## This session's changes (making the generated page good)
+
+Stage 6 made the output a *website*; the pages it produced were structurally
+correct but read as extracted content stacked in a column. Two fixes, both in
+`studio/backend/app/generate.py`:
+
+- **A name is one section, however the reading order interleaves.**
+  `group_sections` now groups *all* blocks of a name into one section, ordered by
+  position. Merging only adjacent runs was not enough: at a given y two sections
+  can interleave (a testimonial's author line beside the contact band), which
+  fragmented one section into three on a real upload. A landing page with two
+  feature bands keeps both inside one `features` section, and `_section_body`
+  renders each band — eyebrow, title row with any action link, cards — on its
+  own. `doctor polarity` gained a check that interleaves two names.
+- **A real visual design layer.** `build_page_css` emits a role-based type scale,
+  a sticky header, a hero with the traced art under a directional scrim, section
+  title rows, card grids with hover, plain column bands (contact details) and
+  alternating section surfaces. `palette()` samples the reference's colours but
+  *enforces contrast* — a design's headline can be a dark navy because it sat over
+  a light hero panel, and using it as body ink on a dark page made the whole page
+  unreadable — and prefers the CTA's fill as the accent so buttons and highlights
+  agree. Testimonials render as `blockquote` cards; `gen-page.mjs` splices the
+  hero art with `preserveAspectRatio="xMidYMin slice"` so it covers the hero box
+  instead of letterboxing inside it.
+
+Verified by rebuilding a real upload through the full pipeline (a coherent light
+page) and the montiva fixture (`doctor run`), plus `doctor polarity` (structure,
+palette polarity, palette contrast on a dark ground, accent-follows-CTA),
+`doctor fixtures` 3/3 PASS, `doctor regress` PASS, and a frontend build.
 
 ## Landmine: the sync script (removed)
 

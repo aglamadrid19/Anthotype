@@ -224,6 +224,34 @@ What changed:
 The history above is retained because the tracer is unchanged and its landmines
 still apply.
 
+### Stage 7 — making the generated page good
+
+Stage 6 made the output a website; the pages it produced were structurally
+correct but read as *extracted content* stacked in a column. Two things were
+fixed, both in `generate.py`:
+
+- **A name is one section, however the reading order interleaves.** The model
+  tags every block, so `group_sections` groups all blocks of a name into one
+  section and orders sections by position. Merging only *adjacent* runs was not
+  enough: at a given y two sections can interleave (a testimonial's author line
+  sits beside the contact band), and one section then fragmented into three. A
+  landing page with two feature bands keeps both inside one `features` section
+  and `_section_body` renders each band — eyebrow, title row, cards — on its
+  own. Guarded by a `doctor polarity` check that interleaves two names.
+- **A real visual design layer.** `build_page_css` emits a role-based type
+  scale, a sticky header, a hero with the traced art under a directional scrim,
+  section title rows with action links, card grids with hover, plain column
+  bands and alternating section surfaces. `palette()` samples the reference's
+  colours but *enforces contrast* — a design's headline can be a dark navy
+  because it sat over a light hero panel, and using it as body ink on a dark
+  page made the whole page unreadable — and prefers the CTA's fill as the
+  accent so buttons and highlights agree. Testimonials render as `blockquote`
+  cards; the hero art is spliced with `preserveAspectRatio="xMidYMin slice"` so
+  it covers the hero box instead of letterboxing inside it.
+
+Both are covered by `doctor polarity` (structure, palette polarity, palette
+contrast on a dark ground, accent-follows-CTA).
+
 ---
 
 ## 3. How to reproduce, verify, and change the art

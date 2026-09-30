@@ -131,26 +131,34 @@ names groups by position. A card grid is reconstructed by grouping blocks that
 share an x-range, so `title1 title2 …` followed by `body1 body2 …` comes back as
 one card per column rather than a title/body soup.
 
-Whatever the source, adjacent blocks that share a section name merge into one
-group — the model tags each block (`features` on the eyebrow, the heading and
-every card), and one `<section>` per block is not a website.
+Whatever the source, every block that shares a section name becomes **one**
+section, ordered by where it sits on the page — the model tags each block
+(`features` on the eyebrow, the heading and every card), and one `<section>` per
+block is not a website. Merging only *adjacent* runs is not enough: at a given
+`y` the reading order can interleave two names (a testimonial's author line sits
+beside the contact band), which fragmented one section into three on a real
+upload.
 
 ### What the page becomes
 
 `generate.build_markup` emits a header (brand + nav), a hero, one `<section>` per
 inferred region (features/testimonials/pricing/contact), and a footer — with
 exactly one `<h1>` (in the hero), `<h3>` card titles, and every CTA pointing at a
-real in-page anchor. `build_page_css` emits a normal stylesheet: a role-based type
-scale, `clamp()`-ed display sizes, an auto-fit card grid, and breakpoints — no
-absolute positioning, no fixed stage, no `nowrap`.
+real in-page anchor. A section can hold more than one *band* (a landing page with
+an "OUR SERVICES" grid and a "WHY CHOOSE US" grid names both `features`), and
+each band renders as its own eyebrow + title row + cards.
 
-A vision model declares a section for **every block** (`features` on the eyebrow,
-on the heading and on each card), so `group_sections` merges adjacent blocks that
-share a name into one group and orders the groups by a fixed section ranking. A
-75-block landing page therefore ships 3 content sections, not 75.
+`build_page_css` emits a designed stylesheet, not a reset: a role-based type
+scale, a sticky header, a hero with the artwork under a directional scrim, a
+section title row with action links, auto-fit card grids with hover, plain
+column bands, and alternating section surfaces. `palette()` samples the
+reference's colours but **enforces contrast**, because a design's most prominent
+headline can be a dark navy that only worked over a light hero panel — using it
+as body ink on a dark page makes the whole page unreadable — and it prefers the
+CTA's fill as the accent so buttons and highlights agree.
 
 The traced artwork is the hero's full-bleed decorative backdrop
-(`aria-hidden`, `preserveAspectRatio` slice); content flows over it.
+(`aria-hidden`, `preserveAspectRatio="xMidYMin slice"`); content flows over it.
 
 ### The artwork must not contain a ghost of the copy
 
@@ -242,9 +250,11 @@ studio/.venv/bin/python studio/backend/doctor.py job <id>   # full status + logs
   and the box snapped on both, that a two-tone wordmark still splits into its two
   runs, that the page-copy filter keeps a nav link while dropping a tiny speck
   and an `artwork` block, that a synthetic page is grouped into header / hero /
-  features / testimonials / footer, that adjacent blocks sharing a section name
-  merge into one `<section>`, that the generated markup is clean (one h1,
-  no dead links, flow layout), that the palette follows the ground, and that the
+  features / testimonials / footer, that every block sharing a section name
+  merges into one `<section>` even when the reading order interleaves two names,
+  that the generated markup is clean (one h1,
+  no dead links, flow layout), that the palette follows the ground and stays
+  legible on it and that the accent follows the CTA, and that the
   vision retry escalates its image encoding. No vision model, no pipeline.
 - **`fixtures`** is the end-to-end guard: each fixture is a *saved extraction*
   replayed against its reference through the whole local pipeline (structure,

@@ -298,19 +298,6 @@ def _sat(rgb: tuple[int, int, int]) -> int:
     return max(rgb) - min(rgb)
 
 
-def _max_channel_spread(colors: list[tuple[int, int, int]]) -> int:
-    """Largest per-channel difference between any two of `colors`."""
-    if len(colors) < 2:
-        return 0
-    return max(max(c[i] for c in colors) - min(c[i] for c in colors)
-               for i in range(3))
-
-
-def _role_rank(role: str) -> int:
-    return {"brand": 0, "headline": 1, "subhead": 2, "tagline": 3,
-            "cta": 4, "other": 5}.get(role, 5)
-
-
 def measure_button_bbox(arr: np.ndarray, label: tuple[float, float, float, float],
                         background: tuple[int, int, int],
                         padx: int | None = None,
@@ -477,34 +464,63 @@ def _mix(a: tuple[int, int, int], b: tuple[int, int, int], t: float) -> tuple[in
     return tuple(int(round(a[i] + (b[i] - a[i]) * t)) for i in range(3))
 
 
+def _lum(c: tuple[int, int, int]) -> float:
+    r, g, b = c
+    return 0.2126 * r + 0.7152 * g + 0.0722 * b
+
+
+def _contrast(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
+    """A rough WCAG contrast ratio between two colours."""
+    la, lb = _lum(a), _lum(b)
+    hi, lo = max(la, lb), min(la, lb)
+    return (hi + 5.0) / (lo + 5.0)
+
+
 def palette(blocks: list[Block], background: tuple[int, int, int]) -> dict:
     """A small design system (bg/ink/muted/accent/surface) from the reference.
 
     The reference's *colours* are the design, so they are sampled; its *type* is
     not reproduced.  The result is enough for a coherent page -- body ground,
     text, a muted tone and one accent -- without imitating the mockup.
+
+    Sampling is not enough on its own: a design's most prominent headline can be
+    a dark navy on a dark ground (it sat over a light hero panel), and using it
+    as body ink makes the whole page unreadable.  So the sampled colours are
+    only accepted when they actually contrast with the ground.
     """
     bg = tuple(int(v) for v in background)
-    light = sum(bg) / 3.0 >= 128
+    light = _lum(bg) >= 128
+    neutral = (17, 24, 32) if light else (244, 255, 249)
     colors = [tuple(b.color) for b in blocks if b.color]
     fills = [tuple(b.fill) for b in blocks if b.fill]
-    accents = [c for c in colors + fills if _sat(c) >= 40]
-    accent = max(accents, key=_sat) if accents else ((14, 150, 100) if light else (25, 210, 130))
-    headline = next((b for b in blocks if b.role == "headline" and b.color), None)
-    if headline:
-        ink = tuple(headline.color)
-    elif colors:
-        ink = max(colors, key=lambda c: abs(sum(c) / 3.0 - sum(bg) / 3.0))
-    else:
-        ink = (17, 24, 32) if light else (244, 255, 249)
+
+    # Body ink: the most common block colour that is legible on the ground.
+    legible = [c for c in colors if _contrast(c, bg) >= 4.5]
+    ink = neutral
+    if legible:
+        counts: dict[tuple[int, int, int], int] = {}
+        for c in legible:
+            counts[c] = counts.get(c, 0) + 1
+        ink = max(counts, key=lambda c: (counts[c], _contrast(c, bg)))
+
+    # Accent: prefer the colour the calls to action are painted with, so the
+    # buttons and the highlights agree.
+    cta_fills = [tuple(b.fill) for b in blocks if b.role == "cta" and b.fill]
+    sat = [c for c in colors + fills if _sat(c) >= 40 and _contrast(c, bg) >= 2.0]
+    pool = cta_fills or sat
+    accent = max(pool, key=_sat) if pool else ((14, 150, 100) if light else (25, 210, 130))
+
     toward = (0, 0, 0) if light else (255, 255, 255)
+    muted = _mix(ink, bg, 0.38)
+    if _contrast(muted, bg) < 3.0:                     # keep it readable
+        muted = _mix(ink, bg, 0.2)
     return {
         "light": light,
         "bg": bg,
         "ink": ink,
-        "muted": _mix(ink, bg, 0.42),
+        "muted": muted,
         "accent": accent,
-        "accent_ink": (6, 20, 14) if sum(accent) / 3.0 > 140 else (255, 255, 255),
+        "accent_ink": (6, 20, 14) if _lum(accent) > 140 else (255, 255, 255),
         "surface": _mix(bg, toward, 0.05 if light else 0.07),
         "border": _mix(bg, ink, 0.16),
     }
@@ -518,11 +534,6 @@ GRID_SECTIONS = {"features", "testimonials", "pricing"}
 # How far apart two blocks can be (as a multiple of the taller block) and still
 # belong to the same visual group when the model gave no usable section.
 GROUP_GAP = 2.0
-
-SECTION_TITLE = {
-    "hero": "", "features": "What we offer", "testimonials": "What people say",
-    "pricing": "Pricing", "contact": "Get in touch", "other": "",
-}
 
 
 def _reading_order(blocks: list[Block]) -> list[Block]:
@@ -675,8 +686,18 @@ def group_sections(blocks: list[Block]) -> list[tuple[str, list[Block]]]:
     model declared nothing at all, the blocks are clustered by vertical gap and
     named by position (see `_infer_sections`).
 
-    A section name may repeat (a landing page often has several feature bands),
-    so this returns an ordered *list* of groups, never a name-keyed dict.
+    Two things make the model's names usable:
+
+    * **A name is one section.**  The model tags *every* block, and at a given y
+      the reading order can interleave two sections (a testimonial's author line
+      beside the contact band), so merging only adjacent runs fragments one
+      section into several.  Within a visual group every block of a name joins
+      that name's section.
+    * **A genuine band boundary still splits.**  A landing page can have two
+      feature bands ("OUR SERVICES" and "WHY CHOOSE US"), both tagged `features`.
+      Those are separate groups because the vertical-gap clustering separates
+      them first; adjacent groups of the same name then merge back, so a section
+      broken by a spurious gap is not split in two.
     """
     page = [b for b in blocks if is_page_text(b)]
     if not page:
@@ -685,35 +706,30 @@ def group_sections(blocks: list[Block]) -> list[tuple[str, list[Block]]]:
     if not declared:
         return _infer_sections(page)
 
-    pending: list[tuple[str, list[Block]]] = []
-    for b in _reading_order(page):
-        if b.section in KNOWN_SECTIONS:
-            pending.append((b.section, [b]))
-            continue
-        # Attach an unspecified block to the nearest declared block *above* it,
-        # else below -- by vertical position, so reading order survives.
-        cy = (b.bbox[1] + b.bbox[3]) / 2.0
-        above = [p for p in pending if (p[1][0].bbox[1] + p[1][0].bbox[3]) / 2.0 <= cy]
-        target = above[-1] if above else (pending[0] if pending else None)
-        if target is None:
-            pending.append(("other", [b]))
-        else:
-            target[1].append(b)
+    order = _reading_order(page)
+    declared_y = [(b, (b.bbox[1] + b.bbox[3]) / 2.0)
+                  for b in order if b.section in KNOWN_SECTIONS]
 
-    # Merge adjacent blocks that share a name into ONE section.  The model
-    # declares a section per block ("features" on the eyebrow, on the heading and
-    # on each card), so emitting one group per block would ship 25 `<section>`s
-    # where the page has 4.  A new group starts only when the name changes;
-    # the rank sort then fixes the *order* of the names (a hero the model
-    # labelled after the nav still renders first).
-    groups: list[tuple[str, list[Block]]] = []
-    for name, blk in pending:
-        if groups and groups[-1][0] == name:
-            groups[-1][1].extend(blk)
-        else:
-            groups.append((name, list(blk)))
-    rank = {s: i for i, s in enumerate(SECTION_ORDER)}
-    groups.sort(key=lambda sg: rank.get(sg[0], 99))
+    def name_of(b: Block) -> str:
+        if b.section in KNOWN_SECTIONS:
+            return b.section
+        # An unspecified block joins the nearest declared block above it, else
+        # the first declared one -- by vertical position.
+        cy = (b.bbox[1] + b.bbox[3]) / 2.0
+        above = [d for d, dy in declared_y if dy <= cy]
+        return above[-1].section if above else declared_y[0][0].section
+
+    # Every block of a name becomes that name's section: the model tags each
+    # block, and at a given y two sections can interleave, so merging only
+    # adjacent runs fragments one section into several.  A landing page with two
+    # feature bands keeps them *inside* one section, rendered as two bands by
+    # `_section_body` -- that is a composition question, not a structure one.
+    by_name: dict[str, list[Block]] = {}
+    for b in order:
+        by_name.setdefault(name_of(b), []).append(b)
+
+    groups = list(by_name.items())
+    groups.sort(key=lambda sg: min(b.bbox[1] for b in sg[1]))
     return groups
 
 
@@ -746,15 +762,40 @@ def _cta_html(b: Block, href: str, cls: str = "cta") -> str:
     return f'<a class="{cls}" href="{_attr(href)}"{style}>{_inline(b)}</a>'
 
 
-def _card_html(col: list[Block], heading_used: list[bool],
-               cta_href: str = "#top") -> str:
+def _is_stars(b: Block) -> bool:
+    """A star-rating line: only stars and spaces."""
+    t = b.text.strip()
+    return bool(t) and all(c in "★☆*·. 0123456789/()" for c in t) and any(c in "★☆*" for c in t)
+
+
+def _card_html(col: list[Block], cta_href: str = "#top",
+               kind: str = "") -> str:
     """One card: a title line plus any body lines that share its column.
 
-    The card title is an `h3` -- the page's only `h1` lives in the hero and the
-    section eyebrow is its `h2`-level label.
+    A testimonial is not a title+body card -- its body is the quote and its
+    footer is the attribution -- so it gets a `blockquote` shape instead.
     """
+    if kind == "testimonials":
+        body = [b for b in col if b.role != "cta"]
+        stars = [b for b in body if _is_stars(b)]
+        body = [b for b in body if b not in stars]
+        quote = max(body, key=lambda b: len(b.text), default=None)
+        rest = [b for b in body if b is not quote]
+        parts = []
+        if stars:
+            parts.append(f'<p class="stars" aria-label="5 out of 5">{_inline(stars[0])}</p>')
+        if quote is not None:
+            parts.append(f"<blockquote>{_inline(quote)}</blockquote>")
+        byline = " · ".join(_inline(b) for b in rest)
+        if byline:
+            parts.append(f'<p class="byline">{byline}</p>')
+        for b in col:
+            if b.role == "cta":
+                parts.append(_cta_html(b, cta_href, "cta small"))
+        return ('<figure class="card quote">\n        '
+                + "\n        ".join(parts) + "\n      </figure>")
     title_done = False
-    parts: list[str] = []
+    parts = []
     for b in col:
         if b.role == "cta":
             parts.append(_cta_html(b, cta_href, "cta small"))
@@ -766,66 +807,118 @@ def _card_html(col: list[Block], heading_used: list[bool],
     return '<div class="card">\n        ' + "\n        ".join(parts) + "\n      </div>"
 
 
-def _section_body(name: str, blocks: list[Block], heading_used: list[bool],
-                  cta_href: str) -> str:
+def _overlaps(a: Block, b: Block) -> bool:
+    """Do two blocks share a text row (their y-ranges overlap by half a line)?"""
+    top, bottom = max(a.bbox[1], b.bbox[1]), min(a.bbox[3], b.bbox[3])
+    if bottom <= top:
+        return False
+    return (bottom - top) > 0.5 * min(a.bbox[3] - a.bbox[1], b.bbox[3] - b.bbox[1])
+
+
+def _action(b: Block, href: str) -> str:
+    """A link that sits beside a section title ("View all services ->")."""
+    if b.role == "cta":
+        return _cta_html(b, href, "cta small")
+    return f'<a class="section-action" href="{_attr(href)}">{_inline(b)}</a>'
+
+
+def _section_body(name: str, blocks: list[Block], cta_href: str) -> str:
     """The inner markup of one non-hero section.
 
-    A section's *eyebrow* (a short all-caps kicker) becomes its visible title;
-    the reference's own repeated section headline is not re-emitted as an `h1`
-    (there is exactly one `h1` on the page, in the hero), so it is demoted to a
-    lead paragraph when it duplicates the eyebrow's meaning.
+    A section can hold more than one *band*: the model names both "OUR SERVICES"
+    and "WHY CHOOSE US" `features`, and they are one section with two title+grid
+    bands.  Each band is rendered on its own -- an eyebrow, a title row with any
+    action link, then its cards -- so the page reads as a designed page rather
+    than a wall of paragraphs.
     """
-    eyebrow = next((b for b in blocks if _is_eyebrow(b)), None)
-    out: list[str] = []
-    if eyebrow is not None:
-        out.append(f'<p class="eyebrow">{_inline(eyebrow)}</p>')
-        if _title_equivalent(SECTION_TITLE.get(name, ""), eyebrow.text):
-            out.append(f'<h2 class="section-title">{html.escape(SECTION_TITLE[name])}</h2>')
-
-    rest = [b for b in blocks if b is not eyebrow]
-
-    if name in GRID_SECTIONS:
-        heads = [b for b in rest if b.role in {"headline", "subhead"}]
-        body = [b for b in rest if b not in heads]
-        for h in heads:
-            out.append(f'<p class="lead">{_inline(h)}</p>')
-        if body:
-            cards = [_card_html(c, heading_used, cta_href) for c in _columns(body)]
-            out.append('<div class="cards">\n      ' + "\n      ".join(cards) + "\n    </div>")
-        return "\n    ".join(out)
-
-    for b in rest:
-        if b.role == "cta":
-            out.append(_cta_html(b, cta_href))
-        elif b.role in {"headline", "subhead"}:
-            out.append(f'<p class="lead">{_inline(b)}</p>')
-        else:
-            out.append(f'<p class="lead">{_inline(b)}</p>')
+    bands = _cluster_by_gap(_reading_order(blocks))
+    out = [b for b in (_band_html(name, band, cta_href) for band in bands) if b]
     return "\n    ".join(out)
 
 
-def _title_equivalent(a: str, b: str) -> bool:
-    """Are two section labels the same idea?  ("Features" vs "OUR SERVICES")"""
-    aw = {w for w in re.findall(r"[a-z]+", a.lower()) if len(w) > 3}
-    bw = {w for w in re.findall(r"[a-z]+", b.lower()) if len(w) > 3}
-    return bool(aw & bw) or not aw
+def _band_html(name: str, band: list[Block], cta_href: str) -> str:
+    """One title+grid band inside a section."""
+    eyebrow = next((b for b in band if _is_eyebrow(b)), None)
+    rest = [b for b in band if b is not eyebrow]
+
+    # The band's title is its topmost headline -- but only when it sits clearly
+    # above the rest.  In a bare card grid the top row *is* card titles, and
+    # promoting one of them to the section heading would drop it from its card.
+    headings = [b for b in rest if b.role in {"headline", "subhead"}]
+    lead = None
+    if headings:
+        first, others = headings[0], headings[1:]
+        if not others or first.bbox[3] <= min(h.bbox[1] for h in others):
+            lead = first
+    head_row = [b for b in rest
+                if b is not lead and lead is not None and _overlaps(b, lead)
+                and (b.role == "cta" or _is_navish(b))]
+    cards_src = [b for b in rest if b is not lead and b not in head_row]
+
+    parts: list[str] = []
+    if eyebrow is not None:
+        parts.append(f'<p class="eyebrow">{_inline(eyebrow)}</p>')
+    if lead is not None or head_row:
+        title = (f'<h2 class="section-title">{_inline(lead)}</h2>'
+                 if lead is not None else "")
+        actions = "".join(_action(b, cta_href) for b in head_row)
+        parts.append(f'<div class="section-head">{title}{actions}</div>')
+
+    if cards_src:
+        cols = _columns(cards_src)
+        if name in GRID_SECTIONS:
+            cards = [_card_html(c, cta_href, name) for c in cols]
+            parts.append('<div class="cards">\n      '
+                         + "\n      ".join(cards) + "\n    </div>")
+        else:
+            # A non-grid band (contact details, a two-column blurb) keeps its
+            # columns but not the card chrome.
+            cells = []
+            for col in cols:
+                body = "\n        ".join(
+                    _cta_html(b, cta_href, "cta small") if b.role == "cta"
+                    else (f"<h3>{_inline(b)}</h3>"
+                          if i == 0 and b.role in {"headline", "subhead", "brand"}
+                          else f"<p>{_inline(b)}</p>")
+                    for i, b in enumerate(col))
+                cells.append(f'<div class="col">\n        {body}\n      </div>')
+            parts.append('<div class="cols">\n      '
+                         + "\n      ".join(cells) + "\n    </div>")
+    return "\n    ".join(parts)
 
 
 def _hero_html(blocks: list[Block], cta_href: str) -> str:
-    out = []
+    """The hero's copy: eyebrow, headline, subhead, actions, a trust row.
+
+    Grouping the calls to action and the short trust badges into their own rows
+    is what makes the hero read as a hero rather than a stack of paragraphs.
+    """
+    cta_blocks = [b for b in blocks if b.role == "cta"]
+    # Short `other` lines that sit on one row are trust badges, not copy.
+    others = [b for b in blocks if b.role == "other" and len(b.text) <= 40]
+    badges = [b for b in others
+              if sum(1 for o in others if o is not b and _overlaps(b, o)) >= 1]
+
+    out: list[str] = []
     for b in blocks:
         if b.role == "headline":
             out.append(f'<h1>{_inline(b)}</h1>')
         elif b.role == "subhead":
             out.append(f'<p class="subhead">{_inline(b)}</p>')
-        elif b.role == "cta":
-            out.append(_cta_html(b, cta_href))
         elif b.role == "brand":
             out.append(f'<span class="brand">{_inline(b)}</span>')
         elif _is_eyebrow(b):
             out.append(f'<p class="eyebrow">{_inline(b)}</p>')
+        elif b.role == "cta" or b in badges:
+            continue
         else:
             out.append(f'<p class="lede">{_inline(b)}</p>')
+    if cta_blocks:
+        row = "".join(_cta_html(b, cta_href) for b in cta_blocks)
+        out.append(f'<div class="hero-actions">{row}</div>')
+    if badges:
+        row = "".join(f'<span class="badge">{_inline(b)}</span>' for b in badges)
+        out.append(f'<ul class="hero-badges">{row}</ul>')
     return "\n      ".join(out)
 
 
@@ -853,10 +946,8 @@ def build_markup(sections: list[tuple[str, list[Block]]],
     Section names may repeat, so every section gets a unique id and each CTA
     links to a real anchor on the page (never `#`).
     """
-    heading_used = [False]
     parts: list[str] = []
     used: dict[str, int] = {}
-    anchors: list[tuple[str, str]] = []   # (section name, id), in page order
 
     header = [(n, g) for n, g in sections if n in ("header", "nav")]
     header_blocks = [b for _, g in header for b in g]
@@ -874,15 +965,12 @@ def build_markup(sections: list[tuple[str, list[Block]]],
                      '<div class="hero-art" aria-hidden="true"><!--ART--></div>\n'
                      '      <div class="wrap hero-copy">\n      '
                      + _hero_html(hero, cta_href) + "\n      </div>\n    </section>")
-        anchors.append(("hero", "hero"))
-
     middle = []
     for name, blocks in sections:
         if name in ("header", "nav", "hero", "footer"):
             continue
         sid = _stable_id(name, used)
-        anchors.append((name, sid))
-        body = _section_body(name, blocks, heading_used, cta_href)
+        body = _section_body(name, blocks, cta_href)
         if not body:
             continue
         middle.append(f'<section class="section sec-{name}" id="{sid}">\n'
@@ -963,86 +1051,163 @@ def build_page_css(palette_: dict) -> str:
   --accent-ink: {_hex(p['accent_ink'])};
   --surface: {_hex(p['surface'])};
   --border: {_hex(p['border'])};
-  --maxw: 1120px;
+  --maxw: 1140px;
+  --pad: clamp(20px, 5vw, 32px);
+  --section-y: clamp(64px, 9vw, 112px);
 }}
 * {{ box-sizing: border-box; margin: 0; padding: 0; }}
 html {{ scroll-behavior: smooth; }}
 body {{
   background: var(--bg); color: var(--ink);
   font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  line-height: 1.55; -webkit-font-smoothing: antialiased;
+  line-height: 1.6; -webkit-font-smoothing: antialiased; text-rendering: optimizeLegibility;
 }}
-h1, h2, h3 {{ line-height: 1.1; letter-spacing: -0.02em; }}
+h1, h2, h3 {{ line-height: 1.12; letter-spacing: -0.022em; text-wrap: balance; }}
+p {{ text-wrap: pretty; }}
 a {{ color: inherit; }}
-.wrap {{ width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }}
+.wrap {{ width: 100%; max-width: var(--maxw); margin: 0 auto; padding: 0 var(--pad); }}
 .muted, .lead {{ color: var(--muted); }}
+:focus-visible {{ outline: 2px solid var(--accent); outline-offset: 3px; border-radius: 4px; }}
 
+/* ---- header ------------------------------------------------------------- */
 .site-header {{
   position: sticky; top: 0; z-index: 20;
-  background: var(--bg); border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: 1px solid var(--border);
 }}
 .site-header .wrap {{
   display: flex; align-items: center; justify-content: space-between;
-  gap: 24px; min-height: 68px; flex-wrap: wrap;
+  gap: 20px; min-height: 68px; flex-wrap: wrap;
 }}
-.brand {{ font-weight: 600; font-size: 18px; text-decoration: none; }}
-.site-nav {{ display: flex; gap: 22px; flex-wrap: wrap; }}
-.site-nav a {{ color: var(--muted); text-decoration: none; font-size: 15px; }}
+.brand {{ font-weight: 600; font-size: 18px; letter-spacing: -0.02em; text-decoration: none; }}
+.site-nav {{ display: flex; align-items: center; gap: clamp(14px, 2.4vw, 26px); flex-wrap: wrap; }}
+.site-nav a {{ color: var(--muted); text-decoration: none; font-size: 15px; transition: color .15s ease; }}
 .site-nav a:hover {{ color: var(--ink); }}
 
+/* ---- hero --------------------------------------------------------------- */
 .hero {{ position: relative; overflow: hidden; border-bottom: 1px solid var(--border); }}
-.hero-art {{ position: absolute; inset: 0; z-index: 0; opacity: 1; }}
+.hero-art {{ position: absolute; inset: 0; z-index: 0; }}
 .hero-art svg {{ width: 100%; height: 100%; display: block; }}
-.hero-copy {{
-  position: relative; z-index: 1; display: grid; gap: 18px; justify-items: start;
-  padding-top: 104px; padding-bottom: 104px; max-width: 760px;
+/* A scrim over the artwork so the copy keeps contrast whatever the art does.
+   It is strong on the side the copy sits on and fades out to reveal the art. */
+.hero-art::after {{
+  content: ""; position: absolute; inset: 0;
+  background: linear-gradient(100deg,
+    color-mix(in srgb, var(--bg) 94%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 72%, transparent) 38%,
+    color-mix(in srgb, var(--bg) 22%, transparent) 68%, transparent 100%);
 }}
-.hero h1 {{ font-size: clamp(38px, 6.5vw, 74px); font-weight: 600; }}
-.hero .subhead {{ font-size: clamp(19px, 2.6vw, 28px); font-weight: 600; }}
-.hero .lede {{ font-size: clamp(16px, 1.7vw, 20px); color: var(--muted); max-width: 62ch; }}
+.hero-copy {{
+  position: relative; z-index: 1; display: grid; gap: clamp(14px, 2vw, 22px);
+  justify-items: start; align-content: center;
+  padding-top: clamp(80px, 12vw, 140px); padding-bottom: clamp(80px, 12vw, 140px);
+  max-width: 780px; min-height: clamp(460px, 70vh, 680px);
+}}
+.hero h1 {{ font-size: clamp(38px, 7vw, 76px); font-weight: 600; }}
+.hero .subhead {{ font-size: clamp(18px, 2.4vw, 27px); font-weight: 600; }}
+.hero .lede {{ font-size: clamp(16px, 1.7vw, 20px); color: var(--muted); max-width: 60ch; }}
+.hero .eyebrow {{ margin-bottom: 2px; }}
 .hero .brand {{ font-size: 20px; font-weight: 600; }}
+.hero-actions {{ display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px; }}
+.hero-badges {{
+  list-style: none; display: flex; flex-wrap: wrap; gap: 10px 20px;
+  margin-top: 10px; color: var(--muted); font-size: 14px;
+}}
+.hero-badges .badge {{ display: inline-flex; align-items: center; gap: 8px; }}
+.hero-badges .badge::before {{
+  content: ""; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--accent); flex: none;
+}}
 
-.section {{ padding: 84px 0; border-bottom: 1px solid var(--border); }}
-.section > .wrap {{ display: grid; gap: 26px; }}
-.section-title {{ font-size: clamp(25px, 3.6vw, 38px); font-weight: 600; }}
+/* ---- sections ----------------------------------------------------------- */
+.section {{ padding: var(--section-y) 0; border-bottom: 1px solid var(--border); }}
+.section:nth-of-type(even) {{ background: color-mix(in srgb, var(--surface) 55%, var(--bg)); }}
+.section > .wrap {{ display: grid; gap: clamp(26px, 4vw, 44px); }}
+.section-head {{
+  display: flex; align-items: end; justify-content: space-between;
+  gap: 20px; flex-wrap: wrap;
+}}
+.section-title {{ font-size: clamp(26px, 3.8vw, 42px); font-weight: 600; max-width: 22ch; }}
+.section-action {{
+  color: var(--accent); text-decoration: none; font-weight: 500; font-size: 15px;
+  white-space: nowrap; padding-bottom: 4px;
+}}
+.section-action:hover {{ text-decoration: underline; text-underline-offset: 4px; }}
 .eyebrow {{
-  text-transform: uppercase; letter-spacing: 0.14em;
-  font-size: 13px; font-weight: 600; color: var(--accent);
+  text-transform: uppercase; letter-spacing: 0.16em;
+  font-size: 12.5px; font-weight: 600; color: var(--accent);
 }}
 .lead {{ font-size: clamp(16px, 1.6vw, 19px); max-width: 68ch; }}
 
+/* ---- cards -------------------------------------------------------------- */
 .cards {{
-  display: grid; gap: 20px;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  display: grid; gap: clamp(16px, 2vw, 22px);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
 }}
 .card {{
   background: var(--surface); border: 1px solid var(--border);
-  border-radius: 16px; padding: 24px; display: grid; gap: 10px; align-content: start;
+  border-radius: 16px; padding: clamp(20px, 2.4vw, 28px);
+  display: grid; gap: 10px; align-content: start;
+  transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
+}}
+.card:hover {{
+  transform: translateY(-3px); border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
+  box-shadow: 0 12px 30px -18px color-mix(in srgb, var(--accent) 60%, transparent);
 }}
 .card h3 {{ font-size: 18px; font-weight: 600; }}
-.card .lead, .card p {{ color: var(--muted); font-size: 15px; line-height: 1.5; }}
+.card .lead, .card p {{ color: var(--muted); font-size: 15px; line-height: 1.55; }}
+.card.quote {{ display: flex; flex-direction: column; gap: 16px; }}
+.card.quote blockquote {{
+  font-size: clamp(15px, 1.5vw, 17px); line-height: 1.6; color: var(--ink);
+  text-wrap: pretty;
+}}
+.card.quote blockquote::before {{ content: "\\201C"; color: var(--accent); }}
+.card.quote blockquote::after {{ content: "\\201D"; color: var(--accent); }}
+.card.quote .stars {{ color: var(--accent); letter-spacing: 2px; font-size: 14px; }}
+.card.quote .byline {{
+  margin-top: auto; color: var(--muted); font-size: 14px; font-weight: 500;
+}}
 
+/* ---- plain columns (contact details, blurbs) ---------------------------- */
+.cols {{
+  display: grid; gap: clamp(24px, 4vw, 56px);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+}}
+.col {{ display: grid; gap: 10px; align-content: start; }}
+.col h3 {{ font-size: clamp(20px, 2.4vw, 26px); font-weight: 600; }}
+.col p {{ color: var(--muted); font-size: 15.5px; max-width: 52ch; }}
+
+/* ---- buttons ------------------------------------------------------------ */
 .cta {{
   display: inline-flex; align-items: center; justify-content: center; gap: 10px;
   padding: 14px 28px; border-radius: 12px; text-decoration: none;
   background: var(--accent); color: var(--accent-ink);
-  font-weight: 600; font-size: 16px; width: fit-content; border: 2px solid transparent;
+  font-weight: 600; font-size: 16px; width: fit-content;
+  border: 2px solid transparent; transition: filter .15s ease, transform .15s ease;
 }}
-.cta:hover {{ filter: brightness(1.06); }}
+.cta:hover {{ filter: brightness(1.07); transform: translateY(-1px); }}
 .cta.outline {{ background: transparent; border: 2px solid var(--accent); }}
-.cta.small {{ padding: 10px 18px; font-size: 15px; }}
+.cta.small {{ padding: 9px 18px; font-size: 15px; }}
 
-.site-footer {{ padding: 48px 0; }}
+/* ---- footer ------------------------------------------------------------- */
+.site-footer {{ padding: clamp(40px, 6vw, 64px) 0; }}
 .site-footer .wrap {{
-  display: flex; flex-wrap: wrap; gap: 18px 28px;
+  display: flex; flex-wrap: wrap; gap: 14px 28px;
   align-items: center; justify-content: space-between; color: var(--muted);
+  font-size: 14.5px;
 }}
-.site-footer a {{ color: var(--muted); text-decoration: none; }}
+.site-footer a {{ color: var(--muted); text-decoration: none; transition: color .15s ease; }}
 .site-footer a:hover {{ color: var(--ink); }}
 
 @media (max-width: 620px) {{
-  .hero-copy {{ padding-top: 72px; padding-bottom: 72px; }}
-  .section {{ padding: 60px 0; }}
+  .hero-copy {{ min-height: 0; }}
+  .section-head {{ align-items: start; }}
+}}
+
+@media (prefers-reduced-motion: reduce) {{
+  *, *::before, *::after {{ transition: none !important; animation: none !important; }}
+  html {{ scroll-behavior: auto; }}
 }}
 """
 

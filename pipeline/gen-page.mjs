@@ -95,7 +95,10 @@ ${artCss}
 </html>`;
 } else {
   // A real website: the traced art is the hero backdrop, content flows.
-  const markup = content.markup.replace('<!--ART-->', artSvg);
+  // `slice` makes the art cover the hero box instead of letterboxing inside it;
+  // the scrim in the page CSS keeps the copy legible over it.
+  const heroArt = artSvg.replace('<svg ', '<svg preserveAspectRatio="xMidYMin slice" ');
+  const markup = content.markup.replace('<!--ART-->', heroArt);
   html = `${head}
   ${markup}
   <style is:global>

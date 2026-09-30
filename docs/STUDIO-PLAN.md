@@ -123,10 +123,12 @@ astro build                      # dist/index.html
      treat it as an outline button (border ring, transparent interior). A flood
      region *shorter* than its label is the surrounding artwork, not a button.
 4. **Group into sections.** Prefer the model's `section`; attach unspecified
-   blocks to the nearest declared section above them; merge adjacent blocks that
-   share a name into one group (the model declares a section per block, so
-   without the merge a 75-block page would ship 75 `<section>`s); when the model
-   declares nothing, cluster by vertical gap and by **eyebrow labels**
+   blocks to the nearest declared section above them; group every block that
+   shares a name into one section, ordered by position on the page (the model
+   declares a section per block, so without the grouping a 75-block page would
+   ship 75 `<section>`s — and merging only *adjacent* runs fragments a section
+   whenever the reading order interleaves two names at the same `y`); when the
+   model declares nothing, cluster by vertical gap and by **eyebrow labels**
    ("OUR SERVICES") and name groups by position. Card grids are rebuilt by
    grouping blocks that share an x-range (`_columns`).
 5. Generate:
@@ -234,9 +236,16 @@ Every job keeps its working tree (`data/jobs/<id>/workspace/`) and logs
    the `"poster"` layout A/B/C keep for the tracer's regression.
 9. Verification splits into **art-region fidelity** + a **structure report**.
 10. `doctor polarity` / `fixtures` re-targeted at structure; A/B/C still PASS.
-11. Same-name blocks merge into one section (a 75-block page shipped 75
-    `<section>`s before this), and a `"page"` layout scores the **traced SVG**
-    rather than the reflowing page.
+11. Every block sharing a section name becomes one section, ordered by position,
+    however the reading order interleaves (a 75-block page shipped 75
+    `<section>`s before this, and adjacent-run merging fragmented interleaved
+    sections); a section may hold several bands, each rendered as its own title
+    row + cards. A `"page"` layout scores the **traced SVG** rather than the
+    reflowing page.
+12. `palette()` enforces contrast against the ground and prefers the CTA's fill
+    as the accent; `build_page_css` emits a designed stylesheet (sticky header,
+    hero scrim, section title rows, card grids, columns, alternating surfaces)
+    rather than a reset.
 
 ## Risks
 

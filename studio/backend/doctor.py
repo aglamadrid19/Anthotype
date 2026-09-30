@@ -349,7 +349,9 @@ def cmd_polarity(_args: list[str]) -> int:
 
     # Adjacent blocks the model tagged with the SAME section name are one section.
     # The model declares a section per block, so without the merge a 75-block
-    # landing page ships one `<section>` per block; this caught exactly that.
+    # landing page ships one `<section>` per block.  A testimonial's author line
+    # sits at the same y as the contact band beside it, so the reading order
+    # *interleaves* the two names -- merging only adjacent runs fragments them.
     declared = [
         Block("LOCAL, RELIABLE", "tagline", (148, 133, 300, 145), section="hero"),
         Block("Local IT Help", "headline", (148, 145, 422, 188), section="hero"),
@@ -358,6 +360,8 @@ def cmd_polarity(_args: list[str]) -> int:
         Block("Data Transfer", "headline", (246, 372, 302, 379), section="features"),
         Block("WHAT OUR CLIENTS SAY", "tagline", (90, 519, 260, 531), section="testimonials"),
         Block("Great service!", "tagline", (90, 531, 260, 560), section="testimonials"),
+        Block("Sarah M.", "other", (326, 578, 382, 590), section="testimonials"),
+        Block("PROUDLY SERVING", "tagline", (126, 578, 206, 602), section="contact"),
         Block("Get in touch", "tagline", (582, 593, 700, 608), section="contact"),
         Block("Book an Appointment", "cta", (834, 601, 954, 640), section="contact"),
     ]
@@ -383,6 +387,24 @@ def cmd_polarity(_args: list[str]) -> int:
           "palette polarity",
           f"light bg -> light scheme={light_pal['light']}, "
           f"dark bg -> light scheme={dark_pal['light']}")
+
+    # The sampled colours must stay legible on the ground they are painted on.
+    # A design's headline can be a dark navy because it sat over a light hero
+    # panel; using it as body ink on a dark page makes the whole page unreadable.
+    navy = Block("Dark navy headline", "headline", (24, 90, 600, 140),
+                 color=(20, 40, 90))
+    ground = Block("Body copy", "tagline", (24, 150, 400, 190), color=(20, 40, 90))
+    pal = generate.palette([navy, ground], (10, 12, 14))
+    ratio = generate._contrast(pal["ink"], pal["bg"])
+    _line(OK if ratio >= 4.5 else BAD, "palette contrast on a dark ground",
+          f"ink {pal['ink']} on bg {pal['bg']} -> {ratio:.1f}:1")
+
+    # A CTA's fill is the accent, so buttons and highlights agree.
+    cta = Block("Buy", "cta", (24, 240, 120, 280), color=(255, 255, 255),
+                fill=(20, 190, 120))
+    pal = generate.palette([navy, ground, cta], (10, 12, 14))
+    _line(OK if pal["accent"] == (20, 190, 120) else BAD, "accent follows the CTA fill",
+          f"accent {pal['accent']}")
 
     # Extraction resilience: the retry escalates the image encoding, so a peer
     # that cannot decode WebP is not a dead end.
