@@ -1,0 +1,884 @@
+{
+  "blocks": [
+    {
+      "text": "Montiva Group",
+      "role": "brand",
+      "part": "page",
+      "bbox": [
+        186.0,
+        102.0,
+        276.0,
+        116.0
+      ]
+    },
+    {
+      "text": "Home",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        381.0,
+        105.0,
+        401.0,
+        114.0
+      ]
+    },
+    {
+      "text": "Services",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        419.0,
+        105.0,
+        446.0,
+        114.0
+      ]
+    },
+    {
+      "text": "About",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        464.0,
+        105.0,
+        484.0,
+        114.0
+      ]
+    },
+    {
+      "text": "Support",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        502.0,
+        105.0,
+        530.0,
+        114.0
+      ]
+    },
+    {
+      "text": "Contact",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        548.0,
+        105.0,
+        574.0,
+        114.0
+      ]
+    },
+    {
+      "text": "(801) 810-4242",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        755.0,
+        104.0,
+        810.0,
+        113.0
+      ]
+    },
+    {
+      "text": "Book Service",
+      "role": "cta",
+      "part": "page",
+      "bbox": [
+        822.0,
+        103.0,
+        868.0,
+        113.0
+      ]
+    },
+    {
+      "text": "LOCAL. RELIABLE. HERE TO HELP.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        148.0,
+        131.0,
+        274.0,
+        140.0
+      ]
+    },
+    {
+      "text": "Local IT Help for Home & Small Business",
+      "role": "headline",
+      "part": "page",
+      "bbox": [
+        147.0,
+        144.0,
+        424.0,
+        192.0
+      ]
+    },
+    {
+      "text": "Computer repair, networking, device setup, data transfer and more \u2014 with friendly, local support for Utah County. We make technology simple, so you can get back to what matters.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        147.0,
+        196.0,
+        424.0,
+        226.0
+      ]
+    },
+    {
+      "text": "Book Service \u2192",
+      "role": "cta",
+      "part": "page",
+      "bbox": [
+        186.0,
+        244.0,
+        248.0,
+        254.0
+      ]
+    },
+    {
+      "text": "Call Now",
+      "role": "cta",
+      "part": "page",
+      "bbox": [
+        312.0,
+        240.0,
+        344.0,
+        249.0
+      ]
+    },
+    {
+      "text": "(801) 810-4242",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        312.0,
+        251.0,
+        366.0,
+        259.0
+      ]
+    },
+    {
+      "text": "Local Utah Team",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        163.0,
+        279.0,
+        224.0,
+        287.0
+      ]
+    },
+    {
+      "text": "5-Star Service",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        237.0,
+        279.0,
+        291.0,
+        287.0
+      ]
+    },
+    {
+      "text": "Same Week Appointments",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        325.0,
+        279.0,
+        409.0,
+        287.0
+      ]
+    },
+    {
+      "text": "Technology That Works For You.",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        563.0,
+        172.0,
+        620.0,
+        208.0
+      ]
+    },
+    {
+      "text": "Montiva Group",
+      "role": "brand",
+      "part": "artwork",
+      "bbox": [
+        878.0,
+        178.0,
+        994.0,
+        193.0
+      ]
+    },
+    {
+      "text": "PEOPLE \u2022 TECHNOLOGY \u2022 SOLUTIONS",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        878.0,
+        199.0,
+        994.0,
+        206.0
+      ]
+    },
+    {
+      "text": "Montiva Group",
+      "role": "brand",
+      "part": "artwork",
+      "bbox": [
+        718.0,
+        272.0,
+        756.0,
+        284.0
+      ]
+    },
+    {
+      "text": "OUR SERVICES",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        148.0,
+        309.0,
+        206.0,
+        317.0
+      ]
+    },
+    {
+      "text": "Complete IT Services for Home & Business",
+      "role": "headline",
+      "part": "page",
+      "bbox": [
+        147.0,
+        320.0,
+        434.0,
+        334.0
+      ]
+    },
+    {
+      "text": "View All Services \u2192",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        820.0,
+        322.0,
+        876.0,
+        330.0
+      ]
+    },
+    {
+      "text": "Computer Repair",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        102.0,
+        371.0,
+        168.0,
+        380.0
+      ]
+    },
+    {
+      "text": "Diagnostics, repairs, and performance tuning for laptops and desktops.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        102.0,
+        385.0,
+        186.0,
+        410.0
+      ]
+    },
+    {
+      "text": "Data Transfer",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        246.0,
+        371.0,
+        303.0,
+        380.0
+      ]
+    },
+    {
+      "text": "Safely move your files to a new device or help recover important data.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        246.0,
+        385.0,
+        330.0,
+        410.0
+      ]
+    },
+    {
+      "text": "Wi-Fi & Networking",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        388.0,
+        371.0,
+        468.0,
+        380.0
+      ]
+    },
+    {
+      "text": "Set up and secure your home or office network for reliable coverage.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        388.0,
+        385.0,
+        472.0,
+        410.0
+      ]
+    },
+    {
+      "text": "Printer Setup",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        530.0,
+        371.0,
+        584.0,
+        380.0
+      ]
+    },
+    {
+      "text": "Installation and troubleshooting for all major printer brands.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        530.0,
+        385.0,
+        614.0,
+        410.0
+      ]
+    },
+    {
+      "text": "Device Upgrades",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        672.0,
+        371.0,
+        736.0,
+        380.0
+      ]
+    },
+    {
+      "text": "Boost performance with hardware upgrades, SSD installs, and more.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        672.0,
+        385.0,
+        756.0,
+        410.0
+      ]
+    },
+    {
+      "text": "Remote Support",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        814.0,
+        371.0,
+        880.0,
+        380.0
+      ]
+    },
+    {
+      "text": "Get IT help from our team \u2014 no visit needed.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        814.0,
+        385.0,
+        880.0,
+        410.0
+      ]
+    },
+    {
+      "text": "WHY CHOOSE MONTIVA GROUP",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        148.0,
+        436.0,
+        268.0,
+        444.0
+      ]
+    },
+    {
+      "text": "Local People. Real Support. Better Technology.",
+      "role": "headline",
+      "part": "page",
+      "bbox": [
+        147.0,
+        447.0,
+        438.0,
+        461.0
+      ]
+    },
+    {
+      "text": "Fast Response",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        192.0,
+        469.0,
+        248.0,
+        478.0
+      ]
+    },
+    {
+      "text": "Quick turnaround times when you need help.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        192.0,
+        482.0,
+        262.0,
+        502.0
+      ]
+    },
+    {
+      "text": "Friendly Local Support",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        386.0,
+        469.0,
+        472.0,
+        478.0
+      ]
+    },
+    {
+      "text": "A real team based right here in Utah.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        386.0,
+        482.0,
+        456.0,
+        502.0
+      ]
+    },
+    {
+      "text": "Home & Office Visits",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        582.0,
+        469.0,
+        658.0,
+        478.0
+      ]
+    },
+    {
+      "text": "We come to you \u2014 homes and small businesses.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        582.0,
+        482.0,
+        666.0,
+        502.0
+      ]
+    },
+    {
+      "text": "Remote Help Available",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        780.0,
+        469.0,
+        868.0,
+        478.0
+      ]
+    },
+    {
+      "text": "Get expert support from anywhere.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        780.0,
+        482.0,
+        850.0,
+        502.0
+      ]
+    },
+    {
+      "text": "WHAT OUR CLIENTS SAY",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        90.0,
+        519.0,
+        176.0,
+        527.0
+      ]
+    },
+    {
+      "text": "Trusted by Homeowners and Local Businesses",
+      "role": "headline",
+      "part": "page",
+      "bbox": [
+        89.0,
+        530.0,
+        242.0,
+        558.0
+      ]
+    },
+    {
+      "text": "Montiva Group fixed my computer quickly and got everything up and running. Super friendly and professional!",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        334.0,
+        527.0,
+        482.0,
+        556.0
+      ]
+    },
+    {
+      "text": "Sarah M.",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        334.0,
+        560.0,
+        366.0,
+        568.0
+      ]
+    },
+    {
+      "text": "Pleasant Grove, UT",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        374.0,
+        562.0,
+        424.0,
+        569.0
+      ]
+    },
+    {
+      "text": "They helped set up our office network and printers and made everything so easy. Great local team!",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        556.0,
+        527.0,
+        704.0,
+        556.0
+      ]
+    },
+    {
+      "text": "James T.",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        556.0,
+        560.0,
+        586.0,
+        568.0
+      ]
+    },
+    {
+      "text": "American Fork, UT",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        596.0,
+        562.0,
+        652.0,
+        569.0
+      ]
+    },
+    {
+      "text": "Remote support was quick, reliable, and easy to work with. Highly recommend for anyone needing IT help.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        778.0,
+        527.0,
+        926.0,
+        556.0
+      ]
+    },
+    {
+      "text": "Melissa R.",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        778.0,
+        560.0,
+        814.0,
+        568.0
+      ]
+    },
+    {
+      "text": "Lehi, UT",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        822.0,
+        562.0,
+        848.0,
+        569.0
+      ]
+    },
+    {
+      "text": "PROUDLY SERVING",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        136.0,
+        585.0,
+        198.0,
+        593.0
+      ]
+    },
+    {
+      "text": "Utah County and Surrounding Areas",
+      "role": "headline",
+      "part": "page",
+      "bbox": [
+        135.0,
+        595.0,
+        366.0,
+        610.0
+      ]
+    },
+    {
+      "text": "We provide in-home, on-site, and remote IT services throughout Utah County \u2014 including Provo, Orem, Lehi, American Fork, Salt Lake City, and nearby communities.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        135.0,
+        614.0,
+        424.0,
+        634.0
+      ]
+    },
+    {
+      "text": "Get in Touch",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        608.0,
+        592.0,
+        652.0,
+        601.0
+      ]
+    },
+    {
+      "text": "Have a question or need help? We're here for you.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        608.0,
+        604.0,
+        762.0,
+        612.0
+      ]
+    },
+    {
+      "text": "(801) 810-4242",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        630.0,
+        616.0,
+        684.0,
+        624.0
+      ]
+    },
+    {
+      "text": "Call or Text",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        630.0,
+        625.0,
+        662.0,
+        632.0
+      ]
+    },
+    {
+      "text": "support@montivagroup.com",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        752.0,
+        616.0,
+        842.0,
+        624.0
+      ]
+    },
+    {
+      "text": "Email Us",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        752.0,
+        625.0,
+        778.0,
+        632.0
+      ]
+    },
+    {
+      "text": "Book an Appointment",
+      "role": "cta",
+      "part": "page",
+      "bbox": [
+        858.0,
+        616.0,
+        924.0,
+        624.0
+      ]
+    },
+    {
+      "text": "Same week availability",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        858.0,
+        625.0,
+        918.0,
+        632.0
+      ]
+    },
+    {
+      "text": "Montiva Group",
+      "role": "brand",
+      "part": "page",
+      "bbox": [
+        124.0,
+        648.0,
+        188.0,
+        658.0
+      ]
+    },
+    {
+      "text": "PEOPLE \u2022 TECHNOLOGY \u2022 SOLUTIONS",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        124.0,
+        660.0,
+        190.0,
+        666.0
+      ]
+    },
+    {
+      "text": "\u00a9 2024 Montiva Group. All rights reserved.",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        218.0,
+        654.0,
+        322.0,
+        661.0
+      ]
+    },
+    {
+      "text": "Home",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        414.0,
+        650.0,
+        432.0,
+        658.0
+      ]
+    },
+    {
+      "text": "Services",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        452.0,
+        650.0,
+        478.0,
+        658.0
+      ]
+    },
+    {
+      "text": "About",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        496.0,
+        650.0,
+        514.0,
+        658.0
+      ]
+    },
+    {
+      "text": "Support",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        532.0,
+        650.0,
+        558.0,
+        658.0
+      ]
+    },
+    {
+      "text": "Contact",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        576.0,
+        650.0,
+        602.0,
+        658.0
+      ]
+    },
+    {
+      "text": "Pleasant Grove, UT",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        736.0,
+        650.0,
+        790.0,
+        658.0
+      ]
+    },
+    {
+      "text": "Serving all of Utah County",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        736.0,
+        659.0,
+        796.0,
+        666.0
+      ]
+    },
+    {
+      "text": "Privacy Policy",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        862.0,
+        662.0,
+        890.0,
+        668.0
+      ]
+    },
+    {
+      "text": "Terms of Service",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        902.0,
+        662.0,
+        930.0,
+        668.0
+      ]
+    }
+  ]
+}

@@ -125,6 +125,15 @@ def sample_runs(arr: np.ndarray, bbox: tuple[float, float, float, float], text: 
     frac = float(sat_cols.min()) / w
     idx = char_at_x_fraction(text, frac, weight)
     idx = max(1, min(len(text) - 1, idx))
+    # A real two-tone run splits at a word boundary ("Ant" + "Hosting"): the
+    # coloured part is at least a quarter of the string's width.  A split that
+    # fragments a glyph -- a saturated highlight on one letter -- is noise, and
+    # emitting it as a run paints that letter a different colour (the Montiva
+    # hero paragraph came back as a grey "Compu" + a slate rest).  When the split
+    # is not structural, fall back to one colour for the block.
+    if idx < 3 or idx > len(text) - 3:
+        pick = px[dsel >= np.percentile(dsel, 65)] if dsel.size else px
+        return [(text, tuple(int(v) for v in np.median(pick, axis=0)))]
     return [(text[:idx], tuple(int(v) for v in np.median(neutral, axis=0))),
             (text[idx:], tuple(int(v) for v in np.median(coloured, axis=0)))]
 
@@ -257,7 +266,13 @@ def refine_button_bbox(arr: np.ndarray, bbox: tuple[float, float, float, float],
     # The button must be plausible and overlap the label.  It need not *contain*
     # the label box: the model's box is a few pixels loose, and on a small pill
     # it can be wider than the button itself.
-    if bw < 0.5 * (x1 - x0) or bh < 0.5 * (y1 - y0):
+    #
+    # But it must be at least as tall as the label: a real button has the label
+    # inside it, so a flooded region *shorter* than the label is the surrounding
+    # artwork, not the button.  Without this, "Call Now" on the Montiva hero
+    # matched a blue patch of the photograph (35x6 against a 32x9 label) and the
+    # CTA rendered as a small blue smear.
+    if bw < 1.02 * (x1 - x0) or bh < 1.02 * (y1 - y0):
         return bbox
     if bw > 4 * (x1 - x0) + 80 or bh > 4 * (y1 - y0) + 80:
         return bbox
@@ -270,6 +285,14 @@ def _hex(rgb: tuple[int, int, int]) -> str:
 
 def _sat(rgb: tuple[int, int, int]) -> int:
     return max(rgb) - min(rgb)
+
+
+def _max_channel_spread(colors: list[tuple[int, int, int]]) -> int:
+    """Largest per-channel difference between any two of `colors`."""
+    if len(colors) < 2:
+        return 0
+    return max(max(c[i] for c in colors) - min(c[i] for c in colors)
+               for i in range(3))
 
 
 def _role_rank(role: str) -> int:
@@ -391,6 +414,129 @@ def snap_to_ink(arr: np.ndarray, bbox: tuple[float, float, float, float],
     return (float(sx0), float(sy0), float(sx1), float(sy1))
 
 
+def measure_lines(arr: np.ndarray, bbox: tuple[float, float, float, float],
+                  background: tuple[int, int, int]
+                  ) -> tuple[int, float | None, list[tuple[int, int]]]:
+    """Count the text lines inside `bbox` from the reference pixels.
+
+    The model reports a wrapped block as ONE box, and neither the box's width nor
+    its height says how many lines it holds -- so the layout used to guess, and
+    on the Montiva hero it guessed one 14 px line where the reference sets two
+    ~22 px ones.  The reference itself is unambiguous: each text line is a run of
+    ink rows separated by a clear gap, so a horizontal ink projection counts
+    them and measures the leading at the same time.
+
+    Returns `(line_count, pitch_px, runs)`; `runs` are the `(row0, row1)` ink
+    bands in stage coordinates (used to sample each line's own colour) and
+    `pitch_px` is the median baseline-to-baseline distance.  Conservative --
+    returns `(1, None, [])` unless the structure is clear, so a genuinely
+    single-line block, or one whose ink is a single blob, is left to the width
+    solve rather than mis-split.
+    """
+    x0, y0, x1, y1 = (int(round(v)) for v in bbox)
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(STAGE_W, x1), min(STAGE_H, y1)
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return 1, None, []
+    grey = arr[y0:y1, x0:x1].mean(axis=2)
+    bg_mean = float(np.array(background, dtype=np.float32).mean())
+    # Polarity-aware, like `snap_to_ink`: the ink may be either side of the
+    # background, and a fixed threshold misses faint small print on a near-white
+    # page entirely.
+    d = np.abs(grey - bg_mean)
+    base = float(d.max())
+    if base < 6.0:
+        return 1, None, []
+    thr = max(10.0, 0.35 * base)
+    ink = d > thr
+    row_any = ink.sum(axis=1) >= 1
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    for i, on in enumerate(row_any):
+        if on and start is None:
+            start = i
+        elif not on and start is not None:
+            runs.append((start, i - 1))
+            start = None
+    if start is not None:
+        runs.append((start, len(row_any) - 1))
+    # A real line is at least 2 px of ink; a lone anti-aliased edge row is not.
+    runs = [(a, b) for a, b in runs if b - a + 1 >= 2]
+    if len(runs) < 2:
+        return 1, None, []
+    # Wrapped lines are similar heights.  A second "line" that is a descender
+    # sliver, a stray icon, or a neighbouring element is much shorter, and
+    # treating it as a line would shatter a single-line block.
+    heights = [b - a + 1 for a, b in runs]
+    if max(heights) > 3.5 * min(heights):
+        return 1, None, []
+    gaps = [runs[i + 1][0] - runs[i][1] - 1 for i in range(len(runs) - 1)]
+    if min(gaps) < 2:
+        return 1, None, []
+    centres = [(a + b) / 2.0 for a, b in runs]
+    pitches = [centres[i + 1] - centres[i] for i in range(len(centres) - 1)]
+    if min(pitches) <= 0:
+        return 1, None, []
+    abs_runs = [(y0 + a, y0 + b) for a, b in runs]
+    return len(runs), float(np.median(pitches)), abs_runs
+
+
+def sample_line_colors(arr: np.ndarray, runs: list[tuple[int, int]],
+                       x0: float, x1: float,
+                       background: tuple[int, int, int]
+                       ) -> list[tuple[int, int, int]]:
+    """Ink colour of each measured line band (for a multi-colour wrapped block).
+
+    A wrapped display headline is often painted per line -- the Montiva hero is
+    navy on line 1 and blue on line 2 -- and sampling the whole block collapses
+    that to one colour, which reads as a large error on the most prominent
+    element of the page.
+    """
+    return [sample_ink(arr, (x0, ry0, x1, ry1 + 1), background)
+            for (ry0, ry1) in runs]
+
+
+def ink_coverage(grey: np.ndarray, background: float,
+                 thr: float = 6.0) -> float | None:
+    """Fraction of the ink box of `grey` that is actually ink.
+
+    The reference-side half of `fontmetrics.detect_weight`: the same statistic is
+    measured on the reference glyphs and on the string rasterised in each
+    vendored weight, and the closest weight wins.
+    """
+    d = np.abs(grey - background)
+    base = float(d.max())
+    if base < 6.0:
+        return None
+    ink = d > max(thr, 0.35 * base)
+    n = int(ink.sum())
+    if n < 10:
+        return None
+    ys, xs = np.nonzero(ink)
+    h = int(ys.max() - ys.min() + 1)
+    w = int(xs.max() - xs.min() + 1)
+    if h < 2 or w < 2:
+        return None
+    return n / float(h * w)
+
+
+def measure_weight(arr: np.ndarray, bbox: tuple[float, float, float, float],
+                   text: str, background: tuple[int, int, int]) -> int:
+    """Pick the Inter weight the reference sets `text` in (see `detect_weight`)."""
+    from . import fontmetrics
+    x0, y0, x1, y1 = (int(round(v)) for v in bbox)
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(STAGE_W, x1), min(STAGE_H, y1)
+    if x1 - x0 < 4 or y1 - y0 < 4 or not text.strip():
+        return fontmetrics.DEFAULT_WEIGHT
+    grey = arr[y0:y1, x0:x1].mean(axis=2)
+    bg_mean = float(np.array(background, dtype=np.float32).mean())
+    cov = ink_coverage(grey, bg_mean)
+    if cov is None:
+        return fontmetrics.DEFAULT_WEIGHT
+    return fontmetrics.detect_weight(text, cov)
+
+
 def decorate(blocks: list[Block], ref_png: Path,
              background: tuple[int, int, int]) -> list[Block]:
     """Fill in each block's ink colour(s) (and a CTA's fill) from the reference."""
@@ -431,6 +577,20 @@ def decorate(blocks: list[Block], ref_png: Path,
             b.bbox = snap_to_ink(arr, b.bbox, background)
             b.runs = sample_runs(arr, b.bbox, b.text, background)
             b.color = b.runs[0][1] if len(b.runs) == 1 else None
+            # How many lines the reference actually sets this block on.  The
+            # model reports a wrapped block as one box, and the box width alone
+            # cannot distinguish it from a single long line (see `measure_lines`).
+            n, pitch, line_runs = measure_lines(arr, b.bbox, background)
+            b.meta["n_lines"] = n
+            if pitch:
+                b.meta["pitch"] = pitch
+            if n > 1 and line_runs:
+                b.meta["line_colors"] = sample_line_colors(
+                    arr, line_runs, b.bbox[0], b.bbox[2], background)
+            # How heavy the reference sets it.  A display headline is bold and a
+            # body line is not, and the difference is the single largest source
+            # of error once the text lands in the right place.
+            b.meta["weight"] = measure_weight(arr, b.bbox, b.text, background)
     return blocks
 
 
@@ -522,20 +682,46 @@ def build_page_css(blocks: list[Block], background: tuple[int, int, int]) -> str
                     f"  background: {fill}; color: {color}; font-size: {fs:.1f}px; font-weight: {weight}; }}",
                 ]
         else:
-            weight = 400
+            weight = b.meta.get("weight", 400)
             bw, bh = x1 - x0, y1 - y0
-            fs, nlines = fit_block_type(b.text, bw, bh, b.role, weight)
+            fs, nlines = fit_block_type(b.text, bw, bh, b.role, weight,
+                                        n_lines=b.meta.get("n_lines"))
             color = _hex(b.color or (255, 255, 255))
             if nlines > 1:
                 # The model reports a wrapped block as ONE box, so the lines must
                 # be laid out by wrapping inside it, with the leading spread to
                 # fill the box height -- but never tighter than the glyphs.
-                lh = max(bh / nlines, fs)
+                # Prefer the leading measured from the reference (`pitch`), which
+                # is exact; fall back to spreading the box height over the lines.
+                lh = b.meta.get("pitch") or max(bh / nlines, fs)
                 top = max(0.0, y0 - cap_top_offset(fs, weight, lh))
+                # A wrapped *display* line is often painted per line (the Montiva
+                # hero is navy, then blue).  One colour for the whole block is a
+                # large error on the page's most prominent element.  Only worth
+                # doing for large type, though: on 8 px body copy the per-line
+                # medians differ only by anti-aliasing, and a gradient there just
+                # smears the colour.
+                line_cols = b.meta.get("line_colors") or []
+                paint = ""
+                if (fs >= 18 and len(line_cols) >= 2
+                        and _max_channel_spread(line_cols) > 24):
+                    n = len(line_cols)
+                    # Hard stops, not a smooth ramp: each measured line is a flat
+                    # colour in the reference, so the transition belongs on the
+                    # boundary between lines (a ramp would tint the top of line 1
+                    # and the bottom of line 2).
+                    stops = []
+                    for k, c in enumerate(line_cols):
+                        a, b = k * 100.0 / n, (k + 1) * 100.0 / n
+                        stops.append(f"{_hex(c)} {a:.1f}%")
+                        stops.append(f"{_hex(c)} {b:.1f}%")
+                    color = "transparent"
+                    paint = (f"background: linear-gradient(180deg, {', '.join(stops)}); "
+                             f"-webkit-background-clip: text; background-clip: text;")
                 lines.append(
                     f".blk-{i} {{ left: {x0:.0f}px; top: {top:.1f}px; width: {bw:.0f}px; "
                     f"white-space: normal; font-size: {fs:.1f}px; line-height: {lh:.1f}px; "
-                    f"font-weight: {weight}; color: {color}; }}"
+                    f"font-weight: {weight}; color: {color}; {paint}}}"
                 )
             else:
                 top = max(0.0, y0 - cap_top_offset(fs, weight))

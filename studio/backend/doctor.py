@@ -7,8 +7,10 @@ When something looks wrong, start here.
                             fonts, the vision model / AntSeed proxy)
     doctor polarity         synthetic light/dark checks for the ink, wrapping and
                             scope heuristics (no vision model, no pipeline)
-    doctor light [--keep]   build the frozen light-background fixture end to end
-                            (no vision model) and score it
+    doctor fixtures [name]  build every saved extraction end to end and score it
+                            (no vision model): the light fixture plus the two
+                            real designs that regressed
+    doctor light [--keep]   the light fixture alone (kept for the README)
     doctor regress          prove the shipped pipeline is intact: run the repo's
                             own qa/verify.sh and report A/B/C PASS/FAIL
     doctor run [png]        run one design end to end, in-process, printing every
@@ -320,6 +322,52 @@ def cmd_polarity(_args: list[str]) -> int:
     _line(OK if ok else BAD, "page copy vs artwork",
           ", ".join(f"{k}={v}" for k, v in checks.items()))
 
+    # Reference-driven line measurement: a wrapped block is two ink bands in the
+    # reference, and the count must be read from the pixels -- the box alone
+    # cannot tell a wrapped block from a single long line (the Montiva hero).
+    from PIL import Image, ImageDraw, ImageFont
+    stage = Image.new("RGB", (config.STAGE_W, config.STAGE_H), (248, 249, 247))
+    d = ImageDraw.Draw(stage)
+    d.text((100, 100), "First line of the headline", fill=(20, 24, 40),
+           font=fontmetrics.pil_font(600, 30))
+    d.text((100, 142), "Second line of the headline", fill=(20, 90, 220),
+           font=fontmetrics.pil_font(600, 30))
+    arr = np.asarray(stage).astype(np.float32)
+    n_lines, pitch, runs = generate.measure_lines(arr, (95, 92, 420, 182), (248, 249, 247))
+    _line(OK if n_lines == 2 and pitch and 30 <= pitch <= 48 else BAD,
+          "line count from the reference",
+          f"{n_lines} line(s), pitch {pitch and round(pitch, 1)}")
+    if n_lines == 2:
+        cols = generate.sample_line_colors(arr, runs, 95, 420, (248, 249, 247))
+        spread = generate._max_channel_spread(cols)
+        _line(OK if spread > 60 else BAD, "per-line colour (two-tone headline)",
+              " / ".join(str(c) for c in cols))
+
+    # Weight is measured, not assumed: a bold line covers more of its box than a
+    # regular one, and the studio must pick the heavier vendored face for it.
+    reg = Image.new("RGB", (900, 120), (248, 249, 247))
+    ImageDraw.Draw(reg).text((20, 20), "Complete IT Services", fill=(10, 12, 20),
+                             font=fontmetrics.pil_font(400, 48))
+    bold = Image.new("RGB", (900, 120), (248, 249, 247))
+    ImageDraw.Draw(bold).text((20, 20), "Complete IT Services", fill=(10, 12, 20),
+                              font=fontmetrics.pil_font(600, 48))
+    w_reg = generate.measure_weight(np.asarray(reg).astype(np.float32),
+                                    (15, 15, 500, 80), "Complete IT Services",
+                                    (248, 249, 247))
+    w_bold = generate.measure_weight(np.asarray(bold).astype(np.float32),
+                                     (15, 15, 500, 80), "Complete IT Services",
+                                     (248, 249, 247))
+    _line(OK if w_bold > w_reg else BAD, "weight from the reference",
+          f"regular->{w_reg}, bold->{w_bold}")
+
+    # Extraction resilience: the retry escalates the image encoding, so a peer
+    # that cannot decode WebP is not a dead end.
+    from app.extract import _gridded_data_uri
+    mimes = [_gridded_data_uri(config.PIPELINE_DIR / "qa" / "ref-a.png", attempt=i).split(";")[0]
+             for i in range(3)]
+    _line(OK if len(set(mimes)) == 3 else BAD, "vision retry encoding",
+          " -> ".join(m.split(":")[-1] for m in mimes))
+
     # The studio's vision model + its fallbacks, as configured.
     v = config.vision.describe()
     n = len(v.get("fallbacks") or [])
@@ -337,26 +385,44 @@ def cmd_polarity(_args: list[str]) -> int:
 # --------------------------------------------------------------------------
 # light: the frozen light-background fixture, end to end
 # --------------------------------------------------------------------------
-# A saved extraction (studio/fixtures/light-blocks.json) replayed against a
-# light reference.  The vision model is never called, so this is deterministic
-# and free; it is what guards the polarity work in CI and on a fresh checkout.
+# A saved extraction replayed against a reference.  The vision model is never
+# called, so these are deterministic and free; they guard the local layout,
+# tracing and scoring paths in CI and on a fresh checkout.
+#
+# `light` is the synthetic first light design; `montiva` and `antho` are real
+# uploads that failed badly (12.04 / 6.39) before the reference-driven line
+# measurement and the ink inpainting landed, so they are the regression suite
+# for exactly those two fixes.
+FIXTURES: dict[str, dict] = {
+    "light": dict(
+        ref="light-ref.png", blocks="light-blocks.json", target=6.6,
+        note="synthetic light ground; font substitution, not layout",
+        page=8, artwork=0,
+    ),
+    "montiva": dict(
+        ref="montiva-ref.png", blocks="montiva-blocks.json", target=9.2,
+        note="real multi-section landing page (was 12.04; reference face is not Inter)",
+    ),
+    "antho": dict(
+        ref="antho-ref.png", blocks="antho-blocks.json", target=7.0,
+        note="real photorealistic hero (was 6.39; logo face is not Inter)",
+    ),
+}
 LIGHT_FIXTURE = STUDIO_DIR / "fixtures"
-LIGHT_TARGET = 6.6
+LIGHT_TARGET = FIXTURES["light"]["target"]
 
 
-def cmd_light(args: list[str]) -> int:
-    """Build the light fixture end to end (no model) and score it.
-
-    Set `--keep` to leave the job directory behind for `doctor job <id>`.
-    """
-    ref = LIGHT_FIXTURE / "light-ref.png"
-    blocks = LIGHT_FIXTURE / "light-blocks.json"
+def _run_fixture(name: str, keep: bool = False) -> int:
+    """Build one saved extraction end to end (no model) and score it."""
+    spec = FIXTURES[name]
+    ref = LIGHT_FIXTURE / spec["ref"]
+    blocks = LIGHT_FIXTURE / spec["blocks"]
     if not ref.is_file() or not blocks.is_file():
         print(f"missing fixture: {ref} / {blocks}")
         return 2
 
-    keep = "--keep" in args
-    print(f"light fixture: {ref.name} + {blocks.name} (no vision model)\n")
+    print(f"fixture {name}: {ref.name} + {blocks.name} (no vision model)")
+    print(f"  {spec['note']}; target <= {spec['target']}\n")
 
     from app.jobs import JobStore
     from app.runner import PipelineRunner
@@ -367,19 +433,22 @@ def cmd_light(args: list[str]) -> int:
 
     os.environ["STUDIO_FAKE_BLOCKS"] = str(blocks)
     try:
-        job = store.create(ref.read_bytes(), filename="light-ref.png")
-    finally:
-        os.environ.pop("STUDIO_FAKE_BLOCKS", None)
+        job = store.create(ref.read_bytes(), filename=ref.name)
 
-    last, t0 = None, time.time()
-    while time.time() - t0 < 1800:
-        j = store.get(job.id)
-        if j.stage != last:
-            print(f"  [{j.progress*100:5.1f}%] {j.stage:11s} {j.message}")
-            last = j.stage
-        if j.status in ("done", "failed"):
-            break
-        time.sleep(0.5)
+        last, t0 = None, time.time()
+        while time.time() - t0 < 1800:
+            j = store.get(job.id)
+            if j.stage != last:
+                print(f"  [{j.progress*100:5.1f}%] {j.stage:11s} {j.message}")
+                last = j.stage
+            if j.status in ("done", "failed"):
+                break
+            time.sleep(0.5)
+    finally:
+        # Must outlive the worker: `create` only enqueues, and popping the var
+        # before the job finished let the worker fall through to a *live* vision
+        # call -- so a "fixture replay" was not reproducible at all.
+        os.environ.pop("STUDIO_FAKE_BLOCKS", None)
 
     j = store.get(job.id)
     print()
@@ -387,25 +456,57 @@ def cmd_light(args: list[str]) -> int:
     if j.score is None:
         print("\nlog tail:")
         print("\n".join(j.logs[-30:]))
+        if not keep:
+            shutil.rmtree(j.dir, ignore_errors=True)
         return 1
 
-    # The page-copy scope filter is the other thing this guards: the fixture
-    # carries 12 artwork blocks that must NOT become DOM.
     page = [b for b in (j.blocks or []) if b.get("part") == "page"]
     art = [b for b in (j.blocks or []) if b.get("part") == "artwork"]
-    ok = j.score <= LIGHT_TARGET and len(page) == 8 and not art
-    print(f"score  : {j.score:.2f}  (target <= {LIGHT_TARGET})")
+    ok = j.score <= spec["target"] and not art
+    # The light fixture pins an exact scope-filter result; the real fixtures only
+    # assert that the copy survived (their block sets are large and model-derived).
+    if "page" in spec:
+        ok = ok and len(page) == spec["page"] and len(art) == spec["artwork"]
+    else:
+        ok = ok and any(b.get("role") == "headline" for b in page)
+
+    print(f"score  : {j.score:.2f}  (target <= {spec['target']})")
     print(f"blocks : {len(page)} page, {len(art)} artwork left to the tracer")
     print(f"job dir: {j.dir}")
     if not keep:
         shutil.rmtree(j.dir, ignore_errors=True)
     print()
     if ok:
-        print("light fixture PASS")
+        print(f"fixture {name} PASS")
         return 0
-    print("light fixture FAIL (score too high, or scope filter regressed)")
+    print(f"fixture {name} FAIL (score too high, or scope filter regressed)")
     print("\n".join(j.logs[-20:]))
     return 1
+
+
+def cmd_fixtures(args: list[str]) -> int:
+    """Run every saved fixture (or the named ones).  No vision model."""
+    keep = "--keep" in args
+    names = [a for a in args if not a.startswith("-")] or list(FIXTURES)
+    bad = [n for n in names if n not in FIXTURES]
+    if bad:
+        print(f"unknown fixture(s): {', '.join(bad)}; have {', '.join(FIXTURES)}")
+        return 2
+    failed = 0
+    for n in names:
+        failed += _run_fixture(n, keep=keep)
+        print("=" * 60)
+    print(f"fixtures: {len(names) - failed}/{len(names)} passed")
+    return 1 if failed else 0
+
+
+def cmd_light(args: list[str]) -> int:
+    """Build the light fixture end to end (no model) and score it.
+
+    Kept as a stable entry point (the README documents it); `doctor fixtures`
+    runs it alongside the two real-design regressions.
+    """
+    return _run_fixture("light", keep="--keep" in args)
 
 
 # --------------------------------------------------------------------------
@@ -513,6 +614,7 @@ def cmd_jobs(_args: list[str]) -> int:
 COMMANDS = {
     "env": cmd_env,
     "polarity": cmd_polarity,
+    "fixtures": cmd_fixtures,
     "light": cmd_light,
     "regress": cmd_regress,
     "run": cmd_run,

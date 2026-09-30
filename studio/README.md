@@ -125,6 +125,15 @@ real, editable starting point rather than the hand-authored fidelity. Those
 numbers move by a few tenths between runs — the vision model's boxes shift
 slightly on identical calls — so treat them as a band, not a constant.
 
+The two uploads that came back worst (a multi-section landing page at **12.04**
+and a photorealistic hero at **6.39**) are now committed fixtures and replay
+through the whole pipeline without a model: **montiva 8.78**, **antho 6.41**,
+**light 6.42** (`doctor fixtures`). What closed that gap was measuring the line
+count, weight and per-line colour from the reference instead of inferring them
+from a box, and inpainting the glyph ink out of the artwork so the DOM type is
+not sitting on a ghost of itself. The remaining residue on all three is the
+reference's own typeface, which is not Inter.
+
 ### Light designs
 
 A/B/C are all light-type-on-dark, and the first uploads that were not exposed how
@@ -147,6 +156,60 @@ much of the layer had quietly assumed that:
 
 `text_bg_lum` is additive: `mkart.py` behaves exactly as before when it is
 absent. `qa/mkart.py a` re-traces to a byte-identical `pipeline/a.svg`.
+
+### Why the type lands where it does (and three things measured, not guessed)
+
+A vision model returns a box, not a font.  Three properties the box cannot tell
+you are recovered from the reference pixels instead:
+
+- **Line count.** The model reports a wrapped block as ONE box, and neither the
+  box's width nor its height says how many lines it holds — the Montiva hero box
+  is 273×43, whose text fits on one 14 px line, yet the reference sets it on two
+  ~25 px lines.  `generate.measure_lines` projects the ink rows inside the
+  snapped box and counts the bands, which also gives the reference's own leading
+  (`pitch`) to within a pixel.  This was the single largest layout bug: the DOM
+  headline rendered at one-third its true size.
+- **Weight.** `sample_runs` gives colour, but a bold display headline set at 400
+  is a large error and no sizing fixes it.  `measure_weight` compares the ink
+  *coverage* (share of the ink box that is ink) of the reference against the same
+  string rasterised in each vendored Inter weight, and picks the closest.  On the
+  Montiva hero: reference 0.44, Inter 400 0.21, 600 0.28 → 600.
+- **Per-line colour.** A wrapped display line is often painted per line — the
+  Montiva hero is navy on line 1, blue on line 2.  Sampling the whole block
+  collapses that to one colour, so each measured line gets its own hard-stop
+  gradient (background-clip: text), applied only to large type where the
+  per-line medians differ by more than anti-aliasing.
+
+### The artwork must not contain a ghost of the words
+
+On a light design the tracer's legacy text-exclusion rule is backwards.  It keeps
+the bands *near* the page background so the type's glow survives — but on a light
+page the glyph ink and its anti-aliased halo sit just *below* the background, so
+they are kept and the tracer bakes a full pale ghost of every word into the SVG,
+underneath the DOM text that is supposed to replace it.
+
+`mkart.py` now **inpaints the glyph ink out of the reference** before tracing
+(gated on `text_bg_lum`, so the three shipped dark designs keep the legacy path
+byte-for-byte).  Two details matter:
+
+- the background is measured **locally** (a median filter wider than the glyphs),
+  not from the page border — a real landing page has type on a dark footer panel
+  and over a photograph as well as on the page ground, and one global value
+  punches the footer's own plate out and leaves a bright smear;
+- the ink mask is **dilated**, because the anti-aliased fringe is the *outline*
+  of every glyph and leaving it draws a pale ghost even when the cores are gone.
+
+Measured on the Montiva fixture, same layout: inpaint **8.78** vs the old
+keep-the-bands rule **12.32**.
+
+### The honest limit: font substitution
+
+The shipped Inter is the only face available, and a real mockup often is not set
+in Inter.  The `antho` fixture's "antseed" logo and the Montiva wordmarks are
+other typefaces, and the residue on those glyphs is font substitution, not
+layout — no amount of sizing, colour or wrapping tuning removes it.  That is
+what sets the fixture targets (light 6.6, montiva 9.2, antho 7.0) rather than
+the hand-tuned A/B/C band.
 
 ### What is page copy, and what is artwork
 
@@ -191,8 +254,9 @@ under the studio venv, so `python3` works too.
 
 ```sh
 studio/.venv/bin/python studio/backend/doctor.py env        # every dependency + the vision endpoint
-studio/.venv/bin/python studio/backend/doctor.py polarity   # light/dark ink, wrapping, scope (no model)
-studio/.venv/bin/python studio/backend/doctor.py light      # the light fixture, end to end (no model)
+studio/.venv/bin/python studio/backend/doctor.py polarity   # light/dark ink, wrapping, scope, weight (no model)
+studio/.venv/bin/python studio/backend/doctor.py fixtures   # the light + montiva + antho fixtures, end to end (no model)
+studio/.venv/bin/python studio/backend/doctor.py light      # the light fixture alone
 studio/.venv/bin/python studio/backend/doctor.py regress    # run the repo's qa/verify.sh (A/B/C PASS)
 studio/.venv/bin/python studio/backend/doctor.py run x.png  # one design end to end, per-stage timings
 studio/.venv/bin/python studio/backend/doctor.py jobs       # list recent jobs
@@ -206,19 +270,28 @@ studio/.venv/bin/python studio/backend/doctor.py job <id>   # full status + logs
   synthetic stage with light type on a dark ground *and* dark type on a light
   one, then checks that the ink is sampled and the box snapped on both, that a
   two-tone wordmark still splits into its two runs, that a wrapped block is sized
-  from its height, and that the page-copy filter keeps a wide footer and a small
-  wordmark while dropping a narrow caption and an `artwork` block. No vision
-  model, no pipeline, a second or so — run it after touching any of the sampling,
-  wrapping or scope heuristics.
-- **`light`** is the end-to-end guard that `polarity` cannot be: it replays a
-  frozen extraction (`studio/fixtures/light-blocks.json`) against the light
-  reference (`studio/fixtures/light-ref.png`) through the *whole* local pipeline —
-  layout, `mkart` tracing with `text_bg_lum`, Astro build, scoring — and asserts
-  the score stays at or below **6.6** and that all 8 page blocks are emitted as
-  DOM while the 12 artwork blocks are left to the tracer. No vision model, so it
-  is deterministic and free; this is the check that catches a light-design
-  regression (it caught a real one — the 94 px brand wordmark — the first time it
-  ran). `--keep` leaves the job directory for `doctor job <id>`.
+  from its height, that the reference-driven **line count**, **per-line colour**
+  and **weight** measurements agree with what was drawn, that the page-copy
+  filter keeps a wide footer and a small wordmark while dropping a narrow caption
+  and an `artwork` block, and that the vision retry escalates its image encoding.
+  No vision model, no pipeline, a second or so — run it after touching any of the
+  sampling, wrapping, weight or scope heuristics.
+- **`fixtures`** is the end-to-end guard that `polarity` cannot be.  Each
+  fixture is a *saved extraction* replayed against its reference through the
+  whole local pipeline (layout, `mkart` tracing, Astro build, scoring), so it is
+  deterministic, free, and needs no vision model:
+  - `light` — the synthetic light design (`fixtures/light-ref.png`): asserts the
+    score stays ≤ 6.6 and that all 8 page blocks are emitted as DOM while every
+    `artwork` block is left to the tracer.
+  - `montiva` — a real multi-section landing page that scored **12.04** before
+    the reference-driven line measurement and the ink inpainting landed (its
+    model box was 273×43 and the layout used to guess one 14 px line where the
+    reference sets two ~25 px ones).
+  - `antho` — a real photorealistic hero that scored **6.39**.
+
+  `--keep` leaves a job directory behind for `doctor job <id>`.  The fixtures are
+  the regression suite for the whole studio text layer — extend them when a new
+  failure class appears.
 - **`regress`** is the safety net for the *pipeline itself*: it runs the repo's
   own `qa/verify.sh`, which scores each built A/B/C site against its reference
   and asserts the network/stylesheet gates. If a studio change ever disturbed
@@ -245,9 +318,11 @@ Every job also keeps its whole working tree at `studio/data/jobs/<id>/workspace/
   rendered page, and treat the number as a band.
 - **First-pass typography is approximate.** The model gives boxes, not font
   metrics, so the generated CSS positions and sizes each block from its box.
-  It is a real, editable starting point — not the hand-tuned fidelity of the
-  repo's A/B/C examples. Runs are also not bit-identical: the model's boxes move
-  a little between calls, so the score varies by roughly ±0.1.
+  Line count, weight and per-line colour *are* measured from the reference (see
+  above), so the boxes are no longer the only signal — but the reference's
+  typeface usually is not Inter, and the residual on those glyphs is
+  substitution, not layout. Runs are also not bit-identical: the model's boxes
+  move a little between calls, so the score varies by roughly ±0.1.
 - **A CTA icon is not reproduced.** The button becomes a DOM element sized to the
   reference's plate, and its interior is excluded from the trace, so a decorative
   arrow inside the button is dropped. The label and the plate colour survive.

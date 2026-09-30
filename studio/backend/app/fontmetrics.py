@@ -111,6 +111,92 @@ def cap_height_em(weight: int = DEFAULT_WEIGHT) -> float:
     return (cap / upm) if cap else FALLBACK_CAP_EM
 
 
+# ---------------------------------------------------------------------------
+# Weight: measured, not assumed.
+#
+# A vision model returns a box, not a weight, and the first cut set every block
+# at 400 -- so a bold display headline rendered as thin body type.  Weight is
+# recoverable from the reference the same way size is: set the string in each
+# vendored weight and compare its ink *coverage* (fraction of the ink box that
+# is ink) against the reference's.  Coverage is string-independent because both
+# sides are the same string, and it separates the weights cleanly (on the
+# Montiva hero: reference 0.44, Inter 400 0.21, 500 0.22, 600 0.28).
+# ---------------------------------------------------------------------------
+def available_weights() -> list[int]:
+    """The weights actually vendored in `pipeline/fonts/`, ascending."""
+    out = []
+    for w in (300, 400, 500, 600, 700, 800, 900):
+        if (FONT_DIR / f"inter-latin-{w}-normal.woff2").is_file():
+            out.append(w)
+    return out or [DEFAULT_WEIGHT]
+
+
+@lru_cache(maxsize=8)
+def _ttf_bytes(weight: int) -> bytes:
+    """The vendored woff2 for `weight` as plain TTF bytes (for PIL rasterising)."""
+    import io as _io
+
+    from fontTools.ttLib import TTFont
+
+    path = FONT_DIR / f"inter-latin-{weight}-normal.woff2"
+    if not path.is_file():
+        path = FONT_DIR / f"inter-latin-{DEFAULT_WEIGHT}-normal.woff2"
+    font = TTFont(str(path))
+    font.flavor = None
+    buf = _io.BytesIO()
+    font.save(buf)
+    return buf.getvalue()
+
+
+@lru_cache(maxsize=64)
+def pil_font(weight: int = DEFAULT_WEIGHT, size: int = 64):
+    """A PIL font for the vendored Inter `weight` (cached per weight+size)."""
+    import io as _io
+
+    from PIL import ImageFont as _ImageFont
+
+    return _ImageFont.truetype(_io.BytesIO(_ttf_bytes(weight)), size)
+
+
+@lru_cache(maxsize=64)
+def render_coverage(text: str, weight: int = DEFAULT_WEIGHT,
+                    size: int = 64) -> float | None:
+    """Ink coverage of `text` set in Inter `weight`, as a fraction of its box.
+
+    `None` when the string draws nothing measurable (e.g. only spaces).
+    """
+    import numpy as _np
+    from PIL import Image as _Image, ImageDraw as _ImageDraw
+
+    if not text.strip():
+        return None
+    font = pil_font(weight, size)
+    img = _Image.new("L", (size * (len(text) + 4), size * 3), 255)
+    _ImageDraw.Draw(img).text((size, size), text, fill=0, font=font)
+    a = _np.asarray(img).astype(_np.float32)
+    ink = a < 128
+    if int(ink.sum()) < 10:
+        return None
+    ys, xs = _np.nonzero(ink)
+    h = int(ys.max() - ys.min() + 1)
+    w = int(xs.max() - xs.min() + 1)
+    return float(ink.sum()) / float(h * w)
+
+
+def detect_weight(text: str, ref_coverage: float,
+                  candidates: list[int] | None = None) -> int:
+    """The vendored weight whose coverage best matches the reference's."""
+    best, best_err = DEFAULT_WEIGHT, None
+    for w in (candidates or available_weights()):
+        c = render_coverage(text, w)
+        if c is None:
+            continue
+        err = abs(c - ref_coverage)
+        if best_err is None or err < best_err:
+            best, best_err = w, err
+    return best
+
+
 def _vmetrics_em(weight: int = DEFAULT_WEIGHT) -> tuple[float, float]:
     """(ascent, descent) in em, from hhea (what a line box uses)."""
     font = _font(weight)
@@ -172,8 +258,40 @@ def wrap_lines(text: str, fs: float, box_w: float,
     return lines
 
 
+def fit_wrapped(text: str, box_w: float, n_lines: int,
+                weight: int = DEFAULT_WEIGHT) -> float | None:
+    """Font size at which `text` wraps into exactly `n_lines` lines.
+
+    The **largest** such size is returned, because that is the one whose widest
+    wrapped line comes closest to filling `box_w` -- i.e. the size the reference
+    was actually set at, given the box is the ink extent of the type.
+
+    `None` when the requested line count is unreachable at any size (the text is
+    too long or too short for the box), so the caller can fall back.
+    """
+    if n_lines <= 1 or box_w <= 1 or not text:
+        return None
+
+    def count(f: float) -> int:
+        return len(wrap_lines(text, f, box_w, weight))
+
+    lo, hi = 3.0, 400.0
+    if count(lo) > n_lines or count(hi) < n_lines:
+        return None
+    # `count` grows monotonically with the font size; the largest size still
+    # fitting in `n_lines` lines is the fixed point we want.
+    for _ in range(60):
+        mid = (lo + hi) / 2.0
+        if count(mid) <= n_lines:
+            lo = mid
+        else:
+            hi = mid
+    return lo
+
+
 def fit_block_type(text: str, box_w: float, box_h: float, role: str,
-                   weight: int = DEFAULT_WEIGHT) -> tuple[float, int]:
+                   weight: int = DEFAULT_WEIGHT,
+                   n_lines: int | None = None) -> tuple[float, int]:
     """(font-size, line-count) for a block that may wrap onto several lines.
 
     `fit_font_size` solves the size from the box *width* assuming the whole
@@ -183,17 +301,30 @@ def fit_block_type(text: str, box_w: float, box_h: float, role: str,
     which the wrapped text exactly fills the box width (a fixed point -- the
     widest wrapped line lands on the box edge).  For a single-line block this is
     algebraically the same as `fit_font_size`, so nothing else moves.
+
+    `n_lines` is the line count *measured from the reference pixels* (see
+    `measure_lines` in `generate`).  When supplied it is authoritative: the box
+    width alone cannot tell a wrapped block from a single long line -- the
+    Montiva hero box is 273x43 and its text fits on one 14 px line, yet the
+    reference sets it on two ~22 px lines.  Given the true count, the size is
+    solved directly (`fit_wrapped`) and the count is returned verbatim.
     """
+    if n_lines and n_lines > 1 and text and box_w > 1:
+        fs = fit_wrapped(text, box_w, n_lines, weight)
+        if fs is not None:
+            return max(8.0, fs), n_lines
+
     fs = fit_font_size(text, box_w, box_h, role, weight)
     if not text or box_w <= 1 or box_h <= 1:
         return fs, 1
     if len(wrap_lines(text, fs, box_w, weight)) <= 1:
         return fs, 1
-    # Wrapped.  The width solve assumed a single line, so it is far too small --
-    # and naive fixed-point iteration on the width has several solutions (a
-    # 2-line set at 9 px can fill the box as well as a 3-line set at 13 px).
-    # The box height is what picks between them: solve for the size whose
-    # wrapped height fills it at the reference's normal leading.
+    # Wrapped, but the line count was not measured from the reference.  The
+    # width solve assumed a single line, so it is far too small -- and naive
+    # fixed-point iteration on the width has several solutions (a 2-line set at
+    # 9 px can fill the box as well as a 3-line set at 13 px).  The box height is
+    # what picks between them: solve for the size whose wrapped height fills it
+    # at the reference's normal leading.
     def height(f: float) -> float:
         return len(wrap_lines(text, f, box_w, weight)) * LINE_LEADING * f
 

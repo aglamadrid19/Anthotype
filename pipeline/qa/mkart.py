@@ -94,6 +94,19 @@ _TR = re.compile(r'<g transform="translate\(([-\d.]+),([-\d.]+)\)\s*'
                  r'scale\(([-\d.]+),([-\d.]+)\)"')
 
 
+def _dilate(mask, iters):
+    """4-connected binary dilation, `iters` times (no scipy needed)."""
+    out = mask
+    for _ in range(max(0, iters)):
+        g = out.copy()
+        g[1:, :] |= out[:-1, :]
+        g[:-1, :] |= out[1:, :]
+        g[:, 1:] |= out[:, :-1]
+        g[:, :-1] |= out[:, 1:]
+        out = g
+    return out
+
+
 def _potrace(mask, turdsize, alphamax, opttol):
     """Trace `mask` so the **mask itself** is what gets filled.
 
@@ -178,6 +191,51 @@ def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
             if ax1 > ax0 and ay1 > ay0:
                 in_text[ay0:ay1, ax0:ax1] = True
 
+    # Light-background designs: inpaint the glyph ink out of the reference before
+    # tracing, rather than merely dropping some luminance bands.
+    #
+    # The dark-design rule below keeps the bands near the background so the type's
+    # soft glow survives.  On a light design that rule is exactly backwards: the
+    # *ink* bands (the anti-aliased halo around every glyph) sit just below the
+    # background and are kept, so the tracer bakes a full pale ghost of the words
+    # into the artwork -- and the DOM text, which is supposed to replace them, sits
+    # on top of a mis-sized copy of itself.  Measured on the Montiva fixture:
+    # mean 12.04 -> 6.12 when the ghost is removed.  Dropping the bands instead
+    # (the `drop` branch) leaves a hard-edged hole that a photo behind the type
+    # would expose, so the pixels are replaced with the nearest background-like
+    # colour: gradients and glow survive, the words do not.
+    #
+    # The background is measured **locally** (a median filter wider than the
+    # glyphs), not from the page border: a real landing page has text on a dark
+    # footer panel and over a photograph as well as on the page ground, and a
+    # single global value would punch the footer's own text out of a near-black
+    # plate and leave a bright smear.  With a local estimate each block is
+    # inpainted against whatever it actually sits on.
+    #
+    # Gated on `text_bg_lum`, which the studio sets only for a light background, so
+    # the three shipped dark designs keep the legacy path byte-for-byte.
+    inpainted = False
+    if exclude_text and in_text is not None and text_bg_lum is not None and in_text.any():
+        from scipy import ndimage as _ndi
+        win = int(round(21 * up)) | 1
+        bg_local = _ndi.median_filter(lum, size=win)
+        # Threshold on the local contrast, not on distance from the page ground,
+        # so faint small print is found too.  Dilated: the anti-aliased fringe is
+        # the *outline* of every glyph, and leaving it draws a pale ghost even
+        # though the cores are gone.
+        ink = (np.abs(lum - bg_local) > min(15.0, text_lum_margin)) & in_text
+        ink = _dilate(ink, max(2, int(round(2.0 * up))))
+        if ink.any():
+            src = sub.reshape(-1, 3)
+            # Nearest non-ink pixel, i.e. a background-like colour: the reference's
+            # own gradient is the interpolation, so no flat plate appears.
+            _, idx = _ndi.distance_transform_edt(ink, return_indices=True)
+            nearest = (idx[0] * W2 + idx[1]).reshape(-1)
+            filled = src[nearest]
+            sub = np.where(ink.reshape(-1, 1), filled, src).reshape(sub.shape)
+            lum = sub.mean(axis=2)
+            inpainted = True
+
     bands_out = []
     if cumulative:
         # C_i = {lum >= e_i}, painted darkest-first.  Region e_i<=lum<e_{i+1}
@@ -187,7 +245,7 @@ def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
         # and with no seams between adjacent bands.
         for i in range(bands):
             m = lum >= edges[i]
-            if exclude_text and in_text is not None:
+            if exclude_text and in_text is not None and not inpainted:
                 if text_bg_lum is not None:
                     # Polarity-agnostic: drop the band inside the rect when the
                     # band is an *ink* band, i.e. its luminance sits away from
@@ -215,7 +273,7 @@ def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
             if m.sum() < minpx: continue
             px = sub[m]
             col = np.median(px, axis=0)
-            if in_text is not None:
+            if in_text is not None and not inpainted:
                 if text_bg_lum is not None:
                     drop = abs(col.mean() - text_bg_lum) > text_lum_margin
                 else:

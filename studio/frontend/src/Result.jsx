@@ -4,15 +4,20 @@ import { downloadUrl, previewUrl, refUrl } from './api.js';
 export default function Result({ job, onReset }) {
   const [view, setView] = useState('preview'); // preview | reference
   const score = job.score;
+  // A whole-landing-page mockup or a design whose typeface is not Inter lands
+  // well above the hand-tuned band.  Saying "your site is ready" over a 12.04
+  // reads as a success when the text layer is in fact wrong, so grade it and
+  // warn where it counts.
   const grade =
     score == null ? null : score < 3 ? 'good' : score < 6 ? 'ok' : 'rough';
+  const rough = score != null && score >= 6;
 
   return (
     <div className="result">
       <div className="card">
         <div className="row between wrap">
           <div>
-            <h2>Your site is ready</h2>
+            <h2>{rough ? 'Your site is built — check the text' : 'Your site is ready'}</h2>
             <p className="hint">
               One self-contained <code>index.html</code> plus the full Astro
               project.
@@ -27,6 +32,17 @@ export default function Result({ job, onReset }) {
             </button>
           </div>
         </div>
+
+        {rough && (
+          <p className="hint warn">
+            The rendered page differs from the reference more than usual
+            (fidelity {score.toFixed(2)}). The artwork is traced and the copy is
+            real DOM, but the layout of the text is approximate — open the
+            preview against the reference below and adjust
+            <code> content-*.json</code> / <code> *.page.css</code> in the
+            download.
+          </p>
+        )}
 
         <div className="stats">
           <div className="stat">

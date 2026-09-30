@@ -92,15 +92,19 @@ class ExtractError(RuntimeError):
     pass
 
 
-def _gridded_data_uri(png: Path, step: int = GRID_STEP) -> str:
-    """Data URI with a labelled coordinate grid overlaid, as WebP.
+def _gridded_data_uri(png: Path, step: int = GRID_STEP, attempt: int = 0) -> str:
+    """Data URI with a labelled coordinate grid overlaid.
 
     See GRID_NOTE: the grid is what makes the model's bboxes accurate.
 
     The encoding matters.  A full-size PNG of the grid is ~1 MB, and the local
     proxy silently drops images at that size (the model then correctly reports
     that no image arrived).  WebP is visually lossless at this scale and roughly
-    an eighth of the size, which the proxy delivers every time.
+    an eighth of the size, which the proxy delivers every time -- so it is the
+    first choice.  It is not the *only* choice: a peer that cannot decode WebP
+    answers "no valid image reached me" and the whole build fails, so `attempt`
+    escalates the encoding (WebP -> JPEG -> PNG) and lets the caller retry
+    instead of giving up on a transport quirk.
     """
     from PIL import Image, ImageDraw
 
@@ -113,8 +117,20 @@ def _gridded_data_uri(png: Path, step: int = GRID_STEP) -> str:
         d.line([(0, y), (img.width, y)], fill=(255, 0, 255), width=1)
         d.text((2, y + 2), str(y), fill=(255, 255, 0))
     buf = io.BytesIO()
-    img.save(buf, format="WEBP", quality=88, method=4)
-    return "data:image/webp;base64," + base64.b64encode(buf.getvalue()).decode()
+    if attempt % 3 == 0:
+        img.save(buf, format="WEBP", quality=88, method=4)
+        mime = "image/webp"
+    elif attempt % 3 == 1:
+        img.save(buf, format="JPEG", quality=90)
+        mime = "image/jpeg"
+    else:
+        # Last resort: a full PNG, downscaled if it would be too large for the
+        # proxy to accept.
+        if max(img.size) > 1280:
+            img = img.resize((1280, int(img.height * 1280 / img.width)), Image.LANCZOS)
+        img.save(buf, format="PNG", optimize=True)
+        mime = "image/png"
+    return f"data:{mime};base64," + base64.b64encode(buf.getvalue()).decode()
 
 
 def _parse_blocks(raw: str) -> list[Block]:
@@ -157,7 +173,7 @@ def _parse_blocks(raw: str) -> list[Block]:
     return out
 
 
-def _chat_once(model: str, png: Path) -> str:
+def _chat_once(model: str, png: Path, attempt: int = 0) -> str:
     """One OpenAI-compatible vision call.  Raises ExtractError on any failure."""
     payload = {
         "model": model,
@@ -166,7 +182,7 @@ def _chat_once(model: str, png: Path) -> str:
             {"role": "system", "content": SYSTEM_PROMPT + GRID_NOTE},
             {"role": "user", "content": [
                 {"type": "text", "text": "Extract the text blocks."},
-                {"type": "image_url", "image_url": {"url": _gridded_data_uri(png)}},
+                {"type": "image_url", "image_url": {"url": _gridded_data_uri(png, attempt=attempt)}},
             ]},
         ],
     }
@@ -184,7 +200,7 @@ def _chat_once(model: str, png: Path) -> str:
         raise ExtractError(f"unexpected response shape: {str(data)[:300]}") from exc
 
 
-def _openai(png: Path) -> str:
+def _openai(png: Path, attempt: int = 0) -> str:
     """Call the configured model, falling back to the next candidate on failure.
 
     On a peer-to-peer marketplace a request can fail for reasons that have
@@ -196,21 +212,21 @@ def _openai(png: Path) -> str:
     tried: list[str] = []
     for model in vision.models:
         try:
-            return _chat_once(model, png)
+            return _chat_once(model, png, attempt=attempt)
         except (ExtractError, httpx.HTTPError) as exc:
             tried.append(f"{model}: {exc}")
             continue
     raise ExtractError("no vision model answered -- " + " | ".join(tried))
 
 
-def _anthropic(png: Path) -> str:
+def _anthropic(png: Path, attempt: int = 0) -> str:
     payload = {
         "model": vision.model,
         "max_tokens": 2048,
         "system": SYSTEM_PROMPT + GRID_NOTE,
         "messages": [{"role": "user", "content": [
             {"type": "image", "source": {"type": "base64", "media_type": "image/webp",
-                                         "data": _gridded_data_uri(png).split(",", 1)[1]}},
+                                         "data": _gridded_data_uri(png, attempt=attempt).split(",", 1)[1]}},
             {"type": "text", "text": "Extract the text blocks."},
         ]}],
     }
@@ -269,7 +285,9 @@ def extract(png: Path) -> list[Block]:
     # which is how `doctor light` stays deterministic.  Never set in normal use.
     fake = os.environ.get("STUDIO_FAKE_BLOCKS")
     if fake and Path(fake).is_file():
-        return _blocks_from_json(json.loads(Path(fake).read_text()))
+        # Same role normalization as the live path, or a replay would lay the
+        # fixture out differently from the run it is supposed to reproduce.
+        return normalize_roles(_blocks_from_json(json.loads(Path(fake).read_text())))
 
     provider = vision.provider.lower()
 
@@ -283,10 +301,13 @@ def extract(png: Path) -> list[Block]:
 
     # The proxy occasionally drops the image and the model then (correctly)
     # refuses to invent boxes.  That is a transport failure, not a design with
-    # no text, so retry before giving up.
+    # no text, so retry before giving up -- and escalate the image encoding each
+    # time, because a peer that cannot decode WebP will never succeed on a
+    # re-send of the same bytes.
     last: Exception | None = None
     for attempt in range(3):
-        raw = _anthropic(png) if provider == "anthropic" else _openai(png)
+        raw = (_anthropic(png, attempt) if provider == "anthropic"
+               else _openai(png, attempt))
         try:
             blocks = _parse_blocks(raw)
         except ExtractError as exc:

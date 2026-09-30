@@ -93,22 +93,43 @@ astro build                      # dist/index.html
 3. **Refine locally** from the PNG (all deterministic):
    - snap each box onto the ink actually present, so a few pixels of box error
      do not become a visible font-size error (size is solved from box width);
+   - **measure the line count and leading from the reference's own ink rows**
+     (`measure_lines`): the model reports a wrapped block as one box, and the box
+     alone cannot say how many lines it holds — the Montiva hero box (273×43)
+     whose text fits on one 14 px line is set on two ~25 px lines;
+   - **measure the weight** (`measure_weight`) by matching the reference's ink
+     coverage against the same string rasterised in each vendored Inter weight;
    - split multi-colour runs (white "Ant" + green "Hosting") using the real
-     Inter advance widths to find the boundary;
-   - sample the ink colour of each run;
+     Inter advance widths to find the boundary, and refuse a split that is not a
+     word boundary (a highlight on one glyph is not a run);
+   - sample the ink colour of each run, **per measured line** — a wrapped display
+     headline is often two-tone (navy line 1, blue line 2);
    - measure a button's real rectangle — flood-fill for a solid fill, otherwise
-     treat it as an outline button (border ring, transparent interior).
+     treat it as an outline button (border ring, transparent interior).  A flood
+     region *shorter* than its label is the surrounding artwork, not a button.
 4. Generate:
    - `content-<id>.json` — `stage` = 1024×768, `markup` with each block
      absolutely positioned; escaped text, one `<span>` per colour run.
    - `<id>.page.css` — per-block absolute position from the box, `font-size`
-     solved from box width against real Inter metrics, sampled colour, Inter
-     stack, same fit-to-viewport script.
+     solved against real Inter metrics (by width for one line, by width + the
+     measured line count for a wrapped block), measured weight and colour, a
+     hard-stop per-line gradient when a wrapped block is two-tone, Inter stack,
+     same fit-to-viewport script.
    - `designs/<id>.json` — `box` = full frame, `text` = box rects grown by a
      safety margin. Over-covering is safe: it only preserves more glow.
 
 The LLM's text boxes double as the `text`-exclusion rects `mkart.py` needs, so
 they never have to be hand-tuned per design.
+
+### Not baking a ghost of the words
+
+`mkart.py` **inpaints the glyph ink out of the reference** inside those rects
+before tracing (gated on `text_bg_lum`, i.e. only for a light background, so the
+shipped dark designs are byte-identical).  The background is measured locally
+(a median filter wider than the glyphs), because a real page has type on a dark
+footer panel and over a photo, not just on the page ground.  This is strictly
+better than the earlier band-dropping rule: same layout, Montiva **8.78** vs
+**12.32**.
 
 ## Verification
 
@@ -149,9 +170,12 @@ VISION_BASE_URL=http://127.0.0.1:8377/v1
   pipeline files) plus the vision endpoint and a live probe of each configured
   model; non-zero exit on failure.
 - `polarity` — synthetic light/dark checks for the ink, wrapping and extraction
-  scope heuristics (no vision model, no pipeline).
-- `light` — replays a frozen extraction against the light reference through the
-  whole local pipeline and asserts the score and the page-copy scope filter.
+  scope heuristics, plus the reference-driven line-count, per-line-colour and
+  weight measurements (no vision model, no pipeline).
+- `fixtures` — replays the saved extractions (light, montiva, antho) through the
+  whole local pipeline and asserts each score and the page-copy scope filter.
+  This is the end-to-end regression suite for the studio text layer.
+- `light` — the light fixture alone (kept as a stable entry point).
 - `regress` — runs the repo's own `qa/verify.sh` to prove the shipped pipeline
   is still intact (A/B/C PASS). This is the guard against a studio change
   disturbing the pipeline.
@@ -173,13 +197,16 @@ Every job keeps its working tree (`data/jobs/<id>/workspace/`) and logs
 
 ## Risks
 
-- **Vision box accuracy is the weak link.** Mitigated by the coordinate grid,
-  size-based role normalization, and local ink-snapping. Measured against the
-  shipped references the studio now scores **a 2.72 / b 3.16 / c 3.34**, versus
-  hand-tuned 2.71 / 2.76 / 2.99 — A matches, B and C are close. The residual
-  gap is the model's box precision and its collapse of the reference's authored
-  detail (multi-layer glow, per-element tracking) that a one-box-per-run
-  extraction cannot express.
+- **Type metrics are measured, not given.** The model supplies boxes; the line
+  count, weight and per-line colour are recovered from the reference pixels
+  (`measure_lines`, `measure_weight`, `sample_line_colors`).  That removed the
+  largest layout failure — a hero rendered at one-third size — but it cannot
+  recover a **font**: the shipped Inter is the only face, so a mockup set in
+  another typeface keeps a per-pixel residue on its text that no sizing or
+  colour tuning removes.  That is what sets the fixture targets.
+- **Coverage is the weak signal for weight** on very short strings, where a
+  handful of pixels decides between two weights; it is stable for the display
+  sizes that matter.
 - **Python 3.14** venv — FastAPI wheels are thin; `studio/.venv` is separate and
   a `python@3.12` fallback is available.
 - **`node_modules` symlink under Astro** — verified in milestone 1; fallback is a

@@ -1,0 +1,224 @@
+{
+  "blocks": [
+    {
+      "text": "antseed",
+      "role": "brand",
+      "part": "page",
+      "bbox": [
+        88.0,
+        168.0,
+        182.0,
+        192.0
+      ]
+    },
+    {
+      "text": "A COMMUNITY PROJECT",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        214.0,
+        176.0,
+        364.0,
+        186.0
+      ]
+    },
+    {
+      "text": "THE OPEN MARKET FOR AI INFERENCE",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        746.0,
+        172.0,
+        958.0,
+        182.0
+      ]
+    },
+    {
+      "text": "anthotype",
+      "role": "headline",
+      "part": "page",
+      "bbox": [
+        52.0,
+        244.0,
+        424.0,
+        306.0
+      ]
+    },
+    {
+      "text": "Turn a picture into a real website.",
+      "role": "subhead",
+      "part": "page",
+      "bbox": [
+        52.0,
+        316.0,
+        438.0,
+        340.0
+      ]
+    },
+    {
+      "text": "A tool inspired by the anthotype process \u2014 sunlight, plant pigment, and time \u2014 to transform an image into a real website.",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        52.0,
+        356.0,
+        352.0,
+        412.0
+      ]
+    },
+    {
+      "text": "Try Anthotype",
+      "role": "cta",
+      "part": "page",
+      "bbox": [
+        82.0,
+        448.0,
+        190.0,
+        468.0
+      ]
+    },
+    {
+      "text": "Open source \u00b7 Community driven \u00b7 Powered by Antseed",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        52.0,
+        492.0,
+        308.0,
+        504.0
+      ]
+    },
+    {
+      "text": "Image",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        398.0,
+        370.0,
+        432.0,
+        382.0
+      ]
+    },
+    {
+      "text": "Your photo or sketch",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        398.0,
+        386.0,
+        446.0,
+        406.0
+      ]
+    },
+    {
+      "text": "Sunlight",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        498.0,
+        366.0,
+        536.0,
+        378.0
+      ]
+    },
+    {
+      "text": "Extract natural signals",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        498.0,
+        382.0,
+        552.0,
+        398.0
+      ]
+    },
+    {
+      "text": "Plant Pigment",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        570.0,
+        332.0,
+        630.0,
+        344.0
+      ]
+    },
+    {
+      "text": "Translate colors into structure",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        570.0,
+        348.0,
+        630.0,
+        372.0
+      ]
+    },
+    {
+      "text": "Time",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        666.0,
+        306.0,
+        690.0,
+        318.0
+      ]
+    },
+    {
+      "text": "Refine and grow meaning",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        666.0,
+        322.0,
+        722.0,
+        342.0
+      ]
+    },
+    {
+      "text": "Generate",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        806.0,
+        230.0,
+        846.0,
+        242.0
+      ]
+    },
+    {
+      "text": "Structure into a real website",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        806.0,
+        246.0,
+        862.0,
+        270.0
+      ]
+    },
+    {
+      "text": "anthotype",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        772.0,
+        336.0,
+        816.0,
+        348.0
+      ]
+    },
+    {
+      "text": "A Wilder Tomorrow",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        772.0,
+        410.0,
+        822.0,
+        440.0
+      ]
+    }
+  ]
+}
