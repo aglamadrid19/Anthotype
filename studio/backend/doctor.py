@@ -25,6 +25,12 @@ When something looks wrong, start here.
                             no pipeline, no model).
     doctor run [png]        run one design end to end, in-process, printing every
                             stage and its timing (no HTTP, no queue)
+    doctor critique <x>     review a generated page against its mockup with the
+                            vision model: x is a job id (review the existing
+                            build) or a design PNG (build it first).  Returns a
+                            ranked list of composition/readability defects;
+                            typeface differences are out of scope.  --page,
+                            --height, --out report.json
     doctor job <id>         inspect a studio job: status, art fidelity, structure,
                             artifacts, logs
     doctor jobs             list recent jobs
@@ -33,12 +39,14 @@ Exit code is non-zero if any check fails, so it is CI-able.
 """
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -930,6 +938,213 @@ def cmd_run(args: list[str]) -> int:
 
 
 # --------------------------------------------------------------------------
+# critique: the vision review loop, made repeatable
+# --------------------------------------------------------------------------
+CRITIQUE_PROMPT = (
+    "You are a senior web designer reviewing a GENERATED website against the "
+    "flat design mockup it was built from.\n"
+    "Image 1 is the original mockup. Image 2 is a screenshot of the generated "
+    "website: a real responsive page whose artwork is traced to SVG as the hero "
+    "backdrop and whose copy is authored DOM text in the site's own type scale.\n"
+    "The target is a REAL website, not a pixel copy. The reference's typeface is "
+    "deliberately NOT reproduced, so do NOT report typeface/font differences, "
+    "sub-pixel spacing, or missing fine detail. Judge COMPOSITION and "
+    "READABILITY: hierarchy, grouping, balance, contrast, and anything that "
+    "reads as a defect (ghosted/duplicated text, stray or orphaned elements, "
+    "broken rows, unreadable copy, misplaced sections).\n"
+    "Return ONLY a JSON object:\n"
+    '{"verdict": "<one sentence>", "defects": [{"rank": 1, '
+    '"severity": "high|medium|low", "where": "<region: header|hero|cards|'
+    'contact|footer|...>", "what": "<one sentence>", "fix": "<one sentence>"}]}\n'
+    "Rank by how much each defect hurts the page. Omit anything caused only by "
+    "the different typeface. No markdown, no commentary."
+)
+
+
+def _vision_data_uri(png: Path, max_edge: int = 1600) -> str:
+    """A plain (grid-free) data URI for a review image: WebP, JPEG fallback."""
+    import io as _io
+    from PIL import Image
+    img = Image.open(png).convert("RGB")
+    if max(img.size) > max_edge:
+        scale = max_edge / max(img.size)
+        img = img.resize((max(1, int(img.width * scale)), max(1, int(img.height * scale))),
+                         Image.LANCZOS)
+    buf = _io.BytesIO()
+    try:
+        img.save(buf, format="WEBP", quality=90, method=4)
+        mime = "image/webp"
+    except Exception:  # noqa: BLE001 - a build without WebP
+        buf = _io.BytesIO()
+        img.save(buf, format="JPEG", quality=90)
+        mime = "image/jpeg"
+    return f"data:{mime};base64," + base64.b64encode(buf.getvalue()).decode()
+
+
+def _vision_chat(images: list[Path], prompt: str) -> str:
+    """One multi-image chat call, trying the configured model then its fallbacks."""
+    import httpx
+    from app.config import vision
+    if not vision.configured:
+        raise RuntimeError("vision model not configured (set studio/backend/.env)")
+    content: list[dict] = [{"type": "text", "text": prompt}]
+    for p in images:
+        content.append({"type": "image_url", "image_url": {"url": _vision_data_uri(p)}})
+    tried: list[str] = []
+    for model in vision.models:
+        try:
+            resp = httpx.post(
+                f"{vision.base_url.rstrip('/')}/chat/completions",
+                headers={"Authorization": f"Bearer {vision.api_key}"},
+                json={"model": model, "temperature": 0, "max_tokens": 1500,
+                      "messages": [{"role": "user", "content": content}]},
+                timeout=300)
+            if resp.status_code >= 400:
+                tried.append(f"{model}: HTTP {resp.status_code}")
+                continue
+            return resp.json()["choices"][0]["message"]["content"] or ""
+        except Exception as exc:  # noqa: BLE001
+            tried.append(f"{model}: {type(exc).__name__}: {str(exc)[:80]}")
+    raise RuntimeError("no vision model answered -- " + " | ".join(tried))
+
+
+def _page_screenshot(chrome: str, page: Path, out: Path, height: int = 2400) -> None:
+    """A 1x viewport screenshot of the built page, tall enough for a landing page."""
+    subprocess.run(
+        [chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars",
+         "--force-device-scale-factor=1", "--force-color-profile=srgb",
+         "--no-first-run", "--no-default-browser-check", "--disable-http-cache",
+         "--incognito", f"--window-size={config.STAGE_W},{height}",
+         "--virtual-time-budget=8000", f"--screenshot={out}",
+         page.resolve().as_uri()],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120, check=True)
+    if not out.is_file() or out.stat().st_size == 0:
+        raise RuntimeError("Chrome produced no screenshot")
+
+
+def _build_for_critique(png: Path):
+    """Build a page from `png` in-process (no HTTP, no queue). Returns (job, store)."""
+    from app.jobs import JobStore
+    from app.runner import PipelineRunner
+    runner = PipelineRunner(None)
+    store = JobStore(runner)
+    runner.store = store
+    job = store.create(png.read_bytes(), filename=png.name)
+    last = None
+    t0 = time.time()
+    while time.time() - t0 < 2400:
+        j = store.get(job.id)
+        if j.stage != last:
+            print(f"  [{j.progress*100:5.1f}%] {j.stage:11s} {j.message}")
+            last = j.stage
+        if j.status in ("done", "failed"):
+            break
+        time.sleep(0.5)
+    return store.get(job.id), store
+
+
+def _parse_critique(raw: str) -> dict:
+    text = raw.strip()
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", text, flags=re.S).strip()
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        m = re.search(r"\{.*\}", text, re.S)
+        if not m:
+            raise RuntimeError(f"model did not return JSON: {raw[:300]!r}")
+        return json.loads(m.group(0))
+
+
+def cmd_critique(args: list[str]) -> int:
+    """Review a generated page against its mockup with the vision model.
+
+        doctor critique <job-id>                       review an existing build
+        doctor critique <design.png>                   build it first, then review
+        doctor critique <design.png> --page <built.html>
+        doctor critique <job-id> --height 3200 --out report.json
+
+    The mockup and a screenshot of the built page go to the configured vision
+    model, which returns a ranked list of composition/readability defects
+    (typeface differences are explicitly out of scope).  This makes the review
+    loop that found the ghosting and the composition defects repeatable, and its
+    output comparable across builds.
+    """
+    from app.jobs import JobStore
+    from app.verify import find_chrome
+
+    pos = [a for a in args if not a.startswith("-")]
+    if not pos:
+        print("usage: doctor critique <job-id | design.png> [--page <built.html>] "
+              "[--height N] [--out report.json]")
+        return 2
+    target = pos[0]
+    page_arg = args[args.index("--page") + 1] if "--page" in args else None
+    out_arg = args[args.index("--out") + 1] if "--out" in args else None
+    height = int(args[args.index("--height") + 1]) if "--height" in args else 2400
+
+    mockup: Path | None = None
+    page: Path | None = None
+
+    if page_arg:
+        mockup, page = Path(target), Path(page_arg)
+    else:
+        job = JobStore(lambda job: None).get(target)
+        if job:
+            mockup, page = job.dir / "ref.png", job.dir / "index.html"
+        elif Path(target).is_file():
+            print(f"building {Path(target).name} (no page given; running the pipeline)\n")
+            job, _ = _build_for_critique(Path(target))
+            print()
+            if job.status != "done":
+                print(f"build {job.status}; log tail:\n" + "\n".join(job.logs[-20:]))
+                return 1
+            mockup, page = job.dir / "ref.png", job.dir / "index.html"
+
+    if mockup is None or page is None or not mockup.is_file() or not page.is_file():
+        print(f"cannot find a mockup + built page for {target!r} "
+              f"(mockup={mockup}, page={page})")
+        return 2
+
+    chrome = find_chrome()
+    if not chrome:
+        print("Chrome not found (set CHROME=...)")
+        return 2
+
+    shot = Path(tempfile.mkdtemp()) / "page.png"
+    print(f"mockup : {mockup}")
+    print(f"page   : {page}")
+    print(f"shooting the page at {config.STAGE_W}x{height} ...")
+    try:
+        _page_screenshot(chrome, page, shot, height=height)
+    except Exception as exc:  # noqa: BLE001
+        print(f"screenshot failed: {exc}")
+        return 1
+
+    print("asking the vision model to review ...")
+    try:
+        report = _parse_critique(_vision_chat([mockup, shot], CRITIQUE_PROMPT))
+    except Exception as exc:  # noqa: BLE001
+        print(f"critique failed: {exc}")
+        return 1
+
+    verdict = str(report.get("verdict", "")).strip()
+    defects = report.get("defects") or []
+    print()
+    print(f"verdict: {verdict or '(none)'}\n")
+    if not defects:
+        print("no composition defects reported.")
+    for d in defects:
+        sev = str(d.get("severity", "?")).lower()
+        print(f"  [{sev:6s}] {d.get('where', '?')} — {d.get('what', '')}")
+        if d.get("fix"):
+            print(f"           fix: {d['fix']}")
+    if out_arg:
+        Path(out_arg).write_text(json.dumps(report, indent=2))
+        print(f"\nreport written to {out_arg}")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # job / jobs: inspect the studio's job store
 # --------------------------------------------------------------------------
 def cmd_job(args: list[str]) -> int:
@@ -970,6 +1185,7 @@ COMMANDS = {
     "regress": cmd_regress,
     "gate": cmd_gate,
     "run": cmd_run,
+    "critique": cmd_critique,
     "job": cmd_job,
     "jobs": cmd_jobs,
 }

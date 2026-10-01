@@ -269,6 +269,7 @@ studio/.venv/bin/python studio/backend/doctor.py fixtures   # the light + montiv
 studio/.venv/bin/python studio/backend/doctor.py light      # the light fixture alone
 studio/.venv/bin/python studio/backend/doctor.py regress    # run the repo's qa/verify.sh (A/B/C PASS)
 studio/.venv/bin/python studio/backend/doctor.py run x.png  # one design end to end, per-stage timings
+studio/.venv/bin/python studio/backend/doctor.py critique <job-id | x.png>  # vision review vs the mockup
 studio/.venv/bin/python studio/backend/doctor.py jobs       # list recent jobs
 studio/.venv/bin/python studio/backend/doctor.py job <id>   # full status + logs for one job
 ```
@@ -323,6 +324,13 @@ studio/.venv/bin/python studio/backend/doctor.py job <id>   # full status + logs
 - **`run`** does a full job in-process (no HTTP, no queue) and prints each stage
   with timings — the fastest way to see where a build is spending time or
   failing.
+- **`critique`** is the design review, made repeatable. Give it a job id (review
+  the existing build) or a design PNG (build it first), and it screenshots the
+  built page, sends it and the mockup to the vision model, and prints a ranked
+  list of composition/readability defects. Typeface differences are explicitly
+  out of scope (the page is authored in its own type). This is the loop that
+  found the hero ghosting and the composition defects; `--out report.json` keeps
+  the raw report so two builds can be compared.
 - **`job`/`jobs`** read the on-disk job store, so a failed job's full log is
   available after the fact.
 

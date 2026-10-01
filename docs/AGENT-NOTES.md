@@ -37,6 +37,11 @@ Rules of thumb:
 
 ## Notes
 
+## 2026-10-01 — `doctor critique`: the review loop is a tool now
+- **What:** `doctor critique <job-id | design.png>` screenshots the built page, sends it + the mockup to the vision model, and prints a ranked list of composition/readability defects. `--page <built.html>` reviews an existing page; `--out report.json` saves the raw report; a PNG with no `--page` builds it first (deterministic under `STUDIO_FAKE_BLOCKS`).
+- **Why / evidence:** every studio composition fix so far (ghosting, hero crop, ghost CTA plate, header layout, card density) came from an ad-hoc vision review. First run on the montiva fixture flagged a pale hero backdrop, an orphaned phone line, weak badge-row separation and a 3+1 card wrap — plausible, actionable defects.
+- **Action:** it is a *review* tool, not a gate stage — it needs a live model and is subjective, so it stays out of `doctor gate`. Prompt explicitly excludes typeface differences (the page is authored in its own type). Use it after a composition change and diff two reports.
+
 ## 2026-10-01 — STATE.json drifts; `doctor regress` now checks it
 - **What:** `docs/STATE.json` is hand-maintained and had drifted: `self_hosted_fonts.result` still quoted `2.77 / 2.90 / 3.11` as the current offline scores, and `next_priorities` still listed the long-resolved `_fmt` relative-coordinate lead.
 - **Why / evidence:** the shipped scores are `2.71 / 2.76 / 2.99` (a fresh `qa/verify.sh`); `_fmt` is marked resolved in the same file's `resolved_leads`.

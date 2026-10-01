@@ -375,6 +375,15 @@ The verification loop is now one command, and CI runs it.
 - **A pre-commit hook** — `.githooks/pre-commit` runs `gate --quick` on every
   commit; `bootstrap.sh` activates it with `git config core.hooksPath .githooks`.
   The cheap guard can no longer be forgotten (skip with `--no-verify`).
+- **`doctor critique <job-id | design.png>`** — the design review that found the
+  ghosting and the composition defects is now a repeatable tool. It screenshots
+  the built page, sends it and the mockup to the vision model, and prints a
+  ranked list of composition/readability defects (typeface differences are
+  explicitly out of scope). `--page` reviews an existing page, `--out` saves the
+  raw report. It is a *review* tool, not a gate stage: it needs a live model and
+  is subjective. First run (montiva fixture) flagged a pale hero backdrop, an
+  orphaned phone line, weak badge-row separation and a 3+1 card wrap — real
+  defects, not yet fixed.
 - **Python deps pinned** — `pipeline/requirements.txt` (numpy/pillow/scipy/
   scikit-image) and `studio/backend/requirements.txt`. The A/B/C scores are a
   numeric gate computed through those libraries, so an unpinned `pip install`
