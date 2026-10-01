@@ -372,6 +372,9 @@ The verification loop is now one command, and CI runs it.
 - **`.github/workflows/gate.yml`** — `gate --quick` on every push and PR (fast,
   no pipeline); the full `gate` on `main` and nightly. `macos-latest` because
   `verify.sh` needs Chrome + `sips`.
+- **A pre-commit hook** — `.githooks/pre-commit` runs `gate --quick` on every
+  commit; `bootstrap.sh` activates it with `git config core.hooksPath .githooks`.
+  The cheap guard can no longer be forgotten (skip with `--no-verify`).
 - **Python deps pinned** — `pipeline/requirements.txt` (numpy/pillow/scipy/
   scikit-image) and `studio/backend/requirements.txt`. The A/B/C scores are a
   numeric gate computed through those libraries, so an unpinned `pip install`

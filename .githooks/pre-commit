@@ -1,0 +1,22 @@
+#!/bin/sh
+# Cheap guard before every commit: the model-free polarity checks.
+#
+# `doctor gate --quick` runs the light/dark + structure logic in seconds -- no
+# potrace, node, Chrome or vision model -- so it is affordable on every commit.
+# It is NOT the full gate: run `doctor gate` (env -> polarity -> fixtures ->
+# regress) before pushing, and CI runs it on main.  Activated by
+# `git config core.hooksPath .githooks` (bootstrap.sh sets this).
+#
+# Skip with:  git commit --no-verify
+set -e
+
+root="$(git rev-parse --show-toplevel)"
+py="$root/studio/.venv/bin/python"
+
+if [ ! -x "$py" ]; then
+  echo "pre-commit: no studio venv at studio/.venv -- skipping 'gate --quick'." >&2
+  echo "            (create it: python3 -m venv studio/.venv && studio/.venv/bin/pip install -r studio/backend/requirements.txt)" >&2
+  exit 0
+fi
+
+exec "$py" "$root/studio/backend/doctor.py" gate --quick

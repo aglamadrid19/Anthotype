@@ -51,8 +51,10 @@ used for screenshots. `bootstrap.sh` installs the Python deps (pinned in
 `studio/.venv/bin/python studio/backend/doctor.py gate` runs `env → polarity →
 fixtures → regress` and fails if any stage does (`regress` *is* `./qa/verify.sh`,
 so A/B/C PASS is covered). `--quick` runs `polarity` alone — no potrace, node,
-Chrome or model. CI (`.github/workflows/gate.yml`) runs the same command. If you
-touched the tracing or a page shell, also confirm the traced SVGs regenerate
+Chrome or model. CI (`.github/workflows/gate.yml`) runs the same command, and
+`bootstrap.sh` points git at `.githooks/`, whose pre-commit hook runs
+`gate --quick`, so the cheap guard cannot be forgotten. If you touched the
+tracing or a page shell, also confirm the traced SVGs regenerate
 byte-identically (`python qa/mkart.py a` is deterministic).
 
 ---

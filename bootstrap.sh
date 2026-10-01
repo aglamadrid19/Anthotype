@@ -50,6 +50,17 @@ for v in $DESIGNS; do
   fi
 done
 
+echo "== git hooks =="
+if git -C "$ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+  # Version-controlled hooks: the pre-commit hook runs `doctor gate --quick`
+  # (seconds, no pipeline) so the cheap guard cannot be forgotten.  Skip a
+  # commit with `git commit --no-verify`.
+  git -C "$ROOT" config core.hooksPath .githooks
+  echo "  core.hooksPath -> .githooks  (pre-commit runs 'doctor gate --quick')"
+else
+  echo "  not a git checkout; skipped"
+fi
+
 echo
 echo "done.  Next:"
 echo "  cd pipeline && ./build.sh && ./qa/verify.sh   # build + score every design"
