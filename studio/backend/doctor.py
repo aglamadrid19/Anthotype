@@ -16,7 +16,8 @@ When something looks wrong, start here.
                             (photorealistic hero)
     doctor light [--keep]   the light fixture alone (kept for the README)
     doctor regress          prove the shipped pipeline is intact: run the repo's
-                            own qa/verify.sh and report A/B/C PASS/FAIL
+                            own qa/verify.sh, report A/B/C PASS/FAIL, and check
+                            that docs/STATE.json scores/targets still match
     doctor gate             run the whole safety net in order -- env -> polarity
                             -> fixtures -> regress -- and fail if any stage fails.
                             This is the one command to run before committing and
@@ -34,6 +35,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -734,17 +736,75 @@ def cmd_light(args: list[str]) -> int:
 # --------------------------------------------------------------------------
 # regress: is the shipped pipeline still intact?
 # --------------------------------------------------------------------------
+def _state_consistency(measured: dict[str, float]) -> list[str]:
+    """Compare docs/STATE.json against the design configs and this run.
+
+    STATE.json is hand-maintained and had drifted (a stale score string, resolved
+    leads still listed as priorities).  A fresh `qa/verify.sh` run is the
+    authority -- so keep the machine-readable state honest mechanically: the
+    scores must match what was just measured and the targets must match
+    `designs/<v>.json` (which `verify.sh` enforces).
+    """
+    state_path = REPO_ROOT / "docs" / "STATE.json"
+    try:
+        state = json.loads(state_path.read_text())
+    except Exception as exc:  # noqa: BLE001
+        return [f"cannot read {state_path}: {type(exc).__name__}: {exc}"]
+    scores = state.get("scores") or {}
+    targets = state.get("targets") or {}
+    bad: list[str] = []
+    for v, m in sorted(measured.items()):
+        if v not in scores:
+            bad.append(f"STATE.json scores has no '{v}' (measured {m:.2f})")
+        elif abs(float(scores[v]) - m) > 0.05:
+            bad.append(f"STATE.json scores.{v} = {scores[v]} but this run measured {m:.2f}")
+        cfg = PIPELINE_DIR / "designs" / f"{v}.json"
+        want = json.loads(cfg.read_text()).get("target") if cfg.is_file() else None
+        if want is not None:
+            if v not in targets:
+                bad.append(f"STATE.json targets has no '{v}' (design target {want})")
+            elif abs(float(targets[v]) - float(want)) > 1e-9:
+                bad.append(f"STATE.json targets.{v} = {targets[v]} but designs/{v}.json says {want}")
+    return bad
+
+
 def cmd_regress(args: list[str]) -> int:
     script = PIPELINE_DIR / "qa" / "verify.sh"
     if not script.is_file():
         print(f"no {script}")
         return 1
     print("pipeline regression: qa/verify.sh (scores each built site vs its reference)")
-    print("expected: a 2.71 / b 2.76 / c 2.99, all PASS\n")
-    rc = subprocess.run([str(script), *args], cwd=str(PIPELINE_DIR)).returncode
+    print("expected: every design PASS under its target (designs/*.json)\n")
+    # Stream AND capture: the output is parsed below for the docs check.
+    proc = subprocess.Popen([str(script), *args], cwd=str(PIPELINE_DIR),
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    lines = []
+    for line in proc.stdout or []:
+        sys.stdout.write(line)
+        lines.append(line)
+    rc = proc.wait()
     print()
-    print("regression PASS" if rc == 0 else "regression FAIL")
-    return rc
+    if rc != 0:
+        print("regression FAIL")
+        return rc
+    print("regression PASS")
+
+    measured: dict[str, float] = {}
+    for line in lines:
+        m = re.match(r"\s*(\S+)\s+mean\s+([\d.]+)", line)
+        if m:
+            measured[m.group(1)] = float(m.group(2))
+    drift = _state_consistency(measured)
+    if drift:
+        print("\ndocs consistency FAIL -- docs/STATE.json is out of date:")
+        for d in drift:
+            print(f"  - {d}")
+        print("  update docs/STATE.json (scores / targets).  The code and a fresh")
+        print("  `qa/verify.sh` are authoritative; this check keeps them in sync.")
+        return 1
+    print(f"docs: STATE.json scores/targets match the designs and this run "
+          f"({len(measured)} design(s))")
+    return 0
 
 
 # --------------------------------------------------------------------------

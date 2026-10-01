@@ -37,6 +37,11 @@ Rules of thumb:
 
 ## Notes
 
+## 2026-10-01 — STATE.json drifts; `doctor regress` now checks it
+- **What:** `docs/STATE.json` is hand-maintained and had drifted: `self_hosted_fonts.result` still quoted `2.77 / 2.90 / 3.11` as the current offline scores, and `next_priorities` still listed the long-resolved `_fmt` relative-coordinate lead.
+- **Why / evidence:** the shipped scores are `2.71 / 2.76 / 2.99` (a fresh `qa/verify.sh`); `_fmt` is marked resolved in the same file's `resolved_leads`.
+- **Action:** `doctor regress` now parses the `qa/verify.sh` means and fails if `STATE.json`'s `scores`/`targets` disagree with `designs/*.json` or the run (negative-tested both ways). When you change a target, update `STATE.json` in the same commit. The load-bearing state is small; keep it in sync rather than re-litigating prose.
+
 ## 2026-10-01 — A non-interactive shell has no node/Homebrew on PATH
 - **What:** `doctor gate`'s `regress` stage failed with
   `./qa/verify.sh:16: command not found: node`, so the whole gate reported FAIL

@@ -317,7 +317,9 @@ studio/.venv/bin/python studio/backend/doctor.py job <id>   # full status + logs
 - **`regress`** is the safety net for the *pipeline itself*: it runs the repo's
   own `qa/verify.sh`, which scores each built A/B/C poster against its reference
   and asserts the network/stylesheet gates. If a studio change ever disturbed the
-  shipped pipeline, this catches it. Expect `2.71 / 2.76 / 2.99 PASS`.
+  shipped pipeline, this catches it. Expect `2.71 / 2.76 / 2.99 PASS`. It then
+  checks that `docs/STATE.json`'s `scores`/`targets` still match the designs and
+  the run just measured, so the machine-readable state cannot silently drift.
 - **`run`** does a full job in-process (no HTTP, no queue) and prints each stage
   with timings — the fastest way to see where a build is spending time or
   failing.

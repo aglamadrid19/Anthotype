@@ -188,11 +188,10 @@
   "gen-{a,b}.mjs are legacy hand-art generators; re-running them overwrites the good {v}.svg."
  ],
  "next_priorities": [
-  "Chase the _fmt relative-coordinate lead (worth ~5 mean if art renders at its 1.2-1.8 floor).",
-  "C brand 10.15 / B brand 8.82 (worst means, small areas). B's CSS clip-path hexagon still beats every trace of it, so leave that one.",
-  "Titles (B 23.15 / C 19.92) look immovable: Inter weight 400 beats every weight, family, blur and shadow tried.",
-  "Re-tune .stage gradient alphas after any art regeneration.",
-  "Re-score, node to-astro.mjs, npm run build, copy to outputs/."
+  "Payload vs parity is the one remaining dial on the posters: `bands` (~1 KB gzip per 0.001 mean). See qa/sweep_up.py.",
+  "Studio page quality: section grouping and copy come from a vision model plus clustering; the vision-critic review loop is still manual (see docs/AGENT-NOTES.md).",
+  "Icons (card icons, star rows, map pins) are artwork pixels, not DOM; recovering them as real assets is a separate feature.",
+  "Keep the gate green: `doctor gate` locally, .github/workflows/gate.yml in CI."
  ],
  "handoff_doc": "this repo/HANDOFF.md",
  "art_blur_px": {
@@ -317,8 +316,8 @@
  "viewing": "cd preview/ && ./start-persistent.sh 4173  ->  http://127.0.0.1:4173/ (gallery), /a/ /b/ /c/, /ref/<v>, /diff/<v>. Use start-persistent.sh (double-fork via daemonize.py) NOT `serve.py &` -- a background job dies with its shell, which is why the URLs previously stopped resolving. launchctl submit does not work (launchd cannot read the external volume). astro dev does NOT work on this project (managed dev server ignores --port; hangs re-transforming ~7MB inline SVG per request). The pages are self-contained and open directly from dist/index.html with no server and no network. Default browser is Safari.",
  "self_hosted_fonts": {
   "what": "Inter is vendored at pipeline/fonts/*.woff2 (6 weights, 144 KB) and inlined as @font-face by gen-page.mjs; the Google Fonts <link> and both preconnects were removed.",
-  "why": "The page previously loaded Inter from the Google Fonts CDN, so its typography -- and the scored fidelity -- depended on the network. With fonts.googleapis.com + fonts.gstatic.com DNS-blackholed the old build scored 4.22 on A instead of 2.77 (silent fallback to Helvetica).",
-  "result": "Offline score is now identical to online: 2.77 / 2.90 / 3.11 (delta < 0.0001 mean vs the previous render).",
+  "why": "The page previously loaded Inter from the Google Fonts CDN, so its typography -- and the scored fidelity -- depended on the network. With fonts.googleapis.com + fonts.gstatic.com DNS-blackholed the old build scored 4.22 on A instead of 2.71 (silent fallback to Helvetica).",
+  "result": "Offline score is identical to online.  Re-measured with the current scorer (PIL Lanczos) and the tightened glow it is 2.71 / 2.76 / 2.99, delta < 0.0001 mean vs the online render.",
   "required_config": "build.inlineStylesheets: 'always' in every astro.config.mjs. The font CSS pushes the stylesheet past Astro's 4 kB auto-inline threshold; without it Astro emits /_astro/index.*.css which cannot load over file:// -- the protocol qa.sh and qa/verify.sh screenshot with. Symptom of regression: scores jump to 158/170/227 and the page renders unstyled.",
   "gate": "qa/verify.sh fails on remote asset refs AND external /_astro/*.css, and asserts zero page-originated network requests via qa/netcheck.py (Chrome net-log based). qa/netcheck.py --selftest proves the detector sees a deliberate CDN fetch, so a zero is trustworthy. Both gates negative-tested.",
   "refresh": "npm pack @fontsource/inter; copy package/files/inter-latin-{300..800}-normal.woff2 into pipeline/fonts/.",
@@ -414,6 +413,7 @@
   "gate": "studio/backend/doctor.py gate -- runs env -> polarity -> fixtures -> regress in order, fails if any stage fails. regress IS qa/verify.sh, so it covers both measures (A/B/C pixel fidelity + the fixtures' structure). --quick runs polarity alone (no potrace/node/Chrome/model).",
   "fixtures": "doctor fixtures replays saved extractions (no model) and guards BOTH measures: structure (app.structure.inspect) AND the artwork's pixel fidelity via a per-fixture score_max on the art-region mean (light/antho 3.0, montiva 5.0; negative-tested). Fixture scores are not comparable between fixtures or to A/B/C.",
   "ci": ".github/workflows/gate.yml -- gate --quick on every push/PR (macos-latest, seconds, no pipeline); the full gate on main and nightly after a from-source build.",
-  "pinned_python": "pipeline/requirements.txt and studio/backend/requirements.txt are PINNED on purpose: the scores are a numeric gate computed through numpy/scipy/scikit-image/PIL, so an unpinned pip install could move a score with no code change. Bump deliberately and re-record the numbers."
+  "pinned_python": "pipeline/requirements.txt and studio/backend/requirements.txt are PINNED on purpose: the scores are a numeric gate computed through numpy/scipy/scikit-image/PIL, so an unpinned pip install could move a score with no code change. Bump deliberately and re-record the numbers.",
+  "docs_consistency": "doctor regress parses the qa/verify.sh means and fails if STATE.json scores/targets no longer match designs/*.json and the run, so this file cannot silently drift. When a target changes, update it here in the same commit."
  }
 }

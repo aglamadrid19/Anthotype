@@ -389,6 +389,11 @@ The verification loop is now one command, and CI runs it.
   mean with headroom (light/antho 3.0, montiva 5.0) — and the fixture fails when
   the traced render exceeds it. Negative-tested: forcing `light` to 0.1 yields
   `art region mean 2.39 >= max 0.1` and a non-zero exit.
+- **`regress` checks the docs too.** After `qa/verify.sh` passes it parses the
+  measured means and fails if `docs/STATE.json`'s `scores`/`targets` no longer
+  match the designs and the run. STATE.json had drifted silently (a stale score
+  string, resolved leads still listed as priorities); now the gate keeps it
+  honest. Negative-tested both ways (score drift and target drift).
 
 No pipeline, tracer or page code changed; the scores are unchanged
 (`qa/verify.sh` → 2.71 / 2.76 / 2.99 PASS).
