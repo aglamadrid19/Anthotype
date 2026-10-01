@@ -252,6 +252,28 @@ fixed, both in `generate.py`:
 Both are covered by `doctor polarity` (structure, palette polarity, palette
 contrast on a dark ground, accent-follows-CTA).
 
+### Stage 8 — the design review that found the ghosting
+
+A strong vision model (`gemini-3.1-pro` on the AntSeed proxy) reviewed two real
+uploads against their mockups and found the same top-ranked defect on both: the
+mockup's own text had been traced into the hero backdrop, so the real DOM copy
+sat on a ghost of itself.
+
+The extraction already separates page copy from text *inside* the artwork
+(`part: page | artwork`), and only page copy becomes DOM.  The tracer's
+exclusion rects, though, were built from the page blocks alone — deliberately
+leaving artwork-internal text to the tracer.  The anthotype upload had 12
+artwork blocks (the "1 Image / 2 Sunlight / … / 5 Generate" step labels, the
+mockup's own wordmark, its headline) all baked into the backdrop.
+
+`text_rects` is now given **every** text block.  A text block is not art: it is
+blanked either way, and `mkart.py` inpaints it from the surrounding pixels, so
+no hard hole appears.  Guarded by a `doctor polarity` check.
+
+The lesson is about *how* the defect was found: the aggregate art-fidelity score
+was healthy and the structure report was clean, so nothing in the test suite
+could see it.  It took a model looking at the picture.
+
 ---
 
 ## 3. How to reproduce, verify, and change the art

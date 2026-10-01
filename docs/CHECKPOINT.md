@@ -201,6 +201,35 @@ page) and the montiva fixture (`doctor run`), plus `doctor polarity` (structure,
 palette polarity, palette contrast on a dark ground, accent-follows-CTA),
 `doctor fixtures` 3/3 PASS, `doctor regress` PASS, and a frontend build.
 
+### Ghosted copy in the hero backdrop (fixed)
+
+A design review with a strong vision model (`gemini-3.1-pro` on the AntSeed
+proxy) reviewing two real uploads against their mockups found the same
+top-ranked defect on both: **the mockup's own text was traced into the hero
+backdrop**, so the real DOM copy sat on top of a ghost of itself.  It read as a
+double exposure and made the headline unreadable.
+
+The cause: the extraction correctly separates page copy from text *inside* the
+artwork (`part: page | artwork`) and only page copy becomes DOM — but
+`write_all` built the tracer's exclusion rects from the page blocks alone,
+deliberately leaving artwork-internal text to the tracer.  The anthotype upload
+had **12 artwork blocks** (the "1 Image / 2 Sunlight / … / 5 Generate" step
+labels, plus the mockup's own wordmark and headline) all baked into the
+backdrop.
+
+Now `text_rects` is given **every** text block.  A text block is not art: it is
+blanked either way, and the tracer repaints it from the surrounding pixels, so
+there is no hard hole.  Guarded by a new `doctor polarity` check that the rects
+cover artwork text as well as page copy.
+
+Rebuilding both uploads end to end confirmed the ghosting is gone (the montiva
+hero now shows the photographed office, not a faded copy of its own headline),
+with `doctor polarity` / `fixtures` / `regress` all still passing.
+
+**Still open** (noted, not fixed): the traced artwork includes the mockup's own
+CTA *button*, so a pale button shape can sit under the real one; and a light
+mockup's artwork gets no crop allowance for its bottom third.
+
 ## Landmine: the sync script (removed)
 
 `pipeline/sync-bundle.sh` used to mirror a *development tree* into this repo. It

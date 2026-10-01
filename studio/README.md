@@ -162,11 +162,20 @@ The traced artwork is the hero's full-bleed decorative backdrop
 
 ### The artwork must not contain a ghost of the copy
 
-On a light design the tracer's legacy text-exclusion rule is backwards.  It keeps
-the bands *near* the page background so the type's glow survives — but on a light
-page the glyph ink and its anti-aliased halo sit just *below* the background, so
-they are kept and the tracer bakes a full pale ghost of every word into the SVG,
-underneath the DOM text that is supposed to replace it.
+**Every text block is excluded from the trace**, not just the page copy.  The
+extraction distinguishes page copy from text *inside* the artwork (a step
+callout, a device mockup's own wordmark), and only page copy becomes DOM — but
+the tracer is given the rects for **both**.  Artwork-internal text is not
+decoration: leaving it unblanked bakes a ghost of the word into the hero
+backdrop, where the real copy sits, and the two double up.  This was the single
+ugliest defect the page could have, and it survived until a design review called
+it out.
+
+On a light design the tracer's legacy text-exclusion rule is also backwards.  It
+keeps the bands *near* the page background so the type's glow survives — but on a
+light page the glyph ink and its anti-aliased halo sit just *below* the
+background, so they are kept and the tracer bakes a full pale ghost of every word
+into the SVG, underneath the DOM text that is supposed to replace it.
 
 `mkart.py` **inpaints the glyph ink out of the reference** before tracing (gated
 on `text_bg_lum`, so the three shipped dark designs keep the legacy path
@@ -182,10 +191,11 @@ byte-for-byte).  Two details matter:
 ### What is page copy, and what is artwork
 
 Text inside the illustration (step callouts, a device mockup's own wordmark) must
-not become DOM: its box is unreliable and the exclusion rect punches a hole in
-the busiest art. The extractor tags each block `part: page | artwork`, and the
-generator drops `artwork` blocks. The invariant holds either way: **the exclusion
-rects are exactly the blocks that are emitted as DOM.**
+not become DOM: its box is unreliable and the element lands in the wrong place.
+The extractor tags each block `part: page | artwork`, and the generator drops
+`artwork` blocks from the markup.  They are still **excluded from the trace**,
+though: a block of text is never art, and leaving one unblanked ghosts it into
+the backdrop under the real copy.
 
 For a *website* the size backstop is deliberately lax — dropping a real nav link
 ("Home", "Services") breaks the page, while emitting a stray caption is cosmetic.

@@ -1248,7 +1248,14 @@ def page_blocks(blocks: list[Block]) -> list[Block]:
 
 
 def text_rects(blocks: list[Block]) -> list[list[int]]:
-    """mkart's exclusion rects: each text box grown, clamped to the stage."""
+    """mkart's exclusion rects: each text box grown, clamped to the stage.
+
+    The caller passes **every** text block -- the page copy that becomes DOM and
+    the text inside the artwork.  A text block is not art: leaving one unblanked
+    bakes a ghost of it into the hero backdrop, where the real copy sits.  A
+    small box (a `6px` label) is still enclosed by the pad, since the rect grows
+    on both sides of it.
+    """
     out: list[list[int]] = []
     for b in blocks:
         x0, y0, x1, y1 = b.bbox
@@ -1302,16 +1309,18 @@ def write_all(pipeline: Path, name: str, blocks: list[Block],
 
     (pipeline / f"{name}.page.css").write_text(build_page_css(palette(blocks, background)))
 
-    # The exclusion rects are ALL page blocks (the ones emitted as DOM), so the
-    # traced artwork never bakes in a rasterised copy of the page's own copy.
-    # Artwork-internal text is deliberately left to the tracer.
-    page = [b for b in blocks if is_page_text(b)]
+    # The exclusion rects are EVERY text block the model found -- the page copy
+    # that becomes DOM *and* the text inside the artwork (labels on a device
+    # mockup, a logo on a wall).  The artwork is a decorative backdrop: any text
+    # baked into it doubles with the real DOM copy sitting over it, which is the
+    # single ugliest defect the page can have.  A text block is not art, so it is
+    # blanked either way; the tracer repaints it from the surrounding pixels.
     cfg_path = pipeline / "designs" / f"{name}.json"
     cfg = json.loads(cfg_path.read_text()) if cfg_path.is_file() else {"name": name}
     cfg["name"] = name
     cfg["layout"] = "page"                       # a real website, not a poster
     cfg["box"] = [0, 0, STAGE_W, STAGE_H]        # full frame: exclude_text protects the type
-    cfg["text"] = text_rects(page)
+    cfg["text"] = text_rects(blocks)
     cfg.setdefault("params", {})
     # Polarity-aware text exclusion.  `text_bg_lum` tells the tracer where the
     # page background sits, so it drops the bands that are *ink* (away from the

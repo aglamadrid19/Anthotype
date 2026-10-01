@@ -320,6 +320,26 @@ def cmd_polarity(_args: list[str]) -> int:
     _line(OK if ok else BAD, "page copy vs artwork",
           ", ".join(f"{k}={v}" for k, v in checks.items()))
 
+    # The tracer's exclusion rects must cover EVERY text block, including the
+    # text inside the artwork.  Artwork-internal text is not emitted as DOM, but
+    # if it is left unblanked the trace bakes a ghost of it into the hero
+    # backdrop, right where the real copy sits -- the ugliest defect the page can
+    # have.  The pad is fixed, so a tiny caption is still enclosed (the rect
+    # grows on both sides of it).
+    rects = generate.text_rects([
+        Block("Heading", "headline", (100, 100, 300, 140)),
+        Block("Plant Pigment", "other", (559, 344, 619, 356), part="artwork"),
+        Block("6", "other", (366, 470, 372, 476), part="artwork"),
+    ])
+    g = generate.TEXT_RECT_GROW
+    ok = (len(rects) == 3
+          and rects[2] == [366 - g, 470 - g, 372 + g, 476 + g]
+          and rects[0] == [100 - g, 100 - g, 300 + g, 140 + g]
+          and not generate.is_page_text(
+              Block("6", "other", (366, 470, 372, 476), part="artwork")))
+    _line(OK if ok else BAD, "exclusion rects cover artwork text",
+          f"{len(rects)} rects, tiny {rects[2]}, head pad {g}")
+
     # Structure inference: a flat page with an eyebrow-labelled sections list must
     # come back as named sections in reading order, with a header row split off
     # the top and a footer at the bottom.  This is what makes the output a
