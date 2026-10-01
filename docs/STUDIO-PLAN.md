@@ -254,27 +254,15 @@ Every job keeps its working tree (`data/jobs/<id>/workspace/`) and logs
   backstop, and a structure self-check that *reports* problems (missing `h1`,
   dead links, no sections) instead of shipping silently.
 - **No font is recovered.** The page is authored in Inter; the reference's
-  typeface is not imitated. This is by design, not a gap.
+  typeface is not imitated. This is by design, not a gap. (Earlier drafts tried to
+  *measure* type from the pixels — `measure_lines`, `measure_weight`,
+  `sample_line_colors` — to place DOM glyphs on the reference's. That layer is
+  **retired**: its residual was font substitution, which no tuning removes. Do not
+  resurrect it; the page is authored at a role-based scale instead.)
 - **The artwork is one backdrop.** Per-section art would be more faithful and
   much more fragile.
-- **Long builds** — serialized worker, timeouts, live progress.
-- **Python 3.14** venv — FastAPI wheels are thin; `studio/.venv` is separate and
-  a `python@3.12` fallback is available.
-
-## Risks
-
-- **Type metrics are measured, not given.** The model supplies boxes; the line
-  count, weight and per-line colour are recovered from the reference pixels
-  (`measure_lines`, `measure_weight`, `sample_line_colors`).  That removed the
-  largest layout failure — a hero rendered at one-third size — but it cannot
-  recover a **font**: the shipped Inter is the only face, so a mockup set in
-  another typeface keeps a per-pixel residue on its text that no sizing or
-  colour tuning removes.  That is what sets the fixture targets.
-- **Coverage is the weak signal for weight** on very short strings, where a
-  handful of pixels decides between two weights; it is stable for the display
-  sizes that matter.
-- **Python 3.14** venv — FastAPI wheels are thin; `studio/.venv` is separate and
-  a `python@3.12` fallback is available.
 - **`node_modules` symlink under Astro** — verified in milestone 1; fallback is a
   per-job `npm install`.
 - **Long builds** — serialized worker, timeouts, live progress.
+- **Python 3.14** venv — FastAPI wheels are thin; `studio/.venv` is separate and
+  a `python@3.12` fallback is available.

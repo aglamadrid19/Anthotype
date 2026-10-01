@@ -375,7 +375,12 @@ All three: `text_lum_max=200.0`, `cumulative=True`, art blur **0 px**, and
 `{a,b,c}.css` intentionally empty (art colour lives in the SVG band fills).
 
 ### Verify targets are enforced
-`qa/verify.sh` fails if a variant regresses past: **A 2.90, B 3.00, C 3.25**.
+`qa/verify.sh` fails if a variant regresses past the `target` in its
+`designs/<n>.json`. As shipped that is **A 2.77, B 2.82, C 3.05** (the current
+scores are 2.71 / 2.76 / 2.99, so each keeps a little headroom for capture
+noise). The targets live in the design configs, not in this document — read them
+from `pipeline/designs/*.json` when it matters. Earlier figures here
+(2.90/3.00/3.25, then 2.82/2.88/3.15) predate the scorer and glow changes below.
 
 ### Useful QA tools
 ```sh
@@ -635,11 +640,14 @@ dependency), so `qa/downsample.py` now does the resize and both `qa.sh` and
 `qa/verify.sh` call it.
 
 Consequences:
-- **Shipped scores are now 2.76 / 2.82 / 3.08** (were 2.77 / 2.90 / 3.11).
+- **Shipped scores became 2.76 / 2.82 / 3.08** at this stage (were 2.77 / 2.90 /
+  3.11 under `sips -z`). The later glow tightening took them to the current
+  **2.71 / 2.76 / 2.99**; `qa/verify.sh` is the source of truth for the number.
   Stable to +/-0.01 over three consecutive runs.
-- **Verify targets tightened to 2.82 / 2.88 / 3.15** (~0.06 headroom above the
-  stable value, so capture noise cannot fail the build but a real regression
-  will).
+- **Verify targets were tightened at this stage to 2.82 / 2.88 / 3.15** (~0.06
+  headroom above the stable value, so capture noise cannot fail the build but a
+  real regression will). They were tightened again after the glow change — see
+  `pipeline/designs/*.json` for the enforced values.
 - The old numbers in this document and in `STATE.json` were produced with
   `sips -z`. The table above lets you translate between the two.
 

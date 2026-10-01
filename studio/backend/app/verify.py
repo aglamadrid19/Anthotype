@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import tempfile
@@ -44,12 +45,13 @@ def find_chrome() -> str | None:
     return None
 
 
-def _screenshot(chrome: str, page: Path, out: Path) -> None:
+def _screenshot(chrome: str, page: Path, out: Path, height: int | None = None) -> None:
+    win_h = height or STAGE_H
     cmd = [
         chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars",
         "--force-device-scale-factor=2", "--force-color-profile=srgb",
         "--no-first-run", "--no-default-browser-check", "--disable-http-cache",
-        "--incognito", "--window-size=1024,768", "--virtual-time-budget=8000",
+        "--incognito", f"--window-size={STAGE_W},{win_h}", "--virtual-time-budget=8000",
         f"--screenshot={out}", page.resolve().as_uri(),
     ]
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -58,10 +60,11 @@ def _screenshot(chrome: str, page: Path, out: Path) -> None:
         raise RuntimeError("Chrome produced no screenshot")
 
 
-def _to_stage(png: Path) -> np.ndarray:
+def _to_stage(png: Path, height: int | None = None) -> np.ndarray:
+    h = height or STAGE_H
     img = Image.open(png).convert("RGB")
-    if img.size != (STAGE_W, STAGE_H):
-        img = img.resize((STAGE_W, STAGE_H), Image.LANCZOS)
+    if img.size != (STAGE_W, h):
+        img = img.resize((STAGE_W, h), Image.LANCZOS)
     return np.asarray(img).astype(np.float32)
 
 
@@ -88,10 +91,31 @@ def _art_mask(pipeline: Path, name: str) -> np.ndarray | None:
     return mask
 
 
-def _render_stage(chrome: str, page: Path) -> np.ndarray:
+def _art_box(pipeline: Path, name: str) -> tuple[int, int, int, int] | None:
+    """The tracer's box from `designs/<name>.json`, clamped to the stage.
+
+    The traced SVG only covers the box, so the art metric must be measured over
+    that same region: scoring un-traced area against the reference would count
+    empty space as error.  (The studio currently traces the full frame, so this is
+    a no-op there; it keeps the metric correct if a design ever crops its box.)
+    """
+    cfg = pipeline / "designs" / f"{name}.json"
+    if not cfg.is_file():
+        return None
+    try:
+        box = json.loads(cfg.read_text()).get("box") or []
+        if len(box) != 4:
+            return None
+        x0, y0, x1, y1 = (int(v) for v in box)
+    except Exception:  # noqa: BLE001
+        return None
+    return (max(0, x0), max(0, y0), min(STAGE_W, x1), min(STAGE_H, y1))
+
+
+def _render_stage(chrome: str, page: Path, height: int | None = None) -> np.ndarray:
     with tempfile.TemporaryDirectory() as td:
         raw = Path(td) / "shot.png"
-        _screenshot(chrome, page, raw)
+        _screenshot(chrome, page, raw, height=height)
         # Match the repo's scorer: sRGB conversion (macOS) before downsampling.
         if Path("/usr/bin/sips").is_file() and Path(_SRGB).is_file():
             converted = Path(td) / "shot.srgb.png"
@@ -101,17 +125,37 @@ def _render_stage(chrome: str, page: Path) -> np.ndarray:
                            check=False)
             if converted.is_file():
                 raw = converted
-        return _to_stage(raw)
+        return _to_stage(raw, height=height)
 
 
 def _art_page(svg: str, bg: tuple[int, int, int]) -> str:
-    """A throwaway page that renders the traced artwork at the reference stage."""
+    """A throwaway page that renders the traced artwork at the reference stage.
+
+    The stage is sized to the SVG's *own* viewBox, at 1024 px wide.  Pinning it
+    to 1024x768 would stretch any SVG whose viewBox is not exactly 768 tall --
+    the traced art would then be measured against a squashed copy of itself.
+    """
     r, g, b = (max(0, min(255, int(v))) for v in bg)
+    h = _svg_height(svg)
     return (
         "<!doctype html><html><head><meta charset='utf-8'><style>"
         f"html,body{{margin:0;padding:0;background:rgb({r},{g},{b})}}"
-        "svg{display:block;width:1024px;height:768px}</style></head>"
+        f"svg{{display:block;width:1024px;height:{h}px}}</style></head>"
         f"<body>{svg}</body></html>")
+
+
+_SVG_VB = re.compile(r'viewBox="\s*([-\d.]+)\s+([-\d.]+)\s+([\d.]+)\s+([\d.]+)\s*"')
+
+
+def _svg_height(svg: str) -> int:
+    """The SVG's viewBox height, so a cropped art renders at natural scale."""
+    m = _SVG_VB.search(svg)
+    if not m:
+        return STAGE_H
+    try:
+        return max(1, int(round(float(m.group(4)))))
+    except ValueError:
+        return STAGE_H
 
 
 def _render_art(chrome: str, svg: str, bg: tuple[int, int, int]) -> np.ndarray:
@@ -121,11 +165,22 @@ def _render_art(chrome: str, svg: str, bg: tuple[int, int, int]) -> np.ndarray:
     not a poster, so comparing it to the reference measures layout, not tracing.
     Rendering the SVG by itself gives the tracer's own fidelity -- which is what
     the art metric is for -- independent of how the page happens to flow.
+
+    A cropped SVG (viewBox shorter than 768) is rendered at its natural height at
+    the top of a full-stage array, so the result always lines up with the
+    reference in stage coordinates (which is what `_art_box` crops to).
     """
+    h = _svg_height(svg)
     with tempfile.TemporaryDirectory() as td:
         html = Path(td) / "art.html"
         html.write_text(_art_page(svg, bg))
-        return _render_stage(chrome, html)
+        shot = _render_stage(chrome, html, height=h)
+    if h == STAGE_H:
+        return shot
+    full = np.zeros((STAGE_H, STAGE_W, 3), np.float32)
+    full[:, :, 0], full[:, :, 1], full[:, :, 2] = bg
+    full[:min(h, STAGE_H)] = shot[:min(h, STAGE_H)]
+    return full
 
 
 def assess(job_id: str, page: Path, ref_png: Path, *,
@@ -147,15 +202,26 @@ def assess(job_id: str, page: Path, ref_png: Path, *,
     }
 
     mask = _art_mask(pipeline, job_id) if pipeline else None
+    box = _art_box(pipeline, job_id) if pipeline else None
     # Score the traced SVG itself for a reflowing page; the page screenshot for
     # a fixed poster (where it *is* the artwork's frame).
     if layout == "page" and art_svg and Path(art_svg).is_file():
         bg = background or tuple(int(v) for v in ref[0, 0])
-        art = np.abs(ref - _render_art(chrome, Path(art_svg).read_text(), bg))
+        rendered = _render_art(chrome, Path(art_svg).read_text(), bg)
+        art = np.abs(ref - rendered)
         out["art_source"] = "svg"
     else:
         art = diff
         out["art_source"] = "page"
+    # The traced box may be a sub-region of the stage (the studio crops it to the
+    # hero band, which is all the page shows).  Compare like for like: scoring the
+    # un-traced area below the band against the reference would count empty space
+    # as error and report a box crop as a regression when it is an improvement.
+    if box and (box[1] > 0 or box[3] < STAGE_H or box[0] > 0 or box[2] < STAGE_W):
+        x0, y0, x1, y1 = box
+        art = art[max(0, y0):min(STAGE_H, y1), max(0, x0):min(STAGE_W, x1)]
+        if mask is not None:
+            mask = mask[max(0, y0):min(STAGE_H, y1), max(0, x0):min(STAGE_W, x1)]
     per_px = art.mean(axis=2)
     if mask is not None and (~mask).any():
         per_px = per_px[~mask]

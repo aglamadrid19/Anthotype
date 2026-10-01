@@ -2,6 +2,12 @@
 
 **Anthotype** — turn a design PNG into a code-native website.
 
+> **Agent note:** the absolute paths below are the author's machine layout, not a
+> contract. Treat them as illustrative: resolve the repo relative to wherever you
+> are working, and never "fix" a path here to match your environment. Nothing in
+> the pipeline depends on these paths — `qa/_env.py` resolves python/node/chrome
+> by probing, with no hardcoded paths anywhere in the repo.
+
 One canonical git repository (a bare mirror) and two working checkouts. The
 checkouts are clones of the mirror, so neither can silently diverge.
 

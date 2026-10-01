@@ -20,6 +20,7 @@ from __future__ import annotations
 import html
 import json
 import re
+import threading
 from pathlib import Path
 
 import numpy as np
@@ -748,7 +749,7 @@ def group_sections(blocks: list[Block]) -> list[tuple[str, list[Block]]]:
         return []
     declared = [b for b in page if b.section in KNOWN_SECTIONS]
     if not declared:
-        return _infer_sections(page)
+        return _lift_bottom_nav(page, _infer_sections(page))
 
     order = _reading_order(page)
     declared_y = [(b, (b.bbox[1] + b.bbox[3]) / 2.0)
@@ -774,7 +775,60 @@ def group_sections(blocks: list[Block]) -> list[tuple[str, list[Block]]]:
 
     groups = list(by_name.items())
     groups.sort(key=lambda sg: min(b.bbox[1] for b in sg[1]))
-    return groups
+    return _lift_bottom_nav(page, groups)
+
+
+def _lift_bottom_nav(page: list[Block],
+                     groups: list[tuple[str, list[Block]]]
+                     ) -> list[tuple[str, list[Block]]]:
+    """Move a nav-link row at the page bottom into the footer.
+
+    A landing page's footer often repeats the header nav ("Home", "Services", ...)
+    and the model tags those links with whatever section it last saw -- frequently
+    `contact`, because they sit right below the contact band.  Left there they
+    render as a stray link row at the end of the contact section.  The footer links
+    sit in the bottom band of the page beside the footer bar, so they belong to the
+    footer: lift the run into it.
+    """
+    if not page or not groups:
+        return groups
+    names = {n for n, _ in groups}
+    if "footer" not in names:
+        return groups
+    page_bottom = max(b.bbox[3] for b in page)
+    page_top = min(b.bbox[1] for b in page)
+    span = max(1.0, page_bottom - page_top)
+    nav_ids = _nav_cta_ids(page)
+    if not nav_ids:
+        return groups
+
+    footer_blocks = next(g for n, g in groups if n == "footer")
+    # Where the footer bar starts: its topmost block.
+    foot_top = min(b.bbox[1] for b in footer_blocks)
+    lifted: list[Block] = []
+    out: list[tuple[str, list[Block]]] = []
+    for name, grp in groups:
+        if name == "footer":
+            continue
+        keep = []
+        for b in grp:
+            # A nav link in the bottom 12% of the page and at/below the footer's
+            # own top edge is a footer link, not part of this section.
+            if (id(b) in nav_ids
+                    and b.bbox[1] >= foot_top - 0.04 * span
+                    and b.bbox[1] >= page_top + 0.8 * span):
+                lifted.append(b)
+            else:
+                keep.append(b)
+        if keep:
+            out.append((name, keep))
+    if not lifted:
+        return groups
+    # Re-emit in page order, footer last.
+    out.sort(key=lambda sg: min(b.bbox[1] for b in sg[1]))
+    footer_blocks = sorted(footer_blocks + lifted, key=lambda b: (round(b.bbox[1]), round(b.bbox[0])))
+    out.append(("footer", footer_blocks))
+    return out
 
 
 def _inline(b: Block) -> str:
@@ -810,7 +864,63 @@ def _cta_label(b: Block) -> str:
     return _inline(b)
 
 
+def _nav_cta_ids(blocks: list[Block]) -> set[int]:
+    """Ids of `cta` blocks that are really nav links, not buttons.
+
+    The vision model tags *every* link `cta`, so a nav row ("Home", "Services",
+    "About") is indistinguishable from a button by role alone.  Two signals
+    separate them, and both are needed:
+
+    * **shape** -- a nav link is short (<= 2 words, <= 18 chars, no arrow).  An
+      isolated short link is a button ("Call Now"); a longer phrase with an arrow
+      is a button ("View All Services ->").
+    * **row** -- the links come in runs of three or more short items sharing a
+      row, where the one real button ("Book Service") sits at the row's end with
+      a *solid fill*.  A solid-filled short CTA is a button even in that row.
+
+    So: short AND in a link row AND (no solid button fill) => a nav link.
+    """
+    def short(b: Block) -> bool:
+        t = b.text.strip()
+        return (len(t) <= 18 and len(t.split()) <= 2
+                and not any(ch in t for ch in "→»>"))
+
+    def solid_button(b: Block) -> bool:
+        # A real button carries a solid fill the tracer sampled; a nav link on a
+        # busy row comes back as an outline with a contaminated fill.  The model
+        # sets `outline` for the latter.
+        return b.fill is not None and not b.meta.get("outline")
+
+    ctas = [b for b in blocks if b.role == "cta"]
+    ids: set[int] = set()
+    for b in ctas:
+        if not short(b):
+            continue
+        row = [o for o in ctas if o is not b and _overlaps(b, o)]
+        if sum(1 for o in row if short(o)) >= 2 and not solid_button(b):
+            ids.add(id(b))
+    return ids
+
+
+# Ids of `cta` blocks that are really nav links (not buttons), for the current
+# build.  Set by `build_markup` from `_nav_cta_ids`; read by `_cta_html`.  This is
+# a build-scoped context rather than a parameter because every section renderer
+# (`_card_html`, `_band_html`, `_hero_html`, header, footer) would otherwise have
+# to thread the same set through.  Thread-local so the value cannot leak between
+# jobs if the worker pool is ever made concurrent.
+_NAV_CTX = threading.local()
+
+
+def _nav_links() -> set[int]:
+    return getattr(_NAV_CTX, "ids", set())
+
+
 def _cta_html(b: Block, href: str, cls: str = "cta") -> str:
+    # A short link that belongs to a nav row is drawn as a plain link, not a
+    # button: the model tags nav links `cta`, so rendering them as buttons turns
+    # each nav/footer row into a stack of boxes.
+    if id(b) in _nav_links():
+        return f'<a class="navlink" href="{_attr(href)}">{_inline(b)}</a>'
     color = _hex(b.color or (255, 255, 255))
     if b.meta.get("outline"):
         border = _hex(b.meta.get("border") or b.color or (24, 196, 124))
@@ -962,16 +1072,91 @@ def _band_html(name: str, band: list[Block], cta_href: str) -> str:
             # columns but not the card chrome.
             cells = []
             for col in cols:
-                body = "\n        ".join(
-                    _cta_html(b, cta_href, "cta small") if b.role == "cta"
-                    else (f"<h3>{_inline(b)}</h3>"
-                          if i == 0 and b.role in {"headline", "subhead", "brand"}
-                          else f"<p>{_inline(b)}</p>")
-                    for i, b in enumerate(col))
+                # A run of nav links (a footer's link row the model grouped into
+                # this band) is one horizontal nav row, not a stack of items.
+                rows: list[str] = []
+                run: list[Block] = []
+
+                def _flush() -> None:
+                    if run:
+                        rows.append('<nav class="navlink-row">'
+                                    + "".join(_cta_html(x, cta_href) for x in run)
+                                    + "</nav>")
+                        run.clear()
+
+                for i, b in enumerate(col):
+                    if b.role == "cta" and id(b) in _nav_links():
+                        run.append(b)
+                        continue
+                    _flush()
+                    rows.append(_cta_html(b, cta_href, "cta small") if b.role == "cta"
+                                else (f"<h3>{_inline(b)}</h3>"
+                                      if i == 0 and b.role in {"headline", "subhead", "brand"}
+                                      else f"<p>{_inline(b)}</p>"))
+                _flush()
+                body = "\n        ".join(rows)
                 cells.append(f'<div class="col">\n        {body}\n      </div>')
             parts.append('<div class="cols">\n      '
                          + "\n      ".join(cells) + "\n    </div>")
     return "\n    ".join(parts)
+
+
+def _drop_artwork_labels(blocks: list[Block]) -> list[Block]:
+    """Remove a hero illustration's own captions from the hero's DOM copy.
+
+    A hero is often a copy column beside an illustration (a device mockup, a
+    diagram).  The illustration carries its own small labels -- step numbers,
+    "Generate", "Time", a logo on the device screen.  The vision model tags them
+    all `part: page` on some uploads, so they are emitted as DOM paragraphs and
+    land in the copy column as stray single words between the headline and the
+    lede ("Generate", "Time", "Refine and grow meaning" on the anthotype upload).
+
+    A hero's copy reads as a single column: the headline, then the subhead under
+    it.  A *short* `other`/`brand` line is a label rather than copy when either
+
+      (a) its vertical band overlaps the headline or the subhead (with a
+          line-height of slack -- a caption drawn beside the headline is often a
+          few px off its row), or
+      (b) it sits fully clear of the running copy's right edge (an illustration
+          legend drawn along the bottom of the artwork).
+
+    The real copy never interleaves a stray word with its own headline, so the
+    overlap test is safe.  A `brand` block is deliberately NOT an anchor: on an
+    upload whose hero is a device mockup the logo drawn on the screen comes back
+    `role: brand`, and using it as the column edge would swallow the illustration.
+    """
+    if not blocks:
+        return blocks
+    copy = [b for b in blocks if b.role in {"headline", "subhead"}]
+    if not copy:
+        return blocks
+    # The copy column's right edge, from the running copy only (the lede or the
+    # tagline; a device-screen logo is `brand`, not copy).
+    run = [b for b in blocks if b.role in {"lede", "tagline"}] or copy
+    col_right = max(b.bbox[2] for b in run)
+    hero_top = min(c.bbox[1] for c in copy)
+
+    def is_label(b: Block) -> bool:
+        if b.role not in {"other", "brand"}:
+            return False
+        if len(b.text) > 60:
+            return False
+        x0, y0, x1, y1 = b.bbox
+        # (a) drawn beside the headline / subhead: a caption overlapping a copy
+        #     row (with a line-height of slack -- a caption is often a few px off).
+        by = (y0 + y1) / 2.0
+        for c in copy:
+            slack = 0.6 * max(8.0, c.bbox[3] - c.bbox[1])
+            if c.bbox[1] - slack <= by <= c.bbox[3] + slack:
+                return True
+        # (b) an illustration legend: a short line sitting fully clear of the copy
+        #     column's right edge, inside the hero's own vertical band.
+        return x0 >= col_right - 4 and y0 >= hero_top - 40
+
+    kept = [b for b in blocks if not is_label(b)]
+    # Never empty the hero: if the rule would remove everything but one line,
+    # it has misfired (there was no real copy column to anchor against).
+    return kept if len(kept) >= 2 else blocks
 
 
 def _hero_html(blocks: list[Block], cta_href: str) -> str:
@@ -984,6 +1169,7 @@ def _hero_html(blocks: list[Block], cta_href: str) -> str:
     # reading order sorts by top edge first, and a solid button and an outline one
     # beside it rarely share a top edge (a pixel or two apart is enough), so it
     # would swap them.
+    blocks = _drop_artwork_labels(blocks)
     cta_blocks = _row_order([b for b in blocks if b.role == "cta"])
     # Short lines that share a row are trust badges, not copy.  The model's role
     # for them is not stable (the same reference came back `other` on one run and
@@ -1051,14 +1237,18 @@ def _header_html(brand: Block | None, links: list[Block], cta_href: str) -> str:
     """
     brand_html = (f'<a class="brand" href="#top">{_inline(brand)}</a>' if brand
                   else '<a class="brand" href="#top">Home</a>')
-    nav = [b for b in links if b.role != "cta" and not _is_phone(b)]
-    actions = sorted((b for b in links if b.role == "cta" or _is_phone(b)),
+    # A header `cta` in a nav row renders as a plain link (`_cta_html` consults
+    # the nav-link set); the real button and the phone render as actions.
+    nav = [b for b in links
+           if not _is_phone(b) and (b.role != "cta" or id(b) in _nav_links())]
+    actions = sorted((b for b in links
+                      if _is_phone(b) or (b.role == "cta" and id(b) not in _nav_links())),
                      key=_is_phone)          # the phone sits before the button
     nav_html = "".join(
         f'<a href="{_attr(cta_href)}">{_inline(b)}</a>' for b in nav)
     act_html = "".join(
-        _cta_html(b, cta_href, "cta small") if b.role == "cta"
-        else f'<a class="phone" href="{_attr(_tel(b.text))}">{_inline(b)}</a>'
+        f'<a class="phone" href="{_attr(_tel(b.text))}">{_inline(b)}</a>'
+        if _is_phone(b) else _cta_html(b, cta_href, "cta small")
         for b in actions)
 
     out = [f'<div class="wrap">\n      {brand_html}']
@@ -1085,6 +1275,10 @@ def build_markup(sections: list[tuple[str, list[Block]]],
     """
     parts: list[str] = []
     used: dict[str, int] = {}
+    # Classify the CTAs once for the whole build: a short `cta` in a row with two
+    # or more other short `cta`s is a nav link, not a button (see `_nav_cta_ids`).
+    # `_cta_html` reads this to render nav rows as links instead of button stacks.
+    _NAV_CTX.ids = _nav_cta_ids([b for _, g in sections for b in g])
 
     header = [(n, g) for n, g in sections if n in ("header", "nav")]
     header_blocks = [b for _, g in header for b in g]
@@ -1117,18 +1311,45 @@ def build_markup(sections: list[tuple[str, list[Block]]],
 
     footer = [b for name, g in sections if name == "footer" for b in g]
     if footer:
-        items = []
-        for b in footer:
-            if b.role == "cta":
-                items.append(_cta_html(b, cta_href, "cta small"))
-            elif _is_navish(b):
-                items.append(f'<a href="#top">{_inline(b)}</a>')
-            else:
-                items.append(f"<p>{_inline(b)}</p>")
         parts.append('<footer class="site-footer" id="footer">\n    '
-                     '<div class="wrap">\n      ' + "\n      ".join(items)
-                     + "\n    </div>\n  </footer>")
+                     '<div class="wrap">\n      '
+                     + _footer_html(footer, cta_href) + "\n    </div>\n  </footer>")
     return "\n  ".join(parts)
+
+
+def _footer_html(blocks: list[Block], cta_href: str) -> str:
+    """The footer bar: brand, a nav row, and the legal/meta lines.
+
+    A reference footer is a *bar* -- brand on the left, the repeated nav links,
+    then the address and the legal line.  Emitting every block as an equal sibling
+    turns it into a wall of links with no hierarchy, so the parts are grouped: the
+    brand, one nav row, and the rest as small print.
+    """
+    blocks = sorted(blocks, key=lambda b: (round(b.bbox[1]), round(b.bbox[0])))
+    brand = next((b for b in blocks if b.role == "brand"), None)
+    links = [b for b in blocks if id(b) in _nav_links()]
+    cta = next((b for b in blocks if b.role == "cta" and id(b) not in _nav_links()), None)
+    rest = [b for b in blocks if b is not brand and b not in links and b is not cta]
+
+    out: list[str] = []
+    if brand is not None:
+        out.append(f'<div class="footer-brand">'
+                   f'<a class="brand" href="#top">{_inline(brand)}</a></div>')
+    if links:
+        nav = "".join(f'<a href="{_attr(cta_href)}">{_inline(b)}</a>' for b in links)
+        out.append(f'<nav class="footer-nav" aria-label="Footer">{nav}</nav>')
+    if rest or cta:
+        bits = []
+        if cta is not None:
+            bits.append(_cta_html(cta, cta_href, "cta small"))
+        for b in rest:
+            cls = "footer-link" if _is_navish(b) else "footer-note"
+            if cls == "footer-link":
+                bits.append(f'<a class="{cls}" href="#top">{_inline(b)}</a>')
+            else:
+                bits.append(f'<p class="{cls}">{_inline(b)}</p>')
+        out.append('<div class="footer-meta">' + "\n        ".join(bits) + "</div>")
+    return "\n      ".join(out)
 
 
 def cta_target(sections: list[tuple[str, list[Block]]],
@@ -1257,6 +1478,16 @@ a {{ color: inherit; }}
   transition: color .15s ease, border-color .15s ease;
 }}
 .site-nav a:hover {{ color: var(--ink); border-bottom-color: var(--accent); }}
+/* A `cta` the model tagged on a nav row renders as a plain link, not a button. */
+.navlink {{
+  color: var(--muted); text-decoration: none; font-size: 15px;
+  transition: color .15s ease;
+}}
+.navlink:hover {{ color: var(--ink); }}
+.navlink-row {{
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px;
+}}
+.site-footer .navlink {{ font-size: 14.5px; }}
 .header-actions {{
   display: flex; align-items: center; gap: clamp(10px, 1.6vw, 18px);
   justify-self: end;
@@ -1398,11 +1629,24 @@ a {{ color: inherit; }}
 /* ---- footer ------------------------------------------------------------- */
 .site-footer {{ padding: clamp(40px, 6vw, 64px) 0; }}
 .site-footer .wrap {{
-  display: flex; flex-wrap: wrap; gap: 14px 28px;
+  display: flex; flex-wrap: wrap; gap: 18px 36px;
   align-items: center; justify-content: space-between; color: var(--muted);
   font-size: 14.5px;
 }}
-.site-footer a {{ color: var(--muted); text-decoration: none; transition: color .15s ease; }}
+.footer-brand {{ display: flex; align-items: center; }}
+.site-footer .brand {{ font-size: 16px; color: var(--ink); }}
+.footer-nav {{
+  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px;
+}}
+.footer-nav a {{ color: var(--muted); text-decoration: none; transition: color .15s ease; }}
+.footer-nav a:hover {{ color: var(--ink); }}
+.footer-meta {{
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px;
+  justify-content: flex-end;
+}}
+.footer-meta .footer-note {{ color: var(--muted); }}
+.footer-meta .footer-link {{ color: var(--muted); text-decoration: none; }}
+.footer-meta .footer-link:hover {{ color: var(--ink); }}
 .site-footer a:hover {{ color: var(--ink); }}
 
 @media (max-width: 620px) {{
@@ -1545,24 +1789,53 @@ def write_all(pipeline: Path, name: str, blocks: list[Block],
     cfg = json.loads(cfg_path.read_text()) if cfg_path.is_file() else {"name": name}
     cfg["name"] = name
     cfg["layout"] = "page"                       # a real website, not a poster
-    cfg["box"] = [0, 0, STAGE_W, STAGE_H]        # full frame: exclude_text protects the type
-    cfg["text"] = text_rects(blocks)
+    # The trace box is the FULL frame.  Cropping it to the hero band looks like an
+    # obvious win (only the hero is displayed) but measures WORSE: the tracer's
+    # luminance band edges are percentiles of the *box's own* histogram
+    # (`mkart.build`: lo,hi = percentile(lum) over the box), so a hero-only box
+    # re-bins the image against the hero's tonal range and loses fidelity.
+    # Measured on a real multi-section upload, masked hero art: 4.14 with the full
+    # box vs 5.37 with the hero box, same 96 bands.  The box stays full;
+    # `hero_band` crops what is *shown*, not what is traced.
+    cfg["box"] = [0, 0, STAGE_W, STAGE_H]
+    text_r = text_rects(blocks)
+    cfg["text"] = text_r
     cfg["blank"] = button_rects(blocks)
     cfg.setdefault("params", {})
-    # Polarity-aware text exclusion.  `text_bg_lum` tells the tracer where the
-    # page background sits, so it drops the bands that are *ink* (away from the
-    # background) instead of assuming light type on a dark ground -- the rule
-    # `text_lum_max` encodes, and which is correct for a dark design but turns a
-    # text rect into a hard hole on a light one.  Only set it for a light
-    # background: on a dark design the legacy rule is already right, and it is
-    # what the regression suite is scored against.
     bg_lum = round(sum(background) / 3.0, 1)
     cfg["params"].update({
         "exclude_text": True, "text_lum_max": 200.0, "cumulative": True,
+        # `bands` is the tracer's parity/payload lever.  The studio scaffold
+        # (newdesign.py) defaults to 48, but measuring the *masked art region* on
+        # a real upload puts the optimum near 96: 48->96 improves it (4.244 ->
+        # 4.144), and beyond 96 it degrades again -- it is a knee, not "more is
+        # better".  Pin it here so the studio does not inherit the scaffold value.
+        "bands": 96, "up": 2,
     })
+    # Text exclusion polarity.
+    #
+    # LIGHT design: `text_bg_lum` (the page ground) makes mkart INPAINT the glyph
+    # ink -- it finds ink by *local contrast*, so it works whatever the type
+    # colour, and it fills the pixels from the surroundings so gradients survive.
+    #
+    # DARK design: the legacy rule drops a band only when the band's median colour
+    # inside the rect exceeds `text_lum_max` (200).  That assumes near-white type.
+    # When the type is COLOURED or dim -- green on near-black, the AntHosting
+    # upload -- the glyph *fringe* sits around lum 100, no band clears 200, and the
+    # headline is traced into the artwork as a ghost behind the real DOM copy.
+    # (The art metric masks the rects, so it cannot see this; the page shows it
+    # because the hero scales the art up with `preserveAspectRatio="slice"`.)
+    # The robust cure is the same inpainting: put the text rects through
+    # `blank_rects` and enable the local-contrast inpaint path with the design's
+    # own ground luminance.  Measured on the AntHosting upload: the traced ghost
+    # disappears completely and the page reads clean.
     if bg_lum >= 128:
         cfg["params"]["text_bg_lum"] = bg_lum
         cfg["params"]["text_lum_margin"] = 45.0
+    else:
+        cfg["params"]["text_bg_lum"] = bg_lum
+        cfg["params"]["text_lum_margin"] = 45.0
+        cfg["blank"] = cfg["blank"] + text_r     # inpaint the text, don't trace it
     cfg_path.write_text(json.dumps(cfg, indent=2) + "\n")
     # Structure is returned, not written into content-*.json: the file stays a
     # clean, editable page definition.

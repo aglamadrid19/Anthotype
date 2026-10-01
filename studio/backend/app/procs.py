@@ -36,10 +36,27 @@ def find_node() -> str:
     raise RuntimeError("no node found on PATH (install node, or set NODE=...)")
 
 
+# Directories that a GUI-launched or minimal-PATH server commonly misses.  A
+# backend started by launchd, an IDE, or a shell without Homebrew on PATH cannot
+# see `potrace`, and the trace stage then dies with `FileNotFoundError: 'potrace'`
+# *after* extraction and generation have already succeeded -- a confusing failure.
+_FALLBACK_BINS = ("/opt/homebrew/bin", "/usr/local/bin")
+
+
 def node_env() -> dict[str, str]:
+    """Env for a pipeline subprocess: node on PATH, plus the usual tool dirs.
+
+    `mkart.py` shells out to `potrace`, so the subprocess PATH must contain the
+    Homebrew/local bin dirs even when the *server's* PATH does not.  Prepending
+    them unconditionally is safe: real entries win (they are prepended in order and
+    deduped), and a missing dir is simply ignored.
+    """
     env = dict(os.environ)
-    node_dir = os.path.dirname(find_node())
-    env["PATH"] = node_dir + os.pathsep + env.get("PATH", "")
+    parts = [os.path.dirname(find_node()), *_FALLBACK_BINS]
+    for extra in (env.get("PATH", "") or "").split(os.pathsep):
+        if extra and extra not in parts:
+            parts.append(extra)
+    env["PATH"] = os.pathsep.join(parts)
     return env
 
 

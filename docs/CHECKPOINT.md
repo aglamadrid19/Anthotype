@@ -1,5 +1,9 @@
 # CHECKPOINT
 
+> **New agent? Read `AGENTS.md` first** — it is the entry point (setup, hard
+> rules, landmines, and what not to re-litigate). This file is the current-state
+> record; come here for depth, not orientation.
+
 State at the end of the session that packaged this repo. Read this first, then
 `README.md` for how the pipeline works and `docs/HANDOFF.md` for how it got here.
 
@@ -269,6 +273,78 @@ guarded (full reasoning in `docs/HANDOFF.md`, Stage 9):
   label lands behind DOM text, which is not known at trace time.
 - **The traced art is flatter than the mockup** — it is posterised into 24-26
   luminance bands; that is the tracer's chosen payload/parity operating point.
+
+## This session's changes (studio trace point + nav links)
+
+Working from the real uploads, not just the fixtures. Two fixes, both guarded by
+the full gate (`qa/verify.sh`, `doctor polarity/fixtures/regress` all pass):
+
+- **The studio was tracing at half resolution.** `newdesign.py` scaffolds
+  `bands=48` and the studio inherited it, while the tuned A/B/C designs use `96`.
+  `generate.write_all` now pins **`bands=96, up=2`** in the per-job config. On the
+  real uploads this improves the masked art mean (u5 4.244 → 4.144; u1/u2/u4 to
+  0.89/1.20/2.33). It is a measured **knee** — 192/384 bands are *worse*, so the
+  studio must not "max out" bands. Studio-only: A/B/C are untouched.
+- **Nav links rendered as buttons.** The vision model tags every header/footer
+  link `cta`, so a nav row ("Home", "Services", "About") came out as a stack of
+  boxed buttons alongside the one real button. `generate._nav_cta_ids` classifies
+  a short `cta` in a row of ≥3 short `cta`s as a nav link — unless it has a solid
+  fill (the real button keeps its fill; links on a busy row come back `outline`).
+  `_cta_html` emits `class="navlink"`; a run of them is wrapped in `.navlink-row`
+  so it flows horizontally. Nav-vs-button needs **both** shape and fill — shape
+  alone misclassifies a short button that sits inside a link row.
+
+**Ruled out by measurement (do not retry):** cropping the trace **box** to the
+hero band. It looks like an obvious win (only the hero is shown) but scores
+worse — the tracer's band edges are percentiles of the *box's own* histogram, so
+a hero-only box re-bins the image against the hero's tones and loses fidelity
+(4.14 full box vs 5.37 hero box, same 96 bands). `hero_band` crops what is
+*shown* (the viewBox), never what is traced. `docs/AGENT-NOTES.md` has the full
+measurement, including a corrected earlier note that got this wrong.
+
+## This session's changes (ghosting fixed for both polarities + hero composition)
+
+The remaining visual defects from the user's report — low-quality extraction,
+lost colour, and stray artwork text — are now fixed, and guarded by the full gate
+(`qa/verify.sh` 2.71/2.76/2.99, `doctor polarity/fixtures/regress` all pass).
+
+- **Dark-design ghosting (AntHosting green-on-black) — FIXED.** The dark-path
+  exclusion drops a band only when its median colour inside the rect exceeds
+  `text_lum_max` (200) — it assumes near-white type, so a colored/dim headline's
+  anti-aliased fringe (lum ~105) survived and was traced as a ghost. The cure is
+  to reuse the **light** path's inpainting: `generate.write_all` now sends the text
+  rects through `blank_rects` and sets `text_bg_lum` for a **dark** background too,
+  so `mkart` finds ink by local contrast and fills it from the surroundings. The
+  traced ghost disappears (u1 art 0.89 → 0.88, page whole 9.19 → 9.05).
+  *Ruled out by measurement:* bigger exclusion rects and a per-rect local-background
+  band-drop both made it worse (the latter drops the ground and keeps the fringe —
+  the classic hole/plate inversion). See `docs/AGENT-NOTES.md`.
+- **Light-design ghosting from colour-blind inpainting — FIXED.** The inpaint
+  marked ink with `|lum - bg_local| > 15`, where `lum` is the **mean of RGB**, so a
+  saturated colour near the ground was invisible to it: the anthotype wordmark's
+  green `type` (mean lum ~119 on a ~220 ground) was traced in full. The test is now
+  a **max-channel RGB distance** against a per-channel local background. The
+  anthotype wordmark region goes to **0 green ghost pixels**; the page whole mean
+  drops 24.13 → 19.16. (A/B/C never enter the inpaint branch, so they are
+  byte-identical.)
+- **Hero illustration labels became DOM copy — FIXED.** On the anthotype upload the
+  model tagged *every* block `part: page`, so the diagram's own captions
+  ("Generate", "Time", "Refine and grow meaning", a device-screen logo, the
+  "1/2/3 Image/Sunlight/Plant Pigment" legend) were emitted as DOM paragraphs in
+  the hero copy column. `_drop_artwork_labels` drops a *short* `other`/`brand` line
+  that overlaps the headline/subhead band or sits clear of the lede's right edge;
+  the exclusion rects still use all blocks, so the labels are still blanked out of
+  the art. Drops 12 labels on anthotype, **0** on Montiva.
+- **Footer and nav composition — FIXED.** A run of nav links at the page bottom
+  tagged `contact` by the model is lifted into the footer (`_lift_bottom_nav`), and
+  the footer renders as a real bar — brand / nav row / meta — instead of a wall of
+  equal-weight links (`_footer_html`).
+
+**Also worth knowing:** every job under `studio/data/jobs/*` was built *before*
+the Sep 30 composition fixes, so those on-disk pages are not what the current
+code produces. Replay a job's cached extraction with
+`STUDIO_FAKE_BLOCKS=<job>/raw-blocks.json python doctor.py run <job>/ref.png`
+(no vision call) to see current output.
 
 ## Landmine: the sync script (removed)
 

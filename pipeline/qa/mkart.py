@@ -234,16 +234,29 @@ def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
     if exclude_text and text_bg_lum is not None and have_ink:
         from scipy import ndimage as _ndi
         win = int(round(21 * up)) | 1
-        bg_local = _ndi.median_filter(lum, size=win)
-        # Threshold on the local contrast, not on distance from the page ground,
-        # so faint small print is found too.  Dilated: the anti-aliased fringe is
-        # the *outline* of every glyph, and leaving it draws a pale ghost even
-        # though the cores are gone.
-        ink = ((np.abs(lum - bg_local) > min(15.0, text_lum_margin)) & in_text
+        # The local background is estimated per CHANNEL and the ink test is on the
+        # max-channel (RGB) distance, not on mean-luminance contrast.
+        #
+        # Mean-luminance is blind to a saturated colour whose luminance sits close
+        # to the ground: the green `type` of a green-on-white wordmark has mean lum
+        # ~119 against a ~220 ground, yet its *glow* is the same green, so the
+        # stroke core reads as background, no ink is marked, and the word is traced
+        # straight into the artwork while its DOM copy sits on top of it.  Colour
+        # distance catches tone and chroma alike.
+        bg_local = np.stack(
+            [_ndi.median_filter(sub[:, :, c], size=win) for c in range(3)], axis=2)
+        dist = np.abs(sub - bg_local).max(axis=2)
+        # Threshold on the local contrast (low), not on distance from the page
+        # ground, so faint small print is found too.  Dilated generously: the
+        # fill's source is the nearest *non-ink* pixel, so any unmarked ring of
+        # anti-aliased glow around a thick glyph becomes the fill colour and draws
+        # the ghost back.  Marking the fringe as ink leaves only true background as
+        # a source.
+        ink = ((dist > min(10.0, text_lum_margin)) & in_text
                if in_text is not None else np.zeros((H2, W2), bool))
         if blank is not None:
             ink = ink | blank
-        ink = _dilate(ink, max(2, int(round(2.0 * up))))
+        ink = _dilate(ink, max(2, int(round(3.0 * up))))
         if ink.any():
             src = sub.reshape(-1, 3)
             # Nearest non-ink pixel, i.e. a background-like colour: the reference's
