@@ -56,9 +56,11 @@ Rules of thumb:
   potrace check and the studio's `node_env()` now share `procs.find_potrace()`.
   After the fix, `verify.sh` scores **2.71 / 2.76 / 2.99 PASS**.
 - **Action:** resolve binaries through `_env` / `app.procs` — never trust the
-  caller's PATH. `pipeline/qa/mkart.py` and `pipeline/qa/potrace_util.py` still
-  call bare `potrace`, so a direct `python qa/mkart.py a` fails in this shell;
-  the studio path works only because `node_env()` prepends Homebrew's bin.
+  caller's PATH. `qa/verify.sh` now resolves node **and** Chrome/sips/sRGB via
+  `_env` (so a Chromium install or non-standard profile works without editing
+  it). `pipeline/qa/mkart.py` and `pipeline/qa/potrace_util.py` called bare
+  `potrace`; both now use `_env.potrace_bin()` and regenerate a/b/c
+  byte-identically.
 
 ## 2026-10-01 — The safety net is one command now (`doctor gate`), and CI runs it
 - **What:** `studio/backend/doctor.py gate` runs the whole net in order —

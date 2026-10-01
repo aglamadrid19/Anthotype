@@ -14,8 +14,14 @@ PY="${PY:-$(python3 -c "import sys;sys.path.insert(0,\"$PWD/qa\");import _env;pr
 # with `command not found` before any design is ever scored.
 NODE_DIR="$("$PY" -c "import sys;sys.path.insert(0,\"$PWD/qa\");import _env;print(_env.NODE_DIR or '')")"
 [[ -n "$NODE_DIR" ]] && export PATH="$NODE_DIR:$PATH"
-CHROME="${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
-SRGB='/System/Library/ColorSync/Profiles/sRGB Profile.icc'
+# Chrome / sips / the sRGB profile are resolved by `_env.py` too, so a Chromium
+# install or a non-standard profile works without editing this script.  Keep the
+# macOS defaults as a last resort.
+CHROME="${CHROME:-$("$PY" -c "import sys;sys.path.insert(0,\"$PWD/qa\");import _env;print(_env.CHROME or '')")}"
+[[ -n "$CHROME" ]] || CHROME='/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'
+SIPS="${SIPS:-$("$PY" -c "import sys;sys.path.insert(0,\"$PWD/qa\");import _env;print(_env.SIPS or 'sips')")}"
+SRGB="${SRGB:-$("$PY" -c "import sys;sys.path.insert(0,\"$PWD/qa\");import _env;print(_env.SRGB or '')")}"
+[[ -n "$SRGB" ]] || SRGB='/System/Library/ColorSync/Profiles/sRGB Profile.icc'
 
 V=("$@")
 [[ ${#V[@]} -eq 0 ]] && V=(${(f)"$(node lib/designs.mjs list)"})
@@ -71,7 +77,7 @@ for v in $V; do
     [[ -s $raw ]] && break
     sleep 1
   done
-  sips --matchTo "$SRGB" "$raw" --out "$raw.s.png" >/dev/null 2>&1
+  "$SIPS" --matchTo "$SRGB" "$raw" --out "$raw.s.png" >/dev/null 2>&1
   # PIL Lanczos, not `sips -z` -- the scaler is ~0.077 of B's old headline
   # number.  See qa/downsample.py for the measured comparison.
   "$PY" qa/downsample.py "$raw.s.png" "/tmp/verify-$v.png" 1024 768

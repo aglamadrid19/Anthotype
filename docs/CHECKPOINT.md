@@ -383,6 +383,9 @@ The verification loop is now one command, and CI runs it.
   prepends `_env.NODE_DIR`, like `build.sh`. `doctor env`'s potrace check and the
   studio's `node_env()` also now share `procs.find_potrace()`, so Homebrew being
   off the base PATH no longer reports a false failure.
+- **`verify.sh` resolves Chrome / sips / sRGB through `_env`** too, not just
+  node, so a Chromium install or a non-standard colour profile needs no edit.
+  Scores unchanged.
 - **`doctor fixtures` now guards the artwork too.** It asserted structure only,
   so a tracer regression on a `page` build (half-resolution bands, baked-in
   text) would not fail it. Each fixture carries a `score_max` — the art-region
