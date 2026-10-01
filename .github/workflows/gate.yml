@@ -1,0 +1,76 @@
+name: gate
+
+# The project's safety net, run for real instead of by memory.
+#
+#   polarity  -- the cheap, model-free guard: the light/dark assumptions and the
+#                generator's structure logic.  Seconds, no potrace/node/Chrome.
+#                This is the required check on every push and PR.
+#   full      -- the whole gate: env -> polarity -> fixtures -> regress, after a
+#                from-source build.  Minutes, so it runs on main and nightly
+#                rather than on every PR.
+#
+# Both call `doctor gate`, so CI and a local run exercise the exact same code.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 7 * * *" # nightly full gate (07:00 UTC)
+
+concurrency:
+  group: gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  polarity:
+    name: polarity (fast, no pipeline)
+    runs-on: macos-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: studio venv
+        run: |
+          python3 -m venv studio/.venv
+          studio/.venv/bin/pip install --quiet --upgrade pip
+          studio/.venv/bin/pip install --quiet -r studio/backend/requirements.txt
+      - name: doctor gate --quick
+        run: studio/.venv/bin/python studio/backend/doctor.py gate --quick
+
+  full:
+    name: full gate (build + fixtures + regress)
+    # The expensive job is not worth it on every PR; main, nightly and manual
+    # runs cover it.
+    if: github.event_name != 'pull_request'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: potrace (the one external binary)
+        run: brew install potrace
+      - name: ensure chrome (used by the fidelity scorer)
+        run: |
+          if [ ! -d "/Applications/Google Chrome.app" ]; then
+            brew install --cask google-chrome
+          fi
+      - name: bootstrap (repo venv + each site's node_modules)
+        run: ./bootstrap.sh
+      - name: studio venv
+        run: |
+          python3 -m venv studio/.venv
+          studio/.venv/bin/pip install --quiet --upgrade pip
+          studio/.venv/bin/pip install --quiet -r studio/backend/requirements.txt
+      - name: build every design end to end
+        run: cd pipeline && ./build.sh
+      - name: doctor gate
+        run: studio/.venv/bin/python studio/backend/doctor.py gate

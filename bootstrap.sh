@@ -27,7 +27,7 @@ if [[ -x "$ROOT/.venv/bin/python" ]] && "$ROOT/.venv/bin/python" -c 'import nump
 else
   python3 -m venv "$ROOT/.venv"
   "$ROOT/.venv/bin/pip" install --quiet --upgrade pip
-  "$ROOT/.venv/bin/pip" install --quiet numpy pillow scipy scikit-image
+  "$ROOT/.venv/bin/pip" install --quiet -r "$ROOT/pipeline/requirements.txt"
   echo "  created: $ROOT/.venv"
 fi
 "$ROOT/.venv/bin/python" -c 'import numpy,PIL,scipy,skimage; print("  numpy",numpy.__version__,"pillow",PIL.__version__)'

@@ -262,6 +262,7 @@ Uploads, polls every stage, and reports the final score and artifacts.
 under the studio venv, so `python3` works too.
 
 ```sh
+studio/.venv/bin/python studio/backend/doctor.py gate       # the whole safety net, in order
 studio/.venv/bin/python studio/backend/doctor.py env        # every dependency + the vision endpoint
 studio/.venv/bin/python studio/backend/doctor.py polarity   # light/dark + structure logic (no model)
 studio/.venv/bin/python studio/backend/doctor.py fixtures   # the light + montiva + antho fixtures, end to end (no model)
@@ -271,6 +272,14 @@ studio/.venv/bin/python studio/backend/doctor.py run x.png  # one design end to 
 studio/.venv/bin/python studio/backend/doctor.py jobs       # list recent jobs
 studio/.venv/bin/python studio/backend/doctor.py job <id>   # full status + logs for one job
 ```
+
+- **`gate`** is the one command to run before committing: it runs `env →
+  polarity → fixtures → regress` and exits non-zero if any stage fails, so it
+  guards both measures at once — the artwork's pixel fidelity (the A/B/C
+  posters, via `regress`) and the website's structure (the fixtures). `--quick`
+  runs `polarity` alone: no potrace, node, Chrome or model, so it is the cheap
+  pre-commit / fast-CI guard. CI (`.github/workflows/gate.yml`) calls the same
+  command.
 
 - **`env`** proves the whole toolchain is present: the repo venv, node/npm,
   potrace, Chrome, the vendored fonts, the pipeline files, and that the vision

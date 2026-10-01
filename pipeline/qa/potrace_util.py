@@ -6,9 +6,12 @@ y-up bitmap space and wraps it in `translate(0,H) scale(1,-1)`; that transform i
 kept verbatim and composed with the caller's own transform via nested SVG <g>
 elements, which is exactly how SVG transform composition is defined.
 """
-import os, re, subprocess, tempfile
+import os, re, subprocess, sys, tempfile
 import numpy as np
 from PIL import Image
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _env  # resolves potrace without trusting PATH
 
 _TR = re.compile(r'<g transform="translate\(([-\d.]+),([-\d.]+)\)\s*scale\(([-\d.]+),([-\d.]+)\)"')
 
@@ -24,7 +27,7 @@ def potrace(mask, turdsize=2, alphamax=1.0, opttol=0.16, upscale=1):
         pbm = os.path.join(td, 'm.pbm')
         im.convert('1').save(pbm)
         svg = os.path.join(td, 'm.svg')
-        subprocess.run(['potrace', pbm, '-s', '-o', svg,
+        subprocess.run([_env.potrace_bin(), pbm, '-s', '-o', svg,
                         '--turdsize', str(turdsize), '--alphamax', str(alphamax),
                         '--opttolerance', str(opttol), '--unit', '1'],
                        capture_output=True, check=True)

@@ -9,6 +9,11 @@
 set -e
 cd "$(dirname "$0")/.."
 PY="${PY:-$(python3 -c "import sys;sys.path.insert(0,\"$PWD/qa\");import _env;print(_env.PY)")}"
+# Resolve node the same way `_env.py` resolves python.  nvm keeps node off a
+# non-interactive PATH (launchd, an agent shell, CI), where a bare `node` fails
+# with `command not found` before any design is ever scored.
+NODE_DIR="$("$PY" -c "import sys;sys.path.insert(0,\"$PWD/qa\");import _env;print(_env.NODE_DIR or '')")"
+[[ -n "$NODE_DIR" ]] && export PATH="$NODE_DIR:$PATH"
 CHROME="${CHROME:-/Applications/Google Chrome.app/Contents/MacOS/Google Chrome}"
 SRGB='/System/Library/ColorSync/Profiles/sRGB Profile.icc'
 

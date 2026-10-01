@@ -17,6 +17,7 @@ from PIL import Image
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import glyph as _glyph
+import _env
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 PIPE = os.path.dirname(HERE)
@@ -125,7 +126,7 @@ def _potrace(mask, turdsize, alphamax, opttol):
         ink = (~mask) * 255
         Image.fromarray(ink.astype(np.uint8), 'L').convert('1').save(pbm)
         svg = os.path.join(td, 'm.svg')
-        subprocess.run(['potrace', pbm, '-s', '-o', svg,
+        subprocess.run([_env.potrace_bin(), pbm, '-s', '-o', svg,
                         '--turdsize', str(turdsize), '--alphamax', str(alphamax),
                         '--opttolerance', str(opttol), '--unit', '1'],
                        capture_output=True, check=True)

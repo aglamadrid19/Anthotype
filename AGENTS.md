@@ -44,12 +44,16 @@ cd pipeline
 ```
 
 Only external binary: **potrace** (`brew install potrace`). Chrome + `sips` are
-used for screenshots. `bootstrap.sh` installs the Python deps (numpy/pillow/
-scipy/scikit-image) into `.venv` and each site's `node_modules`.
+used for screenshots. `bootstrap.sh` installs the Python deps (pinned in
+`pipeline/requirements.txt`) into `.venv` and each site's `node_modules`.
 
-**After ANY change, run `./qa/verify.sh` and confirm A/B/C still PASS.** That is
-the safety net. If you touched the tracing or a page shell, also confirm the
-traced SVGs regenerate byte-identically (`python qa/mkart.py a` is deterministic).
+**After ANY change, run the gate:**
+`studio/.venv/bin/python studio/backend/doctor.py gate` runs `env → polarity →
+fixtures → regress` and fails if any stage does (`regress` *is* `./qa/verify.sh`,
+so A/B/C PASS is covered). `--quick` runs `polarity` alone — no potrace, node,
+Chrome or model. CI (`.github/workflows/gate.yml`) runs the same command. If you
+touched the tracing or a page shell, also confirm the traced SVGs regenerate
+byte-identically (`python qa/mkart.py a` is deterministic).
 
 ---
 

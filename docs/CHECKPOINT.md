@@ -361,6 +361,32 @@ of the three sites plus four extra assets (`anthosting-teaser-v{1,2}.png`,
 the pipeline referenced them. **The repo was not affected** and re-verifies
 byte-for-byte from a fresh clone.
 
+## This session's changes (the gate + CI)
+
+The verification loop is now one command, and CI runs it.
+
+- **`doctor gate`** — runs `env → polarity → fixtures → regress` in order and
+  fails if any stage fails. `regress` is `qa/verify.sh`, so both measures are
+  covered: the artwork's pixel fidelity (A/B/C) and the website's structure (the
+  fixtures). `--quick` runs `polarity` alone — no potrace, node, Chrome or model.
+- **`.github/workflows/gate.yml`** — `gate --quick` on every push and PR (fast,
+  no pipeline); the full `gate` on `main` and nightly. `macos-latest` because
+  `verify.sh` needs Chrome + `sips`.
+- **Python deps pinned** — `pipeline/requirements.txt` (numpy/pillow/scipy/
+  scikit-image) and `studio/backend/requirements.txt`. The A/B/C scores are a
+  numeric gate computed through those libraries, so an unpinned `pip install`
+  could move a score with no code change. `bootstrap.sh` installs from the pinned
+  file.
+- **`verify.sh` resolves node itself.** It called bare `node`, which a
+  non-interactive shell (an agent, launchd, CI) does not have on PATH — nvm keeps
+  it out — so `doctor gate`'s `regress` stage failed with zero scores. It now
+  prepends `_env.NODE_DIR`, like `build.sh`. `doctor env`'s potrace check and the
+  studio's `node_env()` also now share `procs.find_potrace()`, so Homebrew being
+  off the base PATH no longer reports a false failure.
+
+No pipeline, tracer or page code changed; the scores are unchanged
+(`qa/verify.sh` → 2.71 / 2.76 / 2.99 PASS).
+
 ## Environment
 
 `brew install potrace` — the only required external binary. `bootstrap.sh` then

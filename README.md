@@ -119,7 +119,18 @@ cd pipeline
 ```
 
 Requires `brew install potrace` — the only external binary. Node and Python
-deps are installed by `bootstrap.sh`.
+deps are installed by `bootstrap.sh` (the Python deps are pinned in
+`pipeline/requirements.txt`).
+
+Before committing anything, run the gate — one command that covers both measures:
+
+```sh
+studio/.venv/bin/python studio/backend/doctor.py gate      # env -> polarity -> fixtures -> regress
+studio/.venv/bin/python studio/backend/doctor.py gate --quick   # polarity alone: no pipeline, no model
+```
+
+CI (`.github/workflows/gate.yml`) runs `gate --quick` on every push and PR, and
+the full `gate` on `main` and nightly.
 
 ## Studio (upload → site)
 
@@ -201,10 +212,12 @@ pipeline/
   qa/netcheck.py       assert the page fetches nothing over the network
   site-template/       what newdesign.py stamps out for a new design
   fonts/               vendored Inter (inlined at build time)
+  requirements.txt     pinned Python deps for the venv bootstrap.sh creates
   {a,b,c}.svg          the traced artwork (committed — regenerating needs potrace)
   gen-page.mjs         compose the self-contained page (page or poster layout)
   to-astro.mjs         copy that page into the design's Astro project
   build.sh             build every configured design end to end
+.github/workflows/     gate.yml: the safety net as CI (polarity per PR, full gate on main)
 content.json           the shared text layer for the three shipped examples
 content-<n>.json       a new design's own page definition (isolated from the above)
 sites/variant-{a,b,c}/ the three worked examples (the tracer's regression suite)
@@ -233,6 +246,11 @@ docs/HANDOFF.md        full engineering history: what was tried, what worked,
 - **Only the vendored font weights are asked for.** The generated stylesheet uses
   400/500/600 because those are the weights in `pipeline/fonts/`; a page that
   requested 700 would silently get a synthetic bold.
+- **One gate, and CI runs it.** `doctor gate` runs `env → polarity → fixtures →
+  regress` and fails if any stage does, so both measures are guarded by one
+  command; `.github/workflows/gate.yml` runs it. The Python deps are pinned
+  (`pipeline/requirements.txt`, `studio/backend/requirements.txt`) because the
+  scores are a numeric gate — an unpinned `pip install` could move them.
 
 ## Known gaps
 

@@ -37,6 +37,40 @@ Rules of thumb:
 
 ## Notes
 
+## 2026-10-01 — A non-interactive shell has no node/Homebrew on PATH
+- **What:** `doctor gate`'s `regress` stage failed with
+  `./qa/verify.sh:16: command not found: node`, so the whole gate reported FAIL
+  with no scores. `verify.sh` called bare `node` (nvm keeps node off a
+  non-interactive PATH — an agent/launchd/CI shell), while `build.sh` and
+  `bootstrap.sh` resolve node and prepend it. The same class of bug bites
+  potrace: it lives at `/opt/homebrew/bin/potrace` with Homebrew off the base
+  PATH, so bare `potrace` fails.
+- **Why / evidence:** `cd pipeline && ./qa/verify.sh` → `command not found: node`
+  (rc 127) even though `doctor env` found node via `_env.NODE`. Fixed: `verify.sh`
+  now resolves `_env.NODE_DIR` and prepends it (like `build.sh`); `doctor env`'s
+  potrace check and the studio's `node_env()` now share `procs.find_potrace()`.
+  After the fix, `verify.sh` scores **2.71 / 2.76 / 2.99 PASS**.
+- **Action:** resolve binaries through `_env` / `app.procs` — never trust the
+  caller's PATH. `pipeline/qa/mkart.py` and `pipeline/qa/potrace_util.py` still
+  call bare `potrace`, so a direct `python qa/mkart.py a` fails in this shell;
+  the studio path works only because `node_env()` prepends Homebrew's bin.
+
+## 2026-10-01 — The safety net is one command now (`doctor gate`), and CI runs it
+- **What:** `studio/backend/doctor.py gate` runs the whole net in order —
+  `env → polarity → fixtures → regress` — and exits non-zero if any stage fails.
+  `--quick` runs `polarity` alone (no potrace, node, Chrome or model). `regress`
+  *is* `qa/verify.sh`, so A/B/C PASS is covered. `.github/workflows/gate.yml`
+  runs `gate --quick` on every push/PR and the full `gate` on `main` + nightly.
+- **Why / evidence:** the gate was spread across `qa/verify.sh` + three `doctor`
+  subcommands and nothing ran them automatically (`doctor.py`'s docstring already
+  claimed "CI-able", but there was no `.github/`). `gate --quick` here passes in
+  seconds; `gate` correctly reports `env FAIL` on this machine because `potrace`
+  is not on PATH (the committed `{a,b,c}.svg` mean `build.sh` does not need it).
+- **Action:** run `doctor gate` before committing; if a stage is irrelevant to a
+  change, say which and why rather than skipping it silently. Python deps are now
+  **pinned** (`pipeline/requirements.txt`, `studio/backend/requirements.txt`) —
+  the scores are a numeric gate, so bump deliberately and re-record the numbers.
+
 ## 2026-10-01 — Inpainting must detect ink by COLOUR, not mean-luminance
 - **What:** `mkart.build`'s light-design inpaint marked ink with
   `|lum - bg_local| > 15`, where `lum` is the **mean of RGB**. A saturated colour

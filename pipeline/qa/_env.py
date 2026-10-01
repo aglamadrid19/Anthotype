@@ -87,6 +87,29 @@ SIPS = os.environ.get('SIPS') or shutil.which('sips') or '/usr/bin/sips'
 PYTHON = PY
 
 
+# ---- potrace --------------------------------------------------------------
+# Homebrew's bin is not on the PATH of a GUI-launched or minimal shell (an
+# agent, launchd, CI), but `mkart.py` shells out to potrace -- so resolve it the
+# way CHROME is resolved instead of trusting `shutil.which('potrace')`.
+_EXTRA_BINS = ('/opt/homebrew/bin', '/usr/local/bin')
+
+
+def potrace_bin():
+    """argv[0] for potrace, or the bare name if nothing better is found.
+
+    Never raises: a genuinely absent binary should fail at the subprocess call
+    with potrace's own error, not here.
+    """
+    found = os.environ.get('POTRACE') or shutil.which('potrace')
+    if found:
+        return found
+    for d in _EXTRA_BINS:
+        cand = os.path.join(d, 'potrace')
+        if os.path.isfile(cand):
+            return cand
+    return 'potrace'
+
+
 def design_names():
     """Every configured design, from pipeline/designs/*.json (sorted)."""
     d = os.path.join(PIPE, 'designs')

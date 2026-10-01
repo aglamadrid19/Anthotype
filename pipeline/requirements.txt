@@ -1,0 +1,12 @@
+# Python deps for the pipeline and its QA tools, installed into .venv by
+# bootstrap.sh.
+#
+# PINNED on purpose. The A/B/C scores are a numeric gate computed through
+# numpy/scipy/scikit-image (band percentiles, the Lanczos resize, the diff), so
+# an unpinned `pip install` a year from now could move a score with no code
+# change. Bump deliberately, then re-run `qa/verify.sh` (or `doctor gate`) and
+# record the new numbers in docs/STATE.json.
+numpy==2.5.3
+pillow==12.3.0
+scipy==1.18.1
+scikit-image==0.26.0

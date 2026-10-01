@@ -16,6 +16,11 @@ When something looks wrong, start here.
     doctor light [--keep]   the light fixture alone (kept for the README)
     doctor regress          prove the shipped pipeline is intact: run the repo's
                             own qa/verify.sh and report A/B/C PASS/FAIL
+    doctor gate             run the whole safety net in order -- env -> polarity
+                            -> fixtures -> regress -- and fail if any stage fails.
+                            This is the one command to run before committing and
+                            the one CI runs.  --quick runs polarity alone (fast,
+                            no pipeline, no model).
     doctor run [png]        run one design end to end, in-process, printing every
                             stage and its timing (no HTTP, no queue)
     doctor job <id>         inspect a studio job: status, art fidelity, structure,
@@ -125,10 +130,10 @@ def _check_node() -> None:
 
 
 def _check_potrace() -> None:
-    import shutil
-    pt = shutil.which("potrace")
+    from app.procs import find_potrace
+    pt = find_potrace()
     if not pt:
-        _line(BAD, "potrace", "not on PATH -- brew install potrace")
+        _line(BAD, "potrace", "not found on PATH or in Homebrew's bin -- brew install potrace")
         return
     ver = subprocess.run([pt, "--version"], capture_output=True, text=True)
     _line(OK, "potrace", f"{pt} ({(ver.stdout or ver.stderr).strip().splitlines()[0]})")
@@ -727,6 +732,69 @@ def cmd_regress(args: list[str]) -> int:
 
 
 # --------------------------------------------------------------------------
+# gate: the whole safety net in order, as one command
+# --------------------------------------------------------------------------
+def cmd_gate(args: list[str]) -> int:
+    """Run the project's whole safety net, in order, as one command.
+
+    The north star has two measures -- the artwork's pixel fidelity (the A/B/C
+    posters, via `regress`) and the website's structure (the studio fixtures,
+    via `fixtures`) -- and both are guarded here, so a change is validated by
+    one command instead of several.  The exit code is non-zero if any stage
+    fails, so this is exactly what CI runs.
+
+        doctor gate                 env -> polarity -> fixtures -> regress
+        doctor gate --quick         polarity alone (fast, no pipeline, no model)
+        doctor gate --no-env        skip the toolchain check
+        doctor gate --no-fixtures   skip the end-to-end fixture builds
+        doctor gate --no-regress    skip the A/B/C poster scoring
+        doctor gate --keep          keep fixture job dirs for inspection
+
+    `--quick` is the guard a fast CI job (or a pre-commit hook) can afford: it
+    needs no potrace, no node, no Chrome and no vision model.
+    """
+    global _failures
+
+    # `--quick` = the cheap, model-free guard: polarity alone.
+    if "--quick" in args:
+        args = [*args, "--no-env", "--no-fixtures", "--no-regress"]
+
+    plan = []
+    if "--no-env" not in args:
+        plan.append(("env", cmd_env, []))
+    if "--no-polarity" not in args:
+        plan.append(("polarity", cmd_polarity, []))
+    if "--no-fixtures" not in args:
+        plan.append(("fixtures", cmd_fixtures, ["--keep"] if "--keep" in args else []))
+    if "--no-regress" not in args:
+        plan.append(("regress", cmd_regress, []))
+    if not plan:
+        print("nothing to do: every stage was disabled")
+        return 2
+
+    print(f"anthotype gate: {' -> '.join(name for name, _, _ in plan)}\n")
+    results = []
+    for name, fn, fargs in plan:
+        print("=" * 68)
+        print(f"stage: {name}")
+        print("=" * 68)
+        _failures = 0  # each stage owns its failure count
+        results.append((name, fn(fargs)))
+        print()
+
+    failed = [name for name, rc in results if rc != 0]
+    print("=" * 68)
+    for name, rc in results:
+        print(f"  [{OK if rc == 0 else BAD}] {name}")
+    if failed:
+        print(f"\ngate FAIL: {len(failed)}/{len(results)} stage(s) failed "
+              f"({', '.join(failed)})")
+        return 1
+    print(f"\ngate PASS: {len(results)}/{len(results)} stages")
+    return 0
+
+
+# --------------------------------------------------------------------------
 # run: one design end to end, in-process, with timings
 # --------------------------------------------------------------------------
 def cmd_run(args: list[str]) -> int:
@@ -824,6 +892,7 @@ COMMANDS = {
     "fixtures": cmd_fixtures,
     "light": cmd_light,
     "regress": cmd_regress,
+    "gate": cmd_gate,
     "run": cmd_run,
     "job": cmd_job,
     "jobs": cmd_jobs,
