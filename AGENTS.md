@@ -110,9 +110,9 @@ meaning), and only the vendored font weights 400/500/600 are ever requested.
   whole-stage pixels; `layout: "page"` — or any markup containing `<!--ART-->` —
   builds the responsive website and splices the art at that placeholder.
   **Removing the placeholder silently degrades a page build to a poster.**
-- **`doctor fixtures` asserts structure, not pixel parity.** Comparing studio
-  fixture scores to A/B/C's is meaningless — a studio page reflows and is
-  authored in its own type.
+- **`doctor fixtures` guards structure and a per-fixture art bound, not pixel
+  parity.** Comparing studio fixture scores to A/B/C's is meaningless — a studio
+  page reflows and is authored in its own type.
 
 Prefer dedicated tools over shell; this shell rejects `rm -f` in some contexts
 (use `python3 -c "import os;os.remove(...)"`). See `docs/HANDOFF.md` §5 for the

@@ -412,6 +412,7 @@
  "verified_from_fresh_clone": true,
  "verification": {
   "gate": "studio/backend/doctor.py gate -- runs env -> polarity -> fixtures -> regress in order, fails if any stage fails. regress IS qa/verify.sh, so it covers both measures (A/B/C pixel fidelity + the fixtures' structure). --quick runs polarity alone (no potrace/node/Chrome/model).",
+  "fixtures": "doctor fixtures replays saved extractions (no model) and guards BOTH measures: structure (app.structure.inspect) AND the artwork's pixel fidelity via a per-fixture score_max on the art-region mean (light/antho 3.0, montiva 5.0; negative-tested). Fixture scores are not comparable between fixtures or to A/B/C.",
   "ci": ".github/workflows/gate.yml -- gate --quick on every push/PR (macos-latest, seconds, no pipeline); the full gate on main and nightly after a from-source build.",
   "pinned_python": "pipeline/requirements.txt and studio/backend/requirements.txt are PINNED on purpose: the scores are a numeric gate computed through numpy/scipy/scikit-image/PIL, so an unpinned pip install could move a score with no code change. Bump deliberately and re-record the numbers."
  }

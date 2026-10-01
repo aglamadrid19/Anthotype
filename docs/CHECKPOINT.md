@@ -383,6 +383,12 @@ The verification loop is now one command, and CI runs it.
   prepends `_env.NODE_DIR`, like `build.sh`. `doctor env`'s potrace check and the
   studio's `node_env()` also now share `procs.find_potrace()`, so Homebrew being
   off the base PATH no longer reports a false failure.
+- **`doctor fixtures` now guards the artwork too.** It asserted structure only,
+  so a tracer regression on a `page` build (half-resolution bands, baked-in
+  text) would not fail it. Each fixture carries a `score_max` — the art-region
+  mean with headroom (light/antho 3.0, montiva 5.0) — and the fixture fails when
+  the traced render exceeds it. Negative-tested: forcing `light` to 0.1 yields
+  `art region mean 2.39 >= max 0.1` and a non-zero exit.
 
 No pipeline, tracer or page code changed; the scores are unchanged
 (`qa/verify.sh` → 2.71 / 2.76 / 2.99 PASS).

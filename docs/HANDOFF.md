@@ -611,11 +611,13 @@ reference's typeface, and is judged on structure and on the artwork's fidelity.
     responsive website and splices the artwork at that placeholder. Removing the
     placeholder silently degrades a page build to a poster. The studio always
     writes `layout: "page"`.
-15. **`doctor fixtures` asserts structure, not pixel parity.** The studio's
-    fixtures (`light`/`montiva`/`antho`) are replayed through the whole local
-    pipeline with no vision model; they check landmarks/sections/headings/links
-    and that the artwork survives. Comparing their scores to A/B/C's is
-    meaningless — a studio page reflows and is authored in its own type.
+15. **`doctor fixtures` guards structure and a per-fixture art bound, not pixel
+    parity.** The studio's fixtures (`light`/`montiva`/`antho`) are replayed
+    through the whole local pipeline with no vision model; they check
+    landmarks/sections/headings/links, that the artwork survives, and that its
+    art-region mean stays under a per-fixture `score_max`. Comparing their
+    scores to A/B/C's is meaningless — a studio page reflows and is authored in
+    its own type.
 
 ---
 

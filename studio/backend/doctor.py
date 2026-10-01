@@ -10,7 +10,8 @@ When something looks wrong, start here.
                             logic: grouping, header/hero/footer naming, a clean
                             generated page, palette polarity (no model, no pipeline)
     doctor fixtures [name]  build every saved extraction end to end and assert its
-                            STRUCTURE and that the art survives (no vision model):
+                            STRUCTURE and its art-region pixel fidelity (a
+                            per-fixture bound; no vision model):
                             light (hero-only), montiva (multi-section), antho
                             (photorealistic hero)
     doctor light [--keep]   the light fixture alone (kept for the README)
@@ -556,27 +557,33 @@ def cmd_polarity(_args: list[str]) -> int:
 # These are no longer scored on whole-page pixels: the studio now builds a real
 # website whose copy is authored in the site's own type, so pixel parity with
 # the reference's typeface is deliberately not the target.  Each fixture instead
-# asserts the page's STRUCTURE (sections/hero/headings/links as reported by
-# `app.structure.inspect`) plus the artwork surviving into the page.
+# guards the NORTH STAR's two measures: the page's STRUCTURE (sections/hero/
+# headings/links/flow, via `app.structure.inspect`) and the ARTWORK's pixel
+# fidelity (the art-region mean, via `score_max`).
 #
 # `expect` is a list of substring requirements on the structure summary; a
-# fixture may also pin counts with `page` / `artwork`.
+# fixture may also pin counts with `page` / `artwork`.  `score_max` bounds the
+# art-region mean with a little headroom -- it is stable because a fixture
+# replays a saved extraction with no vision model.  The numbers are NOT
+# comparable between fixtures (each masks its own region), so each is pinned
+# separately; a tracer regression (half-resolution bands, baked-in text) raises
+# one and fails the fixture.
 FIXTURES: dict[str, dict] = {
     "light": dict(
         ref="light-ref.png", blocks="light-blocks.json",
         note="synthetic light ground: a hero-only page (structure + art)",
-        expect=["hero"], page=8, artwork=0,
+        expect=["hero"], page=8, artwork=0, score_max=3.0,
     ),
     "montiva": dict(
         ref="montiva-ref.png", blocks="montiva-blocks.json",
         note="real multi-section landing page (header/nav/hero/sections/footer)",
         expect=["header", "nav", "main", "section", "footer",
-                "testimonials", "contact"],
+                "testimonials", "contact"], score_max=5.0,
     ),
     "antho": dict(
         ref="antho-ref.png", blocks="antho-blocks.json",
         note="real photorealistic hero: a hero-only page",
-        expect=["header", "hero"], page=8,
+        expect=["header", "hero"], page=8, score_max=3.0,
     ),
 }
 LIGHT_FIXTURE = STUDIO_DIR / "fixtures"
@@ -669,12 +676,21 @@ def _run_fixture(name: str, keep: bool = False) -> int:
     print(f"landmarks: {', '.join(info.get('landmarks') or []) or '(none)'}")
     print(f"headings : {info.get('headings')}")
     print(f"art      : {'traced SVG present' if info.get('has_art') else 'MISSING'}")
-    print(f"fidelity : art region mean "
-          f"{j.score:.2f}" if j.score is not None else "fidelity : n/a")
+    bound = spec.get("score_max")
+    if j.score is None:
+        print("fidelity : n/a")
+    else:
+        print(f"fidelity : art region mean {j.score:.2f}"
+              + (f"  (max {bound:g})" if bound is not None else ""))
     print(f"blocks   : {len(page)} page, {len(art)} artwork left to the tracer")
     print(f"job dir  : {j.dir}")
 
     failed = _fixture_ok(spec, info, page, art) + issues
+    if bound is not None:
+        if j.score is None:
+            failed.append("art fidelity not measured (no score)")
+        elif j.score >= bound:
+            failed.append(f"art region mean {j.score:.2f} >= max {bound:g}")
     ok = j.status == "done" and not failed
 
     if not keep:

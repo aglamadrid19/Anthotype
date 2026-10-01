@@ -299,7 +299,11 @@ studio/.venv/bin/python studio/backend/doctor.py job <id>   # full status + logs
 - **`fixtures`** is the end-to-end guard: each fixture is a *saved extraction*
   replayed against its reference through the whole local pipeline (structure,
   `mkart` tracing, Astro build, art-fidelity scoring), so it is deterministic,
-  free, and needs no vision model:
+  free, and needs no vision model.  It guards **both measures**: the page's
+  structure and the artwork's pixel fidelity (`score_max`, the art-region mean
+  with a little headroom — a tracer regression such as half-resolution bands or
+  baked-in text raises it).  The scores are not comparable *between* fixtures;
+  each pins its own.
   - `light` — the synthetic light design: a hero-only page; asserts the structure
     and that all 8 page blocks are emitted as DOM while every `artwork` block is
     left to the tracer.
