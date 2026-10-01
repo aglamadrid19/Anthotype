@@ -157,10 +157,11 @@ TEXT = {
 def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
           minpx=None, out=None, box=None, exclude_text=False,
           text_lum_max=70.0, cumulative=True, ref=None, text_rects=None,
-          text_bg_lum=None, text_lum_margin=45.0):
+          text_bg_lum=None, text_lum_margin=45.0, blank_rects=None):
     cfg = design(v)
     ref = ref or cfg.get('ref') or f'{HERE}/ref-{v}.png'
     text_rects = cfg.get('text', []) if text_rects is None else text_rects
+    blank_rects = cfg.get('blank', []) if blank_rects is None else blank_rects
     trace_box = box or cfg.get('box') or BOX.get(v)
     if not trace_box:
         raise SystemExit(f"no trace box for design {v!r}: set 'box' in "
@@ -191,6 +192,20 @@ def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
             if ax1 > ax0 and ay1 > ay0:
                 in_text[ay0:ay1, ax0:ax1] = True
 
+    # `blank` rects are removed wholesale, not just their ink.  A CTA button is
+    # a solid plate: dropping the label's bands leaves the plate, which then sits
+    # behind the DOM button as a ghost of itself (a pale pill on the anthotype
+    # reference).  A button is chrome, never artwork, so the whole rectangle is
+    # replaced by the pixels around it.
+    blank = None
+    if exclude_text and blank_rects:
+        blank = np.zeros((H2, W2), bool)
+        for (bx0, by0, bx1, by1) in blank_rects:
+            ax0, ay0 = max(0, bx0-x0)*up, max(0, by0-y0)*up
+            ax1, ay1 = (min(x1, bx1)-x0)*up, (min(y1, by1)-y0)*up
+            if ax1 > ax0 and ay1 > ay0:
+                blank[ay0:ay1, ax0:ax1] = True
+
     # Light-background designs: inpaint the glyph ink out of the reference before
     # tracing, rather than merely dropping some luminance bands.
     #
@@ -215,7 +230,8 @@ def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
     # Gated on `text_bg_lum`, which the studio sets only for a light background, so
     # the three shipped dark designs keep the legacy path byte-for-byte.
     inpainted = False
-    if exclude_text and in_text is not None and text_bg_lum is not None and in_text.any():
+    have_ink = (in_text is not None and in_text.any()) or (blank is not None and blank.any())
+    if exclude_text and text_bg_lum is not None and have_ink:
         from scipy import ndimage as _ndi
         win = int(round(21 * up)) | 1
         bg_local = _ndi.median_filter(lum, size=win)
@@ -223,7 +239,10 @@ def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
         # so faint small print is found too.  Dilated: the anti-aliased fringe is
         # the *outline* of every glyph, and leaving it draws a pale ghost even
         # though the cores are gone.
-        ink = (np.abs(lum - bg_local) > min(15.0, text_lum_margin)) & in_text
+        ink = ((np.abs(lum - bg_local) > min(15.0, text_lum_margin)) & in_text
+               if in_text is not None else np.zeros((H2, W2), bool))
+        if blank is not None:
+            ink = ink | blank
         ink = _dilate(ink, max(2, int(round(2.0 * up))))
         if ink.any():
             src = sub.reshape(-1, 3)

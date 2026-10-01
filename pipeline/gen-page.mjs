@@ -95,9 +95,23 @@ ${artCss}
 </html>`;
 } else {
   // A real website: the traced art is the hero backdrop, content flows.
-  // `slice` makes the art cover the hero box instead of letterboxing inside it;
-  // the scrim in the page CSS keeps the copy legible over it.
-  const heroArt = artSvg.replace('<svg ', '<svg preserveAspectRatio="xMidYMin slice" ');
+  //
+  // The traced SVG is the *whole* mockup, so splicing it whole shows the section
+  // below the hero in the backdrop -- the next section's cards and icons read as
+  // clutter behind the copy.  `content.hero_band` is the vertical slice that is
+  // actually the hero, so the viewBox is narrowed to it.  `slice` then makes the
+  // band cover the hero box instead of letterboxing inside it, and the scrim in
+  // the page CSS keeps the copy legible over it.
+  const band = Array.isArray(content.hero_band) ? content.hero_band : null;
+  let heroArt = artSvg;
+  if (band && band[1] > band[0]) {
+    const [y0, y1] = band;
+    heroArt = artSvg
+      .replace(/viewBox="[^"]*"/, `viewBox="0 ${y0} 1024 ${y1 - y0}"`)
+      .replace('<svg ', '<svg preserveAspectRatio="xMidYMid slice" ');
+  } else {
+    heroArt = artSvg.replace('<svg ', '<svg preserveAspectRatio="xMidYMin slice" ');
+  }
   const markup = content.markup.replace('<!--ART-->', heroArt);
   html = `${head}
   ${markup}

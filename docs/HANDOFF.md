@@ -274,6 +274,81 @@ The lesson is about *how* the defect was found: the aggregate art-fidelity score
 was healthy and the structure report was clean, so nothing in the test suite
 could see it.  It took a model looking at the picture.
 
+### Stage 9 — the same critic, run again (the remaining fidelity defects)
+
+Stage 8's fixes were verified by rebuilding both uploads and putting them back
+in front of the same vision model.  The ghost was gone; what was left was a
+ranked list of composition defects.  Each one below was reproduced, fixed, and
+guarded:
+
+1. **The hero backdrop showed the section below the hero.**  The traced SVG is
+   the whole mockup, so splicing it whole put the *next* section's cards, icons
+   and eyebrow behind the hero copy — they read as clutter, not as a backdrop.
+   `generate.hero_band()` now computes the vertical slice that is actually the
+   hero (mockup top down to where the next section starts) and writes it into
+   `content.hero_band`; `gen-page.mjs` narrows the spliced SVG's `viewBox` to
+   it.  The SVG file itself is untouched, so the art metric still renders the
+   full artwork.
+2. **The reference's own CTA button was traced in.**  The exclusion rects
+   covered the button, but a light-ground design *inpaints* the glyph ink rather
+   than dropping luminance bands — and a button is a solid plate, so only its
+   label went and the plate stayed, ghosting under the DOM button (the critic
+   called it "an empty ghost button").  `mkart.build()` gained `blank_rects`:
+   rectangles removed *wholesale*, populated from `generate.button_rects()`.  A
+   button is chrome, never artwork.  This is exclusion policy, not tracing math;
+   `doctor regress` confirms A/B/C are untouched.
+3. **Header layout.**  One flex row of everything (brand, links, phone, button)
+   put the nav hard against the right edge.  `_header_html` now emits three
+   groups — brand, nav, actions — and the CSS is a 3-column grid, so the brand
+   is left, the nav centred and the phone + button right.  The phone is
+   recognised by shape (`_is_phone`), not by the model's role, and gets a `tel:`
+   link.
+4. **Cards were flat grey panels on grey.**  `palette()` gained `card` (mixed
+   toward white on a light ground), `tint` (the alternating band) and a `shadow`
+   string; cards are near-white with a soft shadow on a distinctly tinted band,
+   and are denser (14px radius, 240px min column, ~20px padding).
+5. **Hero order.**  Buttons were appended after all the copy, so a fine-print
+   line drawn *under* the button in the reference ("Open source · Community
+   driven · Powered by Antseed") became a caption *above* it.  `_hero_html` now
+   emits every row where it actually sits.  Side-by-side buttons are ordered
+   left-to-right by `_row_order` — reading order sorts by top edge, and two
+   buttons drawn beside each other are rarely aligned to the pixel, so the pair
+   came out swapped.
+6. **A hero's action/trust row became a stray section.**  When the model
+   declares no sections, `_infer_sections` clustered the hero's buttons and
+   trust badges as their own headless group and named it `features`, shipping
+   three badges as cards.  A headless group directly after the hero that holds a
+   CTA (or only `other`/`cta`) now joins the hero, and back-to-back same-name
+   groups merge.
+7. **Contact panels were crammed into the title row.**  A short block beside the
+   section title was hoisted to the title row as a "section action" — but a
+   contact panel's "Get in Touch" heading has its own body under it.  A block
+   with copy below it in its own column now stays in that column
+   (`_has_below`).
+8. **Badges and two-line buttons were role-dependent.**  The same reference came
+   back with the trust badges as `other` on one run and `tagline` on the next,
+   and the two-line outline button ("Call Now" over "(801) 810-4242") as one
+   string.  Badges are now detected by shape, and a button label with a trailing
+   phone number renders as two lines (`.cta-label` / `.cta-sub`).
+
+**What is still not fixable, and why** — so it is not re-litigated:
+
+- **Icons are missing.**  The mockup's card icons, nav phone glyph, star rows and
+  map pin are pixels in the artwork, not DOM.  The tracer can recover them as
+  art but there is nowhere to put them in a flowing page: a card's icon has no
+  fixed position once the layout reflows.  Recovering icons as real assets is a
+  separate feature (crop the icon regions, emit `<img>`/inline SVG per card).
+- **Artwork-internal labels are blanked.**  Stage 8 made every text block an
+  exclusion rect, which is right for the page's own copy but also removes the
+  illustration's *own* labels (the anthotype step captions).  They do not
+  duplicate DOM copy, so they could in principle be kept — but keeping them
+  re-introduces ghosting wherever the traced label happens to land behind DOM
+  text, and the DOM layout is not known at trace time.  The trade is deliberate:
+  a backdrop is decoration, and text baked into a backdrop is a defect.
+- **The traced art is flatter than the mockup.**  It is posterised into 24-26
+  luminance bands, so photos lose depth.  That is the tracer's operating point
+  (`up`/`bands`), chosen for payload.
+
 ---
 
 ## 3. How to reproduce, verify, and change the art

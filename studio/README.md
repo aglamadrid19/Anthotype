@@ -149,16 +149,30 @@ an "OUR SERVICES" grid and a "WHY CHOOSE US" grid names both `features`), and
 each band renders as its own eyebrow + title row + cards.
 
 `build_page_css` emits a designed stylesheet, not a reset: a role-based type
-scale, a sticky header, a hero with the artwork under a directional scrim, a
-section title row with action links, auto-fit card grids with hover, plain
-column bands, and alternating section surfaces. `palette()` samples the
-reference's colours but **enforces contrast**, because a design's most prominent
-headline can be a dark navy that only worked over a light hero panel — using it
-as body ink on a dark page makes the whole page unreadable — and it prefers the
-CTA's fill as the accent so buttons and highlights agree.
+scale, a sticky header (brand left, nav centred, phone + button right — three
+grid groups, not one flex row), a hero with the artwork under a directional
+scrim, a section title row with action links, auto-fit card grids with hover and
+a soft shadow (`palette()` returns `card`/`tint`/`shadow` so a card is near-white
+on a tinted band, not a grey panel on grey), plain column bands, and alternating
+section surfaces. `palette()` samples the reference's colours but **enforces
+contrast**, because a design's most prominent headline can be a dark navy that
+only worked over a light hero panel — using it as body ink on a dark page makes
+the whole page unreadable — and it prefers the CTA's fill as the accent so
+buttons and highlights agree.
+
+Rows are emitted where they actually sit: buttons are not appended after the
+copy (a fine-print line drawn under them in the reference would become a caption
+above them), and buttons sharing a row are ordered left-to-right rather than by
+top edge, which swaps a pair drawn two pixels apart.
 
 The traced artwork is the hero's full-bleed decorative backdrop
-(`aria-hidden`, `preserveAspectRatio="xMidYMin slice"`); content flows over it.
+(`aria-hidden`, `preserveAspectRatio="xMidYMid slice"`), and it is **cropped to
+the hero's own band**: the traced SVG is the whole mockup, so splicing it whole
+put the next section's cards and icons behind the hero copy, where they read as
+clutter.  `generate.hero_band()` computes the mockup's hero slice and
+`gen-page.mjs` narrows the *spliced* SVG's `viewBox` to it — the SVG file itself
+is untouched, so the art metric still renders the full artwork.  Content flows
+over it.
 
 ### The artwork must not contain a ghost of the copy
 
@@ -187,6 +201,13 @@ byte-for-byte).  Two details matter:
   punches the footer's own plate out and leaves a bright smear;
 - the ink mask is **dilated**, because the anti-aliased fringe is the *outline*
   of every glyph and leaving it draws a pale ghost even when the cores are gone.
+
+A button is not a glyph, though: it is a solid **plate**.  Inpainting the label
+leaves the plate, which then ghosts under the DOM button — the design review
+called it "an empty ghost button".  The design config therefore carries a second
+list, `blank`: rectangles removed *whole* (`generate.button_rects`).  A button is
+chrome, never artwork.  This is exclusion policy, not tracing math, and
+`doctor regress` confirms A/B/C are untouched.
 
 ### What is page copy, and what is artwork
 

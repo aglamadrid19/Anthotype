@@ -514,6 +514,11 @@ def palette(blocks: list[Block], background: tuple[int, int, int]) -> dict:
     muted = _mix(ink, bg, 0.38)
     if _contrast(muted, bg) < 3.0:                     # keep it readable
         muted = _mix(ink, bg, 0.2)
+    card = _mix(bg, (255, 255, 255), 0.72 if light else 0.10)
+    tint = _mix(bg, toward, 0.04)
+    shadow = ("0 1px 2px rgba(15,23,42,.05), 0 12px 28px -16px rgba(15,23,42,.28)"
+              if light else
+              "0 1px 2px rgba(0,0,0,.5), 0 16px 36px -18px rgba(0,0,0,.85)")
     return {
         "light": light,
         "bg": bg,
@@ -522,6 +527,9 @@ def palette(blocks: list[Block], background: tuple[int, int, int]) -> dict:
         "accent": accent,
         "accent_ink": (6, 20, 14) if _lum(accent) > 140 else (255, 255, 255),
         "surface": _mix(bg, toward, 0.05 if light else 0.07),
+        "card": card,
+        "tint": tint,
+        "shadow": shadow,
         "border": _mix(bg, ink, 0.16),
     }
 
@@ -539,6 +547,24 @@ GROUP_GAP = 2.0
 def _reading_order(blocks: list[Block]) -> list[Block]:
     """Sort by vertical position then horizontal -- how a person reads a page."""
     return sorted(blocks, key=lambda b: (round(b.bbox[1]), round(b.bbox[0])))
+
+
+def _row_order(blocks: list[Block]) -> list[Block]:
+    """Left to right within a row, rows top to bottom.
+
+    For a row of buttons `_reading_order` is wrong: it sorts by top edge first,
+    and two buttons drawn side by side are rarely aligned to the pixel, so the
+    right-hand one wins and the pair comes out swapped.
+    """
+    rows: list[list[Block]] = []
+    for b in sorted(blocks, key=lambda b: b.bbox[1]):
+        for row in rows:
+            if any(_overlaps(b, o) for o in row):
+                row.append(b)
+                break
+        else:
+            rows.append([b])
+    return [b for row in rows for b in sorted(row, key=lambda b: b.bbox[0])]
 
 
 def _is_eyebrow(b: Block) -> bool:
@@ -658,7 +684,17 @@ def _infer_sections(blocks: list[Block]) -> list[tuple[str, list[Block]]]:
                 break
         if not name:
             first_is_brand = g[0].role == "brand"
-            if i == 0 and (roles & {"headline", "subhead", "cta"}):
+            # A headless group directly after the hero is the hero's own action
+            # and trust row -- the buttons, the phone number, the badges.  It has
+            # no eyebrow and no headline, so without this it becomes a stray
+            # `features` section holding three badges in cards.
+            tail_of_hero = (bool(out) and out[-1][0] == "hero"
+                            and "headline" not in roles and not eyebrow
+                            and (any(b.role == "cta" for b in g)
+                                 or all(b.role in {"other", "cta"} for b in g)))
+            if tail_of_hero:
+                name = "hero"
+            elif i == 0 and (roles & {"headline", "subhead", "cta"}):
                 name = "hero"
             elif first_is_brand and g[0].bbox[1] > 0.75 * page_bottom:
                 name = "footer"
@@ -675,7 +711,15 @@ def _infer_sections(blocks: list[Block]) -> list[tuple[str, list[Block]]]:
         if out[i - 1][0] == "footer":
             out[i - 1][1].extend(out[i][1])
             del out[i]
-    return out
+    # A hero split across clusters (its copy, then its action/trust row) is one
+    # section; the same for any name that repeats back to back.
+    merged: list[tuple[str, list[Block]]] = []
+    for name, group in out:
+        if merged and merged[-1][0] == name:
+            merged[-1][1].extend(group)
+        else:
+            merged.append((name, list(group)))
+    return merged
 
 
 def group_sections(blocks: list[Block]) -> list[tuple[str, list[Block]]]:
@@ -751,15 +795,30 @@ def _is_navish(b: Block) -> bool:
     return b.role == "other" and len(b.text) <= 32 and len(b.text.split()) <= 4
 
 
+def _cta_label(b: Block) -> str:
+    """A button's label, with a phone number that shares the plate on its own line.
+
+    The reference's outline button is two lines -- "Call Now" over the number --
+    and the model reports it as one string.  On one line the button is far wider
+    than the design's.
+    """
+    t = b.text.strip()
+    m = re.search(r"^(.*?)\s*(\(?\d[\d\-\s().]{6,}\d\)?)$", t)
+    if m and m.group(1).strip() and m.group(2).strip() != t:
+        return (f'<span class="cta-label">{html.escape(m.group(1).strip())}</span>'
+                f'<span class="cta-sub">{html.escape(m.group(2).strip())}</span>')
+    return _inline(b)
+
+
 def _cta_html(b: Block, href: str, cls: str = "cta") -> str:
     color = _hex(b.color or (255, 255, 255))
     if b.meta.get("outline"):
         border = _hex(b.meta.get("border") or b.color or (24, 196, 124))
         style = f' style="color: {color}; border-color: {border}"'
-        return f'<a class="{cls} outline" href="{_attr(href)}"{style}>{_inline(b)}</a>'
+        return f'<a class="{cls} outline" href="{_attr(href)}"{style}>{_cta_label(b)}</a>'
     fill = _hex(b.fill or (24, 196, 124))
     style = f' style="background: {fill}; color: {color}"'
-    return f'<a class="{cls}" href="{_attr(href)}"{style}>{_inline(b)}</a>'
+    return f'<a class="{cls}" href="{_attr(href)}"{style}>{_cta_label(b)}</a>'
 
 
 def _is_stars(b: Block) -> bool:
@@ -769,7 +828,7 @@ def _is_stars(b: Block) -> bool:
 
 
 def _card_html(col: list[Block], cta_href: str = "#top",
-               kind: str = "") -> str:
+               kind: str = "", plain: bool = False) -> str:
     """One card: a title line plus any body lines that share its column.
 
     A testimonial is not a title+body card -- its body is the quote and its
@@ -804,7 +863,8 @@ def _card_html(col: list[Block], cta_href: str = "#top",
             title_done = True
         else:
             parts.append(f"<p>{_inline(b)}</p>")
-    return '<div class="card">\n        ' + "\n        ".join(parts) + "\n      </div>"
+    cls = "card plain" if plain else "card"
+    return f'<div class="{cls}">\n        ' + "\n        ".join(parts) + "\n      </div>"
 
 
 def _overlaps(a: Block, b: Block) -> bool:
@@ -813,6 +873,23 @@ def _overlaps(a: Block, b: Block) -> bool:
     if bottom <= top:
         return False
     return (bottom - top) > 0.5 * min(a.bbox[3] - a.bbox[1], b.bbox[3] - b.bbox[1])
+
+
+def _x_overlaps(a: Block, b: Block) -> bool:
+    return min(a.bbox[2], b.bbox[2]) - max(a.bbox[0], b.bbox[0]) > 0
+
+
+def _has_below(b: Block, others: list[Block], gap: float = 44.0) -> bool:
+    """Is there copy in `b`'s own column just under it?
+
+    Then `b` heads a column rather than acting as a section-level link.
+    """
+    for o in others:
+        if o is b or not _x_overlaps(o, b):
+            continue
+        if -2.0 <= o.bbox[1] - b.bbox[3] < gap:
+            return True
+    return False
 
 
 def _action(b: Block, href: str) -> str:
@@ -850,9 +927,14 @@ def _band_html(name: str, band: list[Block], cta_href: str) -> str:
         first, others = headings[0], headings[1:]
         if not others or first.bbox[3] <= min(h.bbox[1] for h in others):
             lead = first
+    # A section action ("View all services ->") sits at the title's row and has
+    # nothing under it.  A *column heading* at the same row (a contact panel's
+    # "Get in Touch") has its own body below it, so it must stay in its column --
+    # hoisting it to the title row crams the panel into the section header.
     head_row = [b for b in rest
                 if b is not lead and lead is not None and _overlaps(b, lead)
-                and (b.role == "cta" or _is_navish(b))]
+                and (b.role == "cta" or _is_navish(b))
+                and not _has_below(b, rest)]
     cards_src = [b for b in rest if b is not lead and b not in head_row]
 
     parts: list[str] = []
@@ -867,8 +949,13 @@ def _band_html(name: str, band: list[Block], cta_href: str) -> str:
     if cards_src:
         cols = _columns(cards_src)
         if name in GRID_SECTIONS:
-            cards = [_card_html(c, cta_href, name) for c in cols]
-            parts.append('<div class="cards">\n      '
+            # A band of one-liners is not a card grid: boxes around two words
+            # each read as heavy chrome, so those items get a rule instead.  An
+            # item with a description of its own keeps the card.
+            compact = (len(cols) >= 3
+                       and all(len(c) == 1 and len(c[0].text) <= 40 for c in cols))
+            cards = [_card_html(c, cta_href, name, plain=compact) for c in cols]
+            parts.append(f'<div class="cards{" compact" if compact else ""}">\n      '
                          + "\n      ".join(cards) + "\n    </div>")
         else:
             # A non-grid band (contact details, a two-column blurb) keeps its
@@ -893,14 +980,38 @@ def _hero_html(blocks: list[Block], cta_href: str) -> str:
     Grouping the calls to action and the short trust badges into their own rows
     is what makes the hero read as a hero rather than a stack of paragraphs.
     """
-    cta_blocks = [b for b in blocks if b.role == "cta"]
-    # Short `other` lines that sit on one row are trust badges, not copy.
-    others = [b for b in blocks if b.role == "other" and len(b.text) <= 40]
-    badges = [b for b in others
-              if sum(1 for o in others if o is not b and _overlaps(b, o)) >= 1]
+    # Buttons sharing a row are emitted left to right, as they are drawn.  The
+    # reading order sorts by top edge first, and a solid button and an outline one
+    # beside it rarely share a top edge (a pixel or two apart is enough), so it
+    # would swap them.
+    cta_blocks = _row_order([b for b in blocks if b.role == "cta"])
+    # Short lines that share a row are trust badges, not copy.  The model's role
+    # for them is not stable (the same reference came back `other` on one run and
+    # `tagline` on the next), so detect them by shape, not by role.
+    short = [b for b in blocks
+             if b.role in {"other", "tagline"} and len(b.text) <= 40]
+    badges = _row_order([b for b in short
+                         if sum(1 for o in short if o is not b and _overlaps(b, o)) >= 1])
 
+    # The rows are emitted where they actually sit.  Appending the buttons at the
+    # end puts them *below* a fine-print line that the reference drew under them
+    # ("Open source · Community driven · Powered by Antseed"), which then reads as
+    # a caption for the buttons.
     out: list[str] = []
-    for b in blocks:
+    actions_done = badges_done = False
+    for b in _reading_order(blocks):
+        if b.role == "cta":
+            if not actions_done:
+                row = "".join(_cta_html(c, cta_href) for c in cta_blocks)
+                out.append(f'<div class="hero-actions">{row}</div>')
+                actions_done = True
+            continue
+        if b in badges:
+            if not badges_done:
+                row = "".join(f'<span class="badge">{_inline(x)}</span>' for x in badges)
+                out.append(f'<ul class="hero-badges">{row}</ul>')
+                badges_done = True
+            continue
         if b.role == "headline":
             out.append(f'<h1>{_inline(b)}</h1>')
         elif b.role == "subhead":
@@ -909,28 +1020,54 @@ def _hero_html(blocks: list[Block], cta_href: str) -> str:
             out.append(f'<span class="brand">{_inline(b)}</span>')
         elif _is_eyebrow(b):
             out.append(f'<p class="eyebrow">{_inline(b)}</p>')
-        elif b.role == "cta" or b in badges:
-            continue
         else:
             out.append(f'<p class="lede">{_inline(b)}</p>')
-    if cta_blocks:
+    if cta_blocks and not actions_done:
         row = "".join(_cta_html(b, cta_href) for b in cta_blocks)
         out.append(f'<div class="hero-actions">{row}</div>')
-    if badges:
+    if badges and not badges_done:
         row = "".join(f'<span class="badge">{_inline(b)}</span>' for b in badges)
         out.append(f'<ul class="hero-badges">{row}</ul>')
     return "\n      ".join(out)
 
 
+def _is_phone(b: Block) -> bool:
+    """A phone number, not a nav link -- it belongs beside the header button."""
+    t = b.text.strip()
+    digits = sum(c.isdigit() for c in t)
+    return len(t) >= 7 and digits >= 6 and all(c in "0123456789+-() ." for c in t)
+
+
+def _tel(text: str) -> str:
+    return "tel:" + "".join(c for c in text if c.isdigit() or c == "+")
+
+
 def _header_html(brand: Block | None, links: list[Block], cta_href: str) -> str:
-    left = (f'<a class="brand" href="#top">{_inline(brand)}</a>' if brand
-            else '<a class="brand" href="#top">Home</a>')
-    nav = "".join(
+    """Brand, the nav, and the header actions -- three separate groups.
+
+    Grouping them (rather than one flex row of everything) is what lets the
+    stylesheet put the brand left, the nav centred and the phone + button right,
+    which is how the references are drawn.
+    """
+    brand_html = (f'<a class="brand" href="#top">{_inline(brand)}</a>' if brand
+                  else '<a class="brand" href="#top">Home</a>')
+    nav = [b for b in links if b.role != "cta" and not _is_phone(b)]
+    actions = sorted((b for b in links if b.role == "cta" or _is_phone(b)),
+                     key=_is_phone)          # the phone sits before the button
+    nav_html = "".join(
+        f'<a href="{_attr(cta_href)}">{_inline(b)}</a>' for b in nav)
+    act_html = "".join(
         _cta_html(b, cta_href, "cta small") if b.role == "cta"
-        else f'<a href="{_attr(cta_href)}">{_inline(b)}</a>'
-        for b in links)
-    return (f'<div class="wrap">\n      {left}\n'
-            f'      <nav class="site-nav" aria-label="Primary">{nav}</nav>\n    </div>')
+        else f'<a class="phone" href="{_attr(_tel(b.text))}">{_inline(b)}</a>'
+        for b in actions)
+
+    out = [f'<div class="wrap">\n      {brand_html}']
+    if nav_html:
+        out.append(f'      <nav class="site-nav" aria-label="Primary">{nav_html}</nav>')
+    if act_html:
+        out.append(f'      <div class="header-actions">{act_html}</div>')
+    out.append("    </div>")
+    return "\n".join(out)
 
 
 def _stable_id(name: str, used: dict[str, int]) -> str:
@@ -1014,6 +1151,29 @@ def cta_target(sections: list[tuple[str, list[Block]]],
     return "#top"
 
 
+def hero_band(sections: list[tuple[str, list[Block]]]) -> list[int] | None:
+    """The mockup's vertical slice that the hero backdrop should show.
+
+    The traced artwork is the *whole* mockup.  Spliced into the hero unchanged it
+    shows the section below the hero too -- the next section's cards, icons and
+    eyebrow bleed into the backdrop and read as clutter behind the copy.  The
+    backdrop is the hero's own band: from the top of the mockup (a hero near the
+    top is a full-bleed banner, so the art above the copy is part of it) down to
+    where the next section starts.
+    """
+    hero = [b for n, g in sections if n == "hero" for b in g]
+    if not hero:
+        return None
+    top = min(b.bbox[1] for b in hero)
+    bottom = max(b.bbox[3] for b in hero)
+    below = [b.bbox[1] for n, g in sections
+             if n not in ("header", "nav", "hero", "footer") for b in g]
+    y1 = min(below) if below else min(STAGE_H, bottom + max(60.0, bottom - top))
+    y0 = 0 if top < STAGE_H * 0.5 else max(0.0, top - (bottom - top))
+    y1 = min(STAGE_H, max(y0 + 40.0, y1))
+    return [int(round(y0)), int(round(y1))]
+
+
 def build_content(sections: list[tuple[str, list[Block]]], name: str) -> dict:
     blocks = [b for _, group in sections for b in group]
     headline = next((b for b in blocks if b.role == "headline"), None)
@@ -1031,6 +1191,7 @@ def build_content(sections: list[tuple[str, list[Block]]], name: str) -> dict:
         "cta": cta.text if cta else "",
         "cta_href": href,
         "stage": [STAGE_W, STAGE_H],
+        "hero_band": hero_band(sections),
         "sections": [s for s, _ in sections],
         "markup": build_markup(sections, href),
     }
@@ -1050,6 +1211,9 @@ def build_page_css(palette_: dict) -> str:
   --accent: {_hex(p['accent'])};
   --accent-ink: {_hex(p['accent_ink'])};
   --surface: {_hex(p['surface'])};
+  --card: {_hex(p['card'])};
+  --tint: {_hex(p['tint'])};
+  --shadow: {p['shadow']};
   --border: {_hex(p['border'])};
   --maxw: 1140px;
   --pad: clamp(20px, 5vw, 32px);
@@ -1072,38 +1236,65 @@ a {{ color: inherit; }}
 /* ---- header ------------------------------------------------------------- */
 .site-header {{
   position: sticky; top: 0; z-index: 20;
-  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  background: color-mix(in srgb, var(--bg) 88%, transparent);
   backdrop-filter: saturate(1.4) blur(10px);
   border-bottom: 1px solid var(--border);
 }}
+/* Brand left, nav centred, actions right -- the arrangement a real site uses. */
 .site-header .wrap {{
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 20px; min-height: 68px; flex-wrap: wrap;
+  display: grid; grid-template-columns: auto 1fr auto;
+  align-items: center; gap: clamp(16px, 3vw, 40px);
+  min-height: 72px;
 }}
-.brand {{ font-weight: 600; font-size: 18px; letter-spacing: -0.02em; text-decoration: none; }}
-.site-nav {{ display: flex; align-items: center; gap: clamp(14px, 2.4vw, 26px); flex-wrap: wrap; }}
-.site-nav a {{ color: var(--muted); text-decoration: none; font-size: 15px; transition: color .15s ease; }}
-.site-nav a:hover {{ color: var(--ink); }}
+.brand {{
+  font-weight: 600; font-size: 18px; letter-spacing: -0.02em;
+  text-decoration: none; white-space: nowrap;
+}}
+.site-nav {{ display: flex; align-items: center; justify-content: center; gap: clamp(14px, 2.2vw, 30px); flex-wrap: wrap; }}
+.site-nav a {{
+  color: var(--muted); text-decoration: none; font-size: 15px;
+  padding: 6px 0; border-bottom: 2px solid transparent;
+  transition: color .15s ease, border-color .15s ease;
+}}
+.site-nav a:hover {{ color: var(--ink); border-bottom-color: var(--accent); }}
+.header-actions {{
+  display: flex; align-items: center; gap: clamp(10px, 1.6vw, 18px);
+  justify-self: end;
+}}
+.header-actions .phone {{
+  color: var(--ink); text-decoration: none; font-size: 15px; font-weight: 500;
+  white-space: nowrap;
+}}
+@media (max-width: 820px) {{
+  .site-header .wrap {{ grid-template-columns: auto auto; justify-content: space-between; }}
+  .site-nav {{ grid-column: 1 / -1; justify-content: flex-start; order: 3; }}
+}}
 
 /* ---- hero --------------------------------------------------------------- */
 .hero {{ position: relative; overflow: hidden; border-bottom: 1px solid var(--border); }}
 .hero-art {{ position: absolute; inset: 0; z-index: 0; }}
 .hero-art svg {{ width: 100%; height: 100%; display: block; }}
 /* A scrim over the artwork so the copy keeps contrast whatever the art does.
-   It is strong on the side the copy sits on and fades out to reveal the art. */
+   It is strong on the side the copy sits on and fades out to reveal the art;
+   the copy column is also kept inside the strong end, so a line never runs into
+   the part of the artwork the scrim has released. */
 .hero-art::after {{
   content: ""; position: absolute; inset: 0;
-  background: linear-gradient(100deg,
-    color-mix(in srgb, var(--bg) 94%, transparent) 0%,
-    color-mix(in srgb, var(--bg) 72%, transparent) 38%,
-    color-mix(in srgb, var(--bg) 22%, transparent) 68%, transparent 100%);
+  background: linear-gradient(96deg,
+    color-mix(in srgb, var(--bg) 96%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 86%, transparent) 46%,
+    color-mix(in srgb, var(--bg) 42%, transparent) 66%,
+    color-mix(in srgb, var(--bg) 8%, transparent) 86%, transparent 100%);
 }}
 .hero-copy {{
   position: relative; z-index: 1; display: grid; gap: clamp(14px, 2vw, 22px);
   justify-items: start; align-content: center;
   padding-top: clamp(80px, 12vw, 140px); padding-bottom: clamp(80px, 12vw, 140px);
-  max-width: 780px; min-height: clamp(460px, 70vh, 680px);
+  min-height: clamp(460px, 70vh, 680px);
 }}
+/* The copy stays in the scrim's strong end: the column is capped, but the block
+   itself keeps the page's own gutter so the hero reads left-aligned. */
+.hero-copy > * {{ max-width: min(100%, 620px); }}
 .hero h1 {{ font-size: clamp(38px, 7vw, 76px); font-weight: 600; }}
 .hero .subhead {{ font-size: clamp(18px, 2.4vw, 27px); font-weight: 600; }}
 .hero .lede {{ font-size: clamp(16px, 1.7vw, 20px); color: var(--muted); max-width: 60ch; }}
@@ -1122,7 +1313,7 @@ a {{ color: inherit; }}
 
 /* ---- sections ----------------------------------------------------------- */
 .section {{ padding: var(--section-y) 0; border-bottom: 1px solid var(--border); }}
-.section:nth-of-type(even) {{ background: color-mix(in srgb, var(--surface) 55%, var(--bg)); }}
+.section:nth-of-type(even) {{ background: var(--tint); }}
 .section > .wrap {{ display: grid; gap: clamp(26px, 4vw, 44px); }}
 .section-head {{
   display: flex; align-items: end; justify-content: space-between;
@@ -1142,21 +1333,30 @@ a {{ color: inherit; }}
 
 /* ---- cards -------------------------------------------------------------- */
 .cards {{
-  display: grid; gap: clamp(16px, 2vw, 22px);
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 250px), 1fr));
+  display: grid; gap: clamp(14px, 1.6vw, 18px);
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
 }}
 .card {{
-  background: var(--surface); border: 1px solid var(--border);
-  border-radius: 16px; padding: clamp(20px, 2.4vw, 28px);
-  display: grid; gap: 10px; align-content: start;
+  background: var(--card); border: 1px solid var(--border);
+  border-radius: 14px; padding: clamp(18px, 1.8vw, 22px);
+  display: grid; gap: 8px; align-content: start;
+  box-shadow: var(--shadow);
   transition: transform .18s ease, border-color .18s ease, box-shadow .18s ease;
 }}
 .card:hover {{
   transform: translateY(-3px); border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-  box-shadow: 0 12px 30px -18px color-mix(in srgb, var(--accent) 60%, transparent);
+  box-shadow: 0 16px 36px -18px color-mix(in srgb, var(--accent) 55%, transparent);
 }}
-.card h3 {{ font-size: 18px; font-weight: 600; }}
-.card .lead, .card p {{ color: var(--muted); font-size: 15px; line-height: 1.55; }}
+.card h3 {{ font-size: 16.5px; font-weight: 600; }}
+.card .lead, .card p {{ color: var(--muted); font-size: 14.5px; line-height: 1.5; }}
+/* A band of one-liners (a "why choose us" row) is not a card grid: a marker
+   and a rule reads cleaner than six boxes around two words each. */
+.cards.compact {{ gap: clamp(18px, 2.4vw, 34px); }}
+.card.plain {{
+  background: none; border: 0; box-shadow: none; padding: 0;
+  border-top: 2px solid var(--accent); padding-top: 14px; border-radius: 0;
+}}
+.card.plain:hover {{ transform: none; box-shadow: none; border-color: var(--accent); }}
 .card.quote {{ display: flex; flex-direction: column; gap: 16px; }}
 .card.quote blockquote {{
   font-size: clamp(15px, 1.5vw, 17px); line-height: 1.6; color: var(--ink);
@@ -1189,6 +1389,11 @@ a {{ color: inherit; }}
 .cta:hover {{ filter: brightness(1.07); transform: translateY(-1px); }}
 .cta.outline {{ background: transparent; border: 2px solid var(--accent); }}
 .cta.small {{ padding: 9px 18px; font-size: 15px; }}
+/* A button whose plate carries two lines (a label over a phone number): the
+   plate is a flex row, so the two lines need the axis turned. */
+.cta:has(.cta-sub) {{ flex-direction: column; align-items: flex-start; gap: 0; }}
+.cta-label, .cta-sub {{ display: block; line-height: 1.25; }}
+.cta-sub {{ font-size: .82em; font-weight: 500; opacity: .85; }}
 
 /* ---- footer ------------------------------------------------------------- */
 .site-footer {{ padding: clamp(40px, 6vw, 64px) 0; }}
@@ -1268,6 +1473,27 @@ def text_rects(blocks: list[Block]) -> list[list[int]]:
     return out
 
 
+def button_rects(blocks: list[Block]) -> list[list[int]]:
+    """Rects the tracer must remove *whole*: the reference's own CTA buttons.
+
+    A button is a solid plate, so dropping only its label's bands leaves the
+    plate behind -- a ghost of the button under the DOM one (a pale pill on the
+    anthotype reference).  The button is chrome, never artwork.
+    """
+    out: list[list[int]] = []
+    for b in blocks:
+        if b.role != "cta" or not is_page_text(b):
+            continue
+        x0, y0, x1, y1 = b.bbox
+        out.append([
+            max(0, int(round(x0)) - TEXT_RECT_GROW),
+            max(0, int(round(y0)) - TEXT_RECT_GROW),
+            min(STAGE_W, int(round(x1)) + TEXT_RECT_GROW),
+            min(STAGE_H, int(round(y1)) + TEXT_RECT_GROW),
+        ])
+    return out
+
+
 def describe(sections: list[tuple[str, list[Block]]], markup: str) -> list[dict]:
     """A machine-readable summary of the generated structure (for the API/UI)."""
     out = []
@@ -1321,6 +1547,7 @@ def write_all(pipeline: Path, name: str, blocks: list[Block],
     cfg["layout"] = "page"                       # a real website, not a poster
     cfg["box"] = [0, 0, STAGE_W, STAGE_H]        # full frame: exclude_text protects the type
     cfg["text"] = text_rects(blocks)
+    cfg["blank"] = button_rects(blocks)
     cfg.setdefault("params", {})
     # Polarity-aware text exclusion.  `text_bg_lum` tells the tracer where the
     # page background sits, so it drops the bands that are *ink* (away from the

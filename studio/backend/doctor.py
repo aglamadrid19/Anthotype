@@ -340,6 +340,38 @@ def cmd_polarity(_args: list[str]) -> int:
     _line(OK if ok else BAD, "exclusion rects cover artwork text",
           f"{len(rects)} rects, tiny {rects[2]}, head pad {g}")
 
+    # A CTA's *plate* must be removed whole, not just its label: dropping the
+    # label's bands leaves the button behind, ghosting under the DOM button (a
+    # pale pill on the anthotype reference).  An artwork CTA is not chrome.
+    btns = generate.button_rects([
+        Block("Try Anthotype", "cta", (80, 448, 190, 468)),
+        Block("Get Started", "cta", (778, 466, 810, 480), part="artwork"),
+        Block("Heading", "headline", (100, 100, 300, 140)),
+    ])
+    ok = len(btns) == 1 and btns[0] == [80 - g, 448 - g, 190 + g, 468 + g]
+    _line(OK if ok else BAD, "CTA plates are blanked whole", f"{btns}")
+
+    # A trust-badge row is badges whatever role the model gave them: the same
+    # reference came back `other` on one run and `tagline` on the next, and
+    # stacking three badges as body copy is a visible defect.
+    hp = generate.build_content(generate.group_sections([
+        Block("Book Service →", "cta", (168, 244, 248, 256), section="hero"),
+        Block("Local Utah Team", "tagline", (163, 278, 224, 287), section="hero"),
+        Block("5-Star Service", "tagline", (238, 278, 291, 287), section="hero"),
+        Block("Same Week Appointments", "tagline", (318, 278, 409, 287), section="hero"),
+        Block("OUR SERVICES", "tagline", (148, 309, 206, 317), section="features"),
+        Block("Computer Repair", "headline", (103, 369, 172, 379), section="features"),
+    ]), "s")["markup"]
+    ok = (hp.count('class="badge"') == 3
+          and hp.count('class="lede"') == 0)
+    _line(OK if ok else BAD, "trust badges are a row whatever the role",
+          f"{hp.count('class=\"badge\"')} badges, {hp.count('class=\"lede\"')} lede")
+
+    # A two-line button (label over a phone number) stays two lines.
+    lab = generate._cta_label(Block("Call Now (801) 810-4242", "cta", (0, 0, 9, 9)))
+    ok = "cta-label" in lab and "cta-sub" in lab and "810-4242" in lab
+    _line(OK if ok else BAD, "two-line button label", lab[:60])
+
     # Structure inference: a flat page with an eyebrow-labelled sections list must
     # come back as named sections in reading order, with a header row split off
     # the top and a footer at the bottom.  This is what makes the output a
@@ -392,6 +424,67 @@ def cmd_polarity(_args: list[str]) -> int:
             generate.group_sections(declared), "merge")["markup"]
         ok = markup.count('<section class="section sec-') == 3
     _line(OK if ok else BAD, "same-name blocks merge into one section", f"{merged}")
+
+    # A hero's action/trust row is part of the hero, not a section of its own.
+    # The row has no eyebrow and no headline, so it used to be named `features`
+    # and shipped three trust badges as cards.
+    hero_split = [
+        Block("LOCAL, RELIABLE", "tagline", (148, 131, 276, 140), section="hero"),
+        Block("Local IT Help", "headline", (146, 145, 424, 190), section="hero"),
+        Block("Book Service →", "cta", (148, 235, 268, 264), section="hero"),
+        Block("Call Now", "cta", (283, 233, 374, 271), section="hero"),
+        Block("Local Utah Team", "other", (163, 279, 224, 287), section="hero"),
+        Block("5-Star Service", "other", (237, 279, 292, 287), section="hero"),
+        Block("OUR SERVICES", "tagline", (148, 309, 206, 317), section="features"),
+        Block("Computer Repair", "headline", (103, 369, 172, 379), section="features"),
+    ]
+    names = [s for s, _ in generate.group_sections(hero_split)]
+    _line(OK if names == ["hero", "features"] else BAD,
+          "hero action row stays in the hero", f"{names}")
+
+    # The traced art is the whole mockup, so the hero backdrop must be cropped to
+    # the hero's own band -- otherwise the next section's cards show through.
+    band = generate.hero_band(generate.group_sections(declared))
+    ok = band is not None and band[0] == 0 and band[1] <= 311
+    _line(OK if ok else BAD, "hero backdrop cropped to the hero band", f"{band}")
+
+    # The hero's buttons are emitted where they sit, not appended: a fine-print
+    # line drawn *under* the button must stay under it, not become a caption.
+    hero_order = generate.build_content(generate.group_sections([
+        Block("anthotype", "headline", (52, 240, 424, 300), section="hero"),
+        Block("Try Anthotype", "cta", (80, 448, 190, 468), section="hero"),
+        Block("Open source · Community driven", "tagline", (52, 492, 308, 504),
+              section="hero"),
+    ]), "h")["markup"]
+    ok = hero_order.index("hero-actions") < hero_order.index("Open source")
+    _line(OK if ok else BAD, "hero buttons keep their place", "actions before note")
+
+    # Side-by-side buttons are emitted left to right, as drawn -- not in reading
+    # order, which sorts by top edge and so swaps a solid button for an outline
+    # one that sits a few pixels higher.
+    btns_row = generate.build_content(generate.group_sections([
+        Block("Call Now", "cta", (288, 233, 368, 264), section="hero"),
+        Block("Book Service →", "cta", (148, 235, 268, 264), section="hero"),
+        Block("Local IT Help", "headline", (146, 145, 424, 190), section="hero"),
+    ]), "b")["markup"]
+    ok = btns_row.index("Book Service") < btns_row.index("Call Now")
+    _line(OK if ok else BAD, "hero buttons read left to right",
+          "Book Service before Call Now" if ok else "swapped")
+
+    # A heading with its own body under it heads a column, not the title row.
+    contact = [
+        Block("PROUDLY SERVING", "tagline", (136, 585, 198, 593), section="contact"),
+        Block("Utah County", "headline", (134, 595, 366, 610), section="contact"),
+        Block("We provide in-home IT.", "tagline", (134, 616, 424, 632), section="contact"),
+        Block("Get in Touch", "headline", (610, 592, 652, 601), section="contact"),
+        Block("Have a question?", "tagline", (610, 604, 766, 612), section="contact"),
+        Block("Book an Appointment", "cta", (858, 617, 924, 625), section="contact"),
+    ]
+    body = generate.build_content(generate.group_sections(contact), "c")["markup"]
+    ok = ("<h3>Get in Touch</h3>" in body and body.count("<h3>") == 2
+          and body.count('class="col"') == 3)
+    _line(OK if ok else BAD, "column headings stay in their column",
+          f"h3 x{body.count('<h3>')}, cols x{body.count('class=\"col\"')}")
 
     # The generated page must be a real, flowing document: one h1, sections, no
     # dead links, nothing absolutely positioned.

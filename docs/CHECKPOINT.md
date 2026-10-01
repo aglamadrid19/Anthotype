@@ -226,9 +226,49 @@ Rebuilding both uploads end to end confirmed the ghosting is gone (the montiva
 hero now shows the photographed office, not a faded copy of its own headline),
 with `doctor polarity` / `fixtures` / `regress` all still passing.
 
-**Still open** (noted, not fixed): the traced artwork includes the mockup's own
-CTA *button*, so a pale button shape can sit under the real one; and a light
-mockup's artwork gets no crop allowance for its bottom third.
+## This session's changes (the remaining fidelity defects)
+
+The same vision critic was run again on the rebuilt uploads.  The ghost was
+gone; what was left was a ranked list of composition defects, all now fixed and
+guarded (full reasoning in `docs/HANDOFF.md`, Stage 9):
+
+- **The hero backdrop showed the section below the hero** — the next section's
+  cards and icons bled into the backdrop.  `generate.hero_band()` computes the
+  mockup's actual hero slice and `gen-page.mjs` narrows the spliced SVG's
+  `viewBox` to it.  The SVG file is untouched, so the art metric still renders
+  the whole artwork.
+- **The mockup's own CTA button was traced in** — a pale "ghost button" under
+  the real one.  `mkart.build()` gained `blank_rects` (rectangles removed
+  wholesale, from `generate.button_rects()`); on a light ground the exclusion
+  *inpaints* glyph ink, which never touched a solid button plate.
+- **Header layout** — one flex row of everything bunched the nav right.
+  `_header_html` emits brand / nav / actions as three groups; the CSS is a
+  3-column grid.  The phone is recognised by shape and gets a `tel:` link.
+- **Cards were flat grey panels on grey** — `palette()` gained `card`, `tint`
+  and `shadow`; cards are near-white with a soft shadow on a tinted band, and
+  denser.
+- **Hero order** — buttons were appended last, so a fine-print line drawn under
+  them became a caption above them; and side-by-side buttons came out swapped.
+  Rows are now emitted where they sit, buttons ordered left-to-right.
+- **A hero's action/trust row became a stray section** — a headless group right
+  after the hero is now the hero's own row, and back-to-back same-name groups
+  merge.
+- **Contact panels were crammed into the title row** — a short block with copy
+  under it in its own column stays in that column.
+- **Badges and two-line buttons were role-dependent** — badges are detected by
+  shape; a button label with a trailing phone number renders as two lines.
+
+**Still not fixable, and why** (so it is not re-litigated):
+
+- **Icons.**  The mockup's card icons, star rows and map pin are artwork pixels,
+  not DOM; a card's icon has no fixed position once the layout reflows.
+  Recovering them as real assets is a separate feature.
+- **Artwork-internal labels are blanked.**  Blanking every text block is right
+  for the page's own copy but also removes the illustration's own captions (the
+  anthotype step labels).  Keeping them re-introduces ghosting wherever a traced
+  label lands behind DOM text, which is not known at trace time.
+- **The traced art is flatter than the mockup** — it is posterised into 24-26
+  luminance bands; that is the tracer's chosen payload/parity operating point.
 
 ## Landmine: the sync script (removed)
 
