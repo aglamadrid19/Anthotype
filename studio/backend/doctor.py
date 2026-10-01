@@ -549,6 +549,25 @@ def cmd_polarity(_args: list[str]) -> int:
     _line(OK if v["configured"] else WARN, "vision model",
           f"{v['model']}" + (f" (+{n} fallback)" if n else " (no fallback)"))
 
+    # A card band must fill its last row.  A greedy `auto-fit` strung four cards
+    # out as 3+1, leaving one stranded on its own line (a vision review flagged
+    # it); `--cards` is set from `_balanced_cols` so every row but the last is
+    # full.  The counts are the shapes a real page hits.
+    cols = {k: generate._balanced_cols(k) for k in (2, 3, 4, 5, 6, 8, 9, 12)}
+    cols_ok = (cols[2] == 2 and cols[3] == 3 and cols[4] == 4 and cols[5] == 3
+               and cols[6] == 3 and cols[8] == 4 and cols[9] == 3 and cols[12] == 4)
+    _line(OK if cols_ok else BAD, "card bands fill their last row",
+          " ".join(f"{k}->{v_}" for k, v_ in cols.items()))
+
+    # A phone number drawn *inside* a button plate is that button's second line,
+    # not an orphan paragraph below the row.  `decorate` grows the CTA to its
+    # plate, so the line is vertically inside the button, not merely under it.
+    btn = Block("Call Now", "cta", (282, 227, 374, 270))
+    phone = Block("(801) 810-4242", "other", (312, 251, 366, 259))
+    subs = generate._cta_sublabels([btn, phone], [btn])
+    _line(OK if subs.get(id(btn)) is phone else BAD, "phone folds into its button",
+          f"{len(subs)} sublabel(s)")
+
     print()
     if _failures:
         print(f"{_failures} check(s) failed")

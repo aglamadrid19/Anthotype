@@ -849,7 +849,7 @@ def _is_navish(b: Block) -> bool:
     return b.role == "other" and len(b.text) <= 32 and len(b.text.split()) <= 4
 
 
-def _cta_label(b: Block) -> str:
+def _cta_label(b: Block, sub: Block | None = None) -> str:
     """A button's label, with a phone number that shares the plate on its own line.
 
     The reference's outline button is two lines -- "Call Now" over the number --
@@ -861,7 +861,41 @@ def _cta_label(b: Block) -> str:
     if m and m.group(1).strip() and m.group(2).strip() != t:
         return (f'<span class="cta-label">{html.escape(m.group(1).strip())}</span>'
                 f'<span class="cta-sub">{html.escape(m.group(2).strip())}</span>')
+    if sub is not None and sub.text.strip():
+        return (f'<span class="cta-label">{html.escape(t)}</span>'
+                f'<span class="cta-sub">{html.escape(sub.text.strip())}</span>')
     return _inline(b)
+
+
+def _cta_sublabels(blocks: list[Block], ctas: list[Block]) -> dict[int, Block]:
+    """A phone line drawn under a CTA belongs to the button it sits under.
+
+    The model often reports the button's second line as its own block, so
+    rendered as DOM it becomes an orphaned plain-text line under the button row
+    (a vision review flagged exactly this on a real upload).  When a phone number
+    is the only block directly below a button and shares its column, fold it into
+    that button's label instead of emitting it as hero copy.
+    """
+    sub: dict[int, Block] = {}
+    for b in blocks:
+        if b in ctas or not _is_phone(b):
+            continue
+        host = None
+        for c in ctas:
+            cx0, cy0, cx1, cy1 = c.bbox
+            overlap = min(cx1, b.bbox[2]) - max(cx0, b.bbox[0])
+            width = max(1.0, min(cx1 - cx0, b.bbox[2] - b.bbox[0]))
+            # `decorate` grows a CTA to its full plate, so a two-line button
+            # *contains* its phone line rather than sitting above it: the box is
+            # near the button's bottom edge, not below it.  Accept anywhere from
+            # just inside the plate to a little under it.
+            near = cy0 - 8 <= b.bbox[1] <= cy1 + 14
+            if overlap >= 0.4 * width and near:
+                if host is None or c.bbox[3] > host.bbox[3]:
+                    host = c
+        if host is not None:
+            sub[id(host)] = b
+    return sub
 
 
 def _nav_cta_ids(blocks: list[Block]) -> set[int]:
@@ -915,20 +949,21 @@ def _nav_links() -> set[int]:
     return getattr(_NAV_CTX, "ids", set())
 
 
-def _cta_html(b: Block, href: str, cls: str = "cta") -> str:
+def _cta_html(b: Block, href: str, cls: str = "cta", sub: Block | None = None) -> str:
     # A short link that belongs to a nav row is drawn as a plain link, not a
     # button: the model tags nav links `cta`, so rendering them as buttons turns
     # each nav/footer row into a stack of boxes.
     if id(b) in _nav_links():
         return f'<a class="navlink" href="{_attr(href)}">{_inline(b)}</a>'
     color = _hex(b.color or (255, 255, 255))
+    label = _cta_label(b, sub)
     if b.meta.get("outline"):
         border = _hex(b.meta.get("border") or b.color or (24, 196, 124))
         style = f' style="color: {color}; border-color: {border}"'
-        return f'<a class="{cls} outline" href="{_attr(href)}"{style}>{_cta_label(b)}</a>'
+        return f'<a class="{cls} outline" href="{_attr(href)}"{style}>{label}</a>'
     fill = _hex(b.fill or (24, 196, 124))
     style = f' style="background: {fill}; color: {color}"'
-    return f'<a class="{cls}" href="{_attr(href)}"{style}>{_cta_label(b)}</a>'
+    return f'<a class="{cls}" href="{_attr(href)}"{style}>{label}</a>'
 
 
 def _is_stars(b: Block) -> bool:
@@ -1023,6 +1058,26 @@ def _section_body(name: str, blocks: list[Block], cta_href: str) -> str:
     return "\n    ".join(out)
 
 
+def _balanced_cols(n: int) -> int:
+    """A column count that fills the last row instead of leaving it ragged.
+
+    A greedy `auto-fit` leaves a four-card band as 3+1, so the fourth card sits
+    alone on a second row -- a defect a vision review flagged on a real upload.
+    Prefer a count whose last row is as full as possible, and among those the one
+    with the fewest rows (2-4 columns; a small band stays on one row).
+    """
+    if n <= 1:
+        return 1
+    best, best_key = n, None
+    for k in range(2, min(4, n) + 1):
+        rows = -(-n // k)
+        fill = n - k * (rows - 1)      # cards on the last (partial) row
+        key = (rows, -fill, -k)
+        if best_key is None or key < best_key:
+            best, best_key = k, key
+    return best
+
+
 def _band_html(name: str, band: list[Block], cta_href: str) -> str:
     """One title+grid band inside a section."""
     eyebrow = next((b for b in band if _is_eyebrow(b)), None)
@@ -1065,7 +1120,8 @@ def _band_html(name: str, band: list[Block], cta_href: str) -> str:
             compact = (len(cols) >= 3
                        and all(len(c) == 1 and len(c[0].text) <= 40 for c in cols))
             cards = [_card_html(c, cta_href, name, plain=compact) for c in cols]
-            parts.append(f'<div class="cards{" compact" if compact else ""}">\n      '
+            parts.append(f'<div class="cards{" compact" if compact else ""}" '
+                         f'style="--cards:{_balanced_cols(len(cols))}">\n      '
                          + "\n      ".join(cards) + "\n    </div>")
         else:
             # A non-grid band (contact details, a two-column blurb) keeps its
@@ -1159,7 +1215,8 @@ def _drop_artwork_labels(blocks: list[Block]) -> list[Block]:
     return kept if len(kept) >= 2 else blocks
 
 
-def _hero_html(blocks: list[Block], cta_href: str) -> str:
+def _hero_html(blocks: list[Block], cta_href: str,
+               sublabels: dict[int, Block] | None = None) -> str:
     """The hero's copy: eyebrow, headline, subhead, actions, a trust row.
 
     Grouping the calls to action and the short trust badges into their own rows
@@ -1170,6 +1227,11 @@ def _hero_html(blocks: list[Block], cta_href: str) -> str:
     # beside it rarely share a top edge (a pixel or two apart is enough), so it
     # would swap them.
     blocks = _drop_artwork_labels(blocks)
+    subs = sublabels or {}
+    # A phone line that is a button's second line is not hero copy: drop it here
+    # so it cannot render as an orphaned paragraph under the button row.
+    sub_ids = {id(p) for p in subs.values()}
+    blocks = [b for b in blocks if id(b) not in sub_ids]
     cta_blocks = _row_order([b for b in blocks if b.role == "cta"])
     # Short lines that share a row are trust badges, not copy.  The model's role
     # for them is not stable (the same reference came back `other` on one run and
@@ -1188,7 +1250,8 @@ def _hero_html(blocks: list[Block], cta_href: str) -> str:
     for b in _reading_order(blocks):
         if b.role == "cta":
             if not actions_done:
-                row = "".join(_cta_html(c, cta_href) for c in cta_blocks)
+                row = "".join(_cta_html(c, cta_href, sub=subs.get(id(c)))
+                              for c in cta_blocks)
                 out.append(f'<div class="hero-actions">{row}</div>')
                 actions_done = True
             continue
@@ -1209,7 +1272,7 @@ def _hero_html(blocks: list[Block], cta_href: str) -> str:
         else:
             out.append(f'<p class="lede">{_inline(b)}</p>')
     if cta_blocks and not actions_done:
-        row = "".join(_cta_html(b, cta_href) for b in cta_blocks)
+        row = "".join(_cta_html(b, cta_href, sub=subs.get(id(b))) for b in cta_blocks)
         out.append(f'<div class="hero-actions">{row}</div>')
     if badges and not badges_done:
         row = "".join(f'<span class="badge">{_inline(b)}</span>' for b in badges)
@@ -1292,10 +1355,12 @@ def build_markup(sections: list[tuple[str, list[Block]]],
     hero_groups = [(n, g) for n, g in sections if n == "hero"]
     hero = [b for _, g in hero_groups for b in g]
     if hero:
+        hero_ctas = _row_order([b for b in hero if b.role == "cta"])
         parts.append('<section class="hero" id="hero">\n      '
                      '<div class="hero-art" aria-hidden="true"><!--ART--></div>\n'
                      '      <div class="wrap hero-copy">\n      '
-                     + _hero_html(hero, cta_href) + "\n      </div>\n    </section>")
+                     + _hero_html(hero, cta_href, _cta_sublabels(hero, hero_ctas))
+                     + "\n      </div>\n    </section>")
     middle = []
     for name, blocks in sections:
         if name in ("header", "nav", "hero", "footer"):
@@ -1506,16 +1571,20 @@ a {{ color: inherit; }}
 .hero-art {{ position: absolute; inset: 0; z-index: 0; }}
 .hero-art svg {{ width: 100%; height: 100%; display: block; }}
 /* A scrim over the artwork so the copy keeps contrast whatever the art does.
-   It is strong on the side the copy sits on and fades out to reveal the art;
-   the copy column is also kept inside the strong end, so a line never runs into
-   the part of the artwork the scrim has released. */
+   It holds the page ground across the copy column, then releases the art
+   abruptly on the right.  Two earlier versions were wrong in opposite ways: the
+   first faded too slowly (~86% ground out to two-thirds of the width), washing
+   the traced art to near-white and reading as an empty panel; a later, very
+   soft version let the lede sit over the photograph and a review called the
+   body copy unreadable.  This keeps the copy legible *and* leaves the art a
+   real image on the right. */
 .hero-art::after {{
   content: ""; position: absolute; inset: 0;
   background: linear-gradient(96deg,
-    color-mix(in srgb, var(--bg) 96%, transparent) 0%,
-    color-mix(in srgb, var(--bg) 86%, transparent) 46%,
-    color-mix(in srgb, var(--bg) 42%, transparent) 66%,
-    color-mix(in srgb, var(--bg) 8%, transparent) 86%, transparent 100%);
+    color-mix(in srgb, var(--bg) 95%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 88%, transparent) 36%,
+    color-mix(in srgb, var(--bg) 82%, transparent) 52%,
+    color-mix(in srgb, var(--bg) 14%, transparent) 72%, transparent 88%);
 }}
 .hero-copy {{
   position: relative; z-index: 1; display: grid; gap: clamp(14px, 2vw, 22px);
@@ -1525,16 +1594,16 @@ a {{ color: inherit; }}
 }}
 /* The copy stays in the scrim's strong end: the column is capped, but the block
    itself keeps the page's own gutter so the hero reads left-aligned. */
-.hero-copy > * {{ max-width: min(100%, 620px); }}
-.hero h1 {{ font-size: clamp(38px, 7vw, 76px); font-weight: 600; }}
+.hero-copy > * {{ max-width: min(100%, 520px); }}
+.hero h1 {{ font-size: clamp(36px, 5.6vw, 60px); font-weight: 600; }}
 .hero .subhead {{ font-size: clamp(18px, 2.4vw, 27px); font-weight: 600; }}
-.hero .lede {{ font-size: clamp(16px, 1.7vw, 20px); color: var(--muted); max-width: 60ch; }}
+.hero .lede {{ font-size: clamp(16px, 1.7vw, 20px); color: var(--muted); }}
 .hero .eyebrow {{ margin-bottom: 2px; }}
 .hero .brand {{ font-size: 20px; font-weight: 600; }}
 .hero-actions {{ display: flex; flex-wrap: wrap; gap: 12px; margin-top: 6px; }}
 .hero-badges {{
   list-style: none; display: flex; flex-wrap: wrap; gap: 10px 20px;
-  margin-top: 10px; color: var(--muted); font-size: 14px;
+  margin-top: 18px; color: var(--muted); font-size: 14px;
 }}
 .hero-badges .badge {{ display: inline-flex; align-items: center; gap: 8px; }}
 .hero-badges .badge::before {{
@@ -1565,8 +1634,13 @@ a {{ color: inherit; }}
 /* ---- cards -------------------------------------------------------------- */
 .cards {{
   display: grid; gap: clamp(14px, 1.6vw, 18px);
-  grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr));
+  /* `--cards` is set per band to a count that fills the last row; a greedy
+     `auto-fit` leaves a 4-card band as 3+1, with the last card stranded.  The
+     media queries below take over on narrow screens. */
+  grid-template-columns: repeat(var(--cards, 3), minmax(0, 1fr));
 }}
+@media (max-width: 900px) {{ .cards {{ grid-template-columns: repeat(2, minmax(0, 1fr)); }} }}
+@media (max-width: 560px) {{ .cards {{ grid-template-columns: 1fr; }} }}
 .card {{
   background: var(--card); border: 1px solid var(--border);
   border-radius: 14px; padding: clamp(18px, 1.8vw, 22px);

@@ -413,6 +413,39 @@ The verification loop is now one command, and CI runs it.
 No pipeline, tracer or page code changed; the scores are unchanged
 (`qa/verify.sh` → 2.71 / 2.76 / 2.99 PASS).
 
+## This session's changes (the review loop, and its first fixes)
+
+The studio's design review — which had found every composition defect by hand —
+is now a repeatable tool, and its first run found four defects on the montiva
+fixture. All four are fixed.
+
+- **`doctor critique <job-id | design.png>`** screenshots the built page, sends
+  it and the mockup to the vision model, and prints a ranked list of
+  composition/readability defects (typeface differences explicitly excluded).
+  `--page` reviews an existing page; `--out` saves the raw report; a PNG with no
+  `--page` builds it first. A *review* tool, not a gate stage (live model,
+  subjective).
+- **Hero scrim retuned.** The old gradient held ~86% of the page ground out to
+  two-thirds of the width, washing the traced art to mean **200** where the
+  reference is **143**. A first fix over-corrected (a re-review called the lede
+  unreadable); the final gradient holds the ground across the copy and releases
+  the art by ~88%, with the hero copy capped at 520px and a smaller `h1`
+  (36–60px). Art mean **194**, std 54 → 61: copy legible, art visible on the
+  right.
+- **A phone line folds into its button.** The model returns a two-line button's
+  second line ("Call Now" / "(801) 810-4242") as its own block; it rendered as an
+  orphan paragraph under the button row. `generate._cta_sublabels` folds it in as
+  `.cta-sub`. (Gotcha: `decorate` grows the CTA to its plate, so the line is
+  *inside* the button, not below it — a "directly below" test misses it.)
+- **Card bands fill their last row.** `--cards` is set from `_balanced_cols`, so
+  a four-card band is four across, not a stranded 3+1.
+- **Two new `doctor polarity` guards** cover the logic: "card bands fill their
+  last row" and "phone folds into its button".
+
+The fixture score is the **traced SVG rendered alone** for a `page` layout
+(`verify._render_art`), so none of this moved it — montiva stayed **4.19**. Page
+CSS and the tracer are scored separately, by design. `doctor gate` → **PASS 4/4**.
+
 ## Environment
 
 `brew install potrace` — the only required external binary. `bootstrap.sh` then
