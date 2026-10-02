@@ -992,7 +992,10 @@ CRITIQUE_PROMPT = (
     "backdrop and whose copy is authored DOM text in the site's own type scale.\n"
     "The target is a REAL website, not a pixel copy. The reference's typeface is "
     "deliberately NOT reproduced, so do NOT report typeface/font differences, "
-    "sub-pixel spacing, or missing fine detail. Judge COMPOSITION and "
+    "sub-pixel spacing, or missing fine detail. The output is deliberately "
+    "code-native: the artwork is traced to SVG and the copy is DOM text, so "
+    "photos, icons, avatars and star images from the mockup are intentionally "
+    "absent -- do NOT report them as missing. Judge COMPOSITION and "
     "READABILITY: hierarchy, grouping, balance, contrast, and anything that "
     "reads as a defect (ghosted/duplicated text, stray or orphaned elements, "
     "broken rows, unreadable copy, misplaced sections).\n"
@@ -1025,15 +1028,17 @@ def _vision_data_uri(png: Path, max_edge: int = 1600) -> str:
     return f"data:{mime};base64," + base64.b64encode(buf.getvalue()).decode()
 
 
-def _vision_chat(images: list[Path], prompt: str) -> str:
+def _vision_chat(images: list[Path], prompt: str,
+                 max_edges: list[int] | None = None) -> str:
     """One multi-image chat call, trying the configured model then its fallbacks."""
     import httpx
     from app.config import vision
     if not vision.configured:
         raise RuntimeError("vision model not configured (set studio/backend/.env)")
     content: list[dict] = [{"type": "text", "text": prompt}]
-    for p in images:
-        content.append({"type": "image_url", "image_url": {"url": _vision_data_uri(p)}})
+    edges = max_edges or [1600] * len(images)
+    for p, edge in zip(images, edges):
+        content.append({"type": "image_url", "image_url": {"url": _vision_data_uri(p, edge)}})
     tried: list[str] = []
     for model in vision.models:
         try:
@@ -1052,18 +1057,35 @@ def _vision_chat(images: list[Path], prompt: str) -> str:
     raise RuntimeError("no vision model answered -- " + " | ".join(tried))
 
 
-def _page_screenshot(chrome: str, page: Path, out: Path, height: int = 2400) -> None:
-    """A 1x viewport screenshot of the built page, tall enough for a landing page."""
+def _page_screenshot(chrome: str, page: Path, out: Path, height: int = 6000) -> None:
+    """A 1x full-page screenshot of the built page.
+
+    Chrome only captures the window, so the window is opened generously tall and
+    the uniform background rows below the content are trimmed off.  A fixed
+    2400px window cut a real landing page's contact and footer sections, and the
+    review never saw them -- which is exactly how two real defects were missed.
+    """
+    raw = out.with_name(out.stem + "-raw.png")
     subprocess.run(
         [chrome, "--headless=new", "--disable-gpu", "--hide-scrollbars",
          "--force-device-scale-factor=1", "--force-color-profile=srgb",
          "--no-first-run", "--no-default-browser-check", "--disable-http-cache",
          "--incognito", f"--window-size={config.STAGE_W},{height}",
-         "--virtual-time-budget=8000", f"--screenshot={out}",
+         "--virtual-time-budget=8000", f"--screenshot={raw}",
          page.resolve().as_uri()],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=120, check=True)
-    if not out.is_file() or out.stat().st_size == 0:
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=180, check=True)
+    if not raw.is_file() or raw.stat().st_size == 0:
         raise RuntimeError("Chrome produced no screenshot")
+    import numpy as np
+    from PIL import Image
+    img = Image.open(raw).convert("RGB")
+    arr = np.asarray(img)
+    bg = np.median(arr[:4].reshape(-1, 3), axis=0)
+    rows = np.abs(arr.astype(int) - bg).sum(axis=2).max(axis=1)
+    nz = np.nonzero(rows > 12)[0]
+    h = min(img.height, max(200, int(nz.max()) + 16)) if len(nz) else img.height
+    img.crop((0, 0, img.width, h)).save(out)
+    raw.unlink(missing_ok=True)
 
 
 def _build_for_critique(png: Path):
@@ -1105,13 +1127,15 @@ def cmd_critique(args: list[str]) -> int:
         doctor critique <job-id>                       review an existing build
         doctor critique <design.png>                   build it first, then review
         doctor critique <design.png> --page <built.html>
-        doctor critique <job-id> --height 3200 --out report.json
+        doctor critique <job-id> --out report.json
 
-    The mockup and a screenshot of the built page go to the configured vision
-    model, which returns a ranked list of composition/readability defects
-    (typeface differences are explicitly out of scope).  This makes the review
-    loop that found the ghosting and the composition defects repeatable, and its
-    output comparable across builds.
+    The mockup and a full-page screenshot of the built page go to the configured
+    vision model, which returns a ranked list of composition/readability defects
+    (typeface differences and missing raster assets are explicitly out of scope).
+    The screenshot is captured tall and trimmed to the content, so a long page's
+    lower sections are reviewed too.  This makes the review loop that found the
+    ghosting and the composition defects repeatable, and its output comparable
+    across builds.
     """
     from app.jobs import JobStore
     from app.verify import find_chrome
@@ -1124,7 +1148,9 @@ def cmd_critique(args: list[str]) -> int:
     target = pos[0]
     page_arg = args[args.index("--page") + 1] if "--page" in args else None
     out_arg = args[args.index("--out") + 1] if "--out" in args else None
-    height = int(args[args.index("--height") + 1]) if "--height" in args else 2400
+    # The window is opened this tall and the background below the content is
+    # trimmed, so the default is a ceiling, not the page height.
+    height = int(args[args.index("--height") + 1]) if "--height" in args else 6000
 
     mockup: Path | None = None
     page: Path | None = None
@@ -1157,16 +1183,21 @@ def cmd_critique(args: list[str]) -> int:
     shot = Path(tempfile.mkdtemp()) / "page.png"
     print(f"mockup : {mockup}")
     print(f"page   : {page}")
-    print(f"shooting the page at {config.STAGE_W}x{height} ...")
     try:
         _page_screenshot(chrome, page, shot, height=height)
     except Exception as exc:  # noqa: BLE001
         print(f"screenshot failed: {exc}")
         return 1
+    from PIL import Image
+    w, h = Image.open(shot).size
+    print(f"full page captured at {w}x{h}")
 
     print("asking the vision model to review ...")
     try:
-        report = _parse_critique(_vision_chat([mockup, shot], CRITIQUE_PROMPT))
+        # The page is taller than the mockup and carries the small print, so it
+        # gets a larger long edge (still well under the payload limit).
+        report = _parse_critique(
+            _vision_chat([mockup, shot], CRITIQUE_PROMPT, max_edges=[1600, 2400]))
     except Exception as exc:  # noqa: BLE001
         print(f"critique failed: {exc}")
         return 1

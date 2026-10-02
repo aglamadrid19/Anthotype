@@ -326,11 +326,13 @@ studio/.venv/bin/python studio/backend/doctor.py job <id>   # full status + logs
   failing.
 - **`critique`** is the design review, made repeatable. Give it a job id (review
   the existing build) or a design PNG (build it first), and it screenshots the
-  built page, sends it and the mockup to the vision model, and prints a ranked
-  list of composition/readability defects. Typeface differences are explicitly
-  out of scope (the page is authored in its own type). This is the loop that
-  found the hero ghosting and the composition defects; `--out report.json` keeps
-  the raw report so two builds can be compared.
+  **whole** built page (captured tall, trimmed to the content, so the lower
+  sections are reviewed too), sends it and the mockup to the vision model, and
+  prints a ranked list of composition/readability defects. Typeface differences
+  and missing raster assets are explicitly out of scope (the page is authored in
+  its own type and carries no raster images). This is the loop that found the
+  hero ghosting and the composition defects; `--out report.json` keeps the raw
+  report so two builds can be compared.
 - **`job`/`jobs`** read the on-disk job store, so a failed job's full log is
   available after the fact.
 
