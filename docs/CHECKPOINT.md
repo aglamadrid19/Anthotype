@@ -377,13 +377,18 @@ The verification loop is now one command, and CI runs it.
   The cheap guard can no longer be forgotten (skip with `--no-verify`).
 - **`doctor critique <job-id | design.png>`** — the design review that found the
   ghosting and the composition defects is now a repeatable tool. It screenshots
-  the built page, sends it and the mockup to the vision model, and prints a
-  ranked list of composition/readability defects (typeface differences are
-  explicitly out of scope). `--page` reviews an existing page, `--out` saves the
-  raw report. It is a *review* tool, not a gate stage: it needs a live model and
-  is subjective. First run (montiva fixture) flagged a pale hero backdrop, an
-  orphaned phone line, weak badge-row separation and a 3+1 card wrap — real
-  defects, not yet fixed.
+  the whole built page (captured tall, trimmed to the content, so lower sections
+  are reviewed too), sends it and the mockup to the vision model, and prints a
+  ranked list of composition/readability defects (typeface differences and
+  missing raster assets are explicitly out of scope). `--page` reviews an
+  existing page, `--out` saves the raw report. A single verdict is noisy, so
+  `--votes N` keeps only the complaints that recur across runs and `--baseline`
+  tags each defect NEW/carried (with `--fail-on-new` to fail on a new
+  high-severity one); defects carry a model-assigned stable `key` so they match
+  across runs and builds. It is a *review* tool, not a gate stage: it needs a
+  live model and is subjective. On the montiva fixture it flagged a pale hero
+  backdrop, an orphaned phone line, weak badge-row separation and a 3+1 card
+  wrap — all since fixed.
 - **Python deps pinned** — `pipeline/requirements.txt` (numpy/pillow/scipy/
   scikit-image) and `studio/backend/requirements.txt`. The A/B/C scores are a
   numeric gate computed through those libraries, so an unpinned `pip install`
@@ -419,11 +424,15 @@ The studio's design review — which had found every composition defect by hand 
 is now a repeatable tool, and its first run found four defects on the montiva
 fixture. All four are fixed.
 
-- **`doctor critique <job-id | design.png>`** screenshots the built page, sends
-  it and the mockup to the vision model, and prints a ranked list of
-  composition/readability defects (typeface differences explicitly excluded).
-  `--page` reviews an existing page; `--out` saves the raw report; a PNG with no
-  `--page` builds it first. A *review* tool, not a gate stage (live model,
+- **`doctor critique <job-id | design.png>`** screenshots the whole built page,
+  sends it and the mockup to the vision model, and prints a ranked list of
+  composition/readability defects (typeface differences and missing raster
+  assets explicitly excluded). `--page` reviews an existing page; `--out` saves
+  the raw report; a PNG with no `--page` builds it first. A single verdict is
+  noisy, so `--votes N` keeps only the complaints that recur across runs and
+  `--baseline` tags each defect NEW/carried (`--fail-on-new` fails on a new
+  high-severity one); defects carry a model-assigned stable `key` so they match
+  across runs and builds. A *review* tool, not a gate stage (live model,
   subjective).
 - **Hero scrim retuned.** The old gradient held ~86% of the page ground out to
   two-thirds of the width, washing the traced art to mean **200** where the

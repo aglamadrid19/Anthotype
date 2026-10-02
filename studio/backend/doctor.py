@@ -1002,7 +1002,10 @@ CRITIQUE_PROMPT = (
     "Return ONLY a JSON object:\n"
     '{"verdict": "<one sentence>", "defects": [{"rank": 1, '
     '"severity": "high|medium|low", "where": "<region: header|hero|cards|'
-    'contact|footer|...>", "what": "<one sentence>", "fix": "<one sentence>"}]}\n'
+    'contact|footer|...>", "key": "<2-4 word kebab-case slug naming this '
+    'specific defect, e.g. hero-art-nodes-faint or cta-label-contrast; use the '
+    'SAME key whenever you report the same defect>", "what": "<one sentence>", '
+    '"fix": "<one sentence>"}]}\n'
     "Rank by how much each defect hurts the page. Omit anything caused only by "
     "the different typeface. No markdown, no commentary."
 )
@@ -1121,13 +1124,109 @@ def _parse_critique(raw: str) -> dict:
         return json.loads(m.group(0))
 
 
+_CRIT_ORDER = {"high": 3, "medium": 2, "low": 1}
+
+
+def _stem(w: str) -> str:
+    """Crude suffix strip, so faint/faintly and node/nodes compare equal."""
+    for suf in ("ingly", "edly", "ly", "ing", "ed", "s"):
+        if w.endswith(suf) and len(w) - len(suf) >= 4:
+            return w[: -len(suf)]
+    return w
+
+
+def _crit_tokens(d: dict) -> tuple[str, str, set[str]]:
+    """(key, where, what-tokens) for a defect record.
+
+    `key` is the model's own stable slug.  It is the reliable way to match a
+    defect across runs and builds -- the prose is reworded freely ("the left
+    nodes are faint" / "left satellite nodes render faintly" / "barely visible
+    ghosts"), so wording alone cannot be trusted.
+    """
+    key = re.sub(r"[^a-z0-9]+", "-", str(d.get("key", "")).lower()).strip("-")
+    where = re.sub(r"[^a-z]+", "", str(d.get("where", "")).lower())
+    what = re.sub(r"[^a-z0-9 ]+", " ", str(d.get("what", "")).lower())
+    return key, where, {_stem(w) for w in what.split()}
+
+
+def _crit_same(a: tuple[str, str, set[str]], b: tuple[str, str, set[str]],
+               thresh: float = 0.5) -> bool:
+    """Two defect records are the same complaint."""
+    ka, wa, ta = a
+    kb, wb, tb = b
+    if ka and kb:
+        # Prefer the model's slug: exact, or one a prefix/extension of the other
+        # ("hero-art-nodes" vs "hero-art-nodes-faint"), or a high word overlap.
+        if ka == kb or ka.startswith(kb) or kb.startswith(ka):
+            return True
+        sa, sb = set(ka.split("-")), set(kb.split("-"))
+        if sa and sb and len(sa & sb) / min(len(sa), len(sb)) >= 0.6:
+            return True
+        return False
+    if wa and wb and not (wa == wb or wa.startswith(wb) or wb.startswith(wa)):
+        return False
+    if not ta or not tb:
+        return False
+    inter = len(ta & tb)
+    return inter / len(ta | tb) >= thresh or inter / min(len(ta), len(tb)) >= 0.75
+
+
+def _severity(d: dict) -> int:
+    return _CRIT_ORDER.get(str(d.get("severity", "")).lower(), 0)
+
+
+def _merge_defects(runs: list[list[dict]]) -> list[dict]:
+    """Consensus across runs: keep complaints seen in at least half of them.
+
+    The model's verdict is unstable run to run -- one review called the hero art
+    washed out, the next called the *same* art too faint *and* the copy
+    unreadable -- so a single report is a hint, not a verdict.  Requiring
+    agreement keeps what is reproducible and drops the noise.
+    """
+    groups: list[dict] = []
+    for defects in runs:
+        counted: set[int] = set()
+        for d in defects:
+            tok = _crit_tokens(d)
+            for g in groups:
+                if _crit_same(tok, g["tok"]):
+                    if id(g) not in counted:
+                        g["n"] += 1
+                        counted.add(id(g))
+                    if _severity(d) > _severity(g["d"]):
+                        g["d"] = d
+                    break
+            else:
+                groups.append({"tok": tok, "d": d, "n": 1})
+                counted.add(id(groups[-1]))
+    need = max(1, (len(runs) + 1) // 2)
+    keep = [g for g in groups if g["n"] >= need]
+    keep.sort(key=lambda g: (-_severity(g["d"]), -g["n"]))
+    return [{**g["d"], "votes": g["n"]} for g in keep]
+
+
+def _match_baseline(defects: list[dict], baseline: list[dict]) -> tuple[set[int], set[int]]:
+    """(indices of current defects carried over, indices of baseline defects fixed)."""
+    carried: set[int] = set()
+    used: set[int] = set()
+    for i, d in enumerate(defects):
+        tok = _crit_tokens(d)
+        for j, b in enumerate(baseline):
+            if j not in used and _crit_same(tok, _crit_tokens(b)):
+                carried.add(i)
+                used.add(j)
+                break
+    return carried, {j for j in range(len(baseline)) if j not in used}
+
+
 def cmd_critique(args: list[str]) -> int:
     """Review a generated page against its mockup with the vision model.
 
         doctor critique <job-id>                       review an existing build
         doctor critique <design.png>                   build it first, then review
         doctor critique <design.png> --page <built.html>
-        doctor critique <job-id> --out report.json
+        doctor critique <job-id> --votes 3 --out report.json
+        doctor critique <job-id> --baseline report.json [--fail-on-new]
 
     The mockup and a full-page screenshot of the built page go to the configured
     vision model, which returns a ranked list of composition/readability defects
@@ -1136,6 +1235,14 @@ def cmd_critique(args: list[str]) -> int:
     lower sections are reviewed too.  This makes the review loop that found the
     ghosting and the composition defects repeatable, and its output comparable
     across builds.
+
+    The model's verdict is unstable run to run, so `--votes N` runs the review N
+    times and reports only the complaints that recur in at least half of them
+    (with a `xN` vote count).  `--baseline report.json` compares against a saved
+    report: each defect is tagged NEW or (carried), the ones that disappeared are
+    listed as fixed, and `--fail-on-new` exits non-zero when a *new* high-severity
+    defect appears -- a regression gate for a caller that has accepted the known
+    ones.
     """
     from app.jobs import JobStore
     from app.verify import find_chrome
@@ -1143,11 +1250,14 @@ def cmd_critique(args: list[str]) -> int:
     pos = [a for a in args if not a.startswith("-")]
     if not pos:
         print("usage: doctor critique <job-id | design.png> [--page <built.html>] "
-              "[--height N] [--out report.json]")
+              "[--height N] [--votes N] [--baseline report.json] "
+              "[--fail-on-new] [--out report.json]")
         return 2
     target = pos[0]
     page_arg = args[args.index("--page") + 1] if "--page" in args else None
     out_arg = args[args.index("--out") + 1] if "--out" in args else None
+    base_arg = args[args.index("--baseline") + 1] if "--baseline" in args else None
+    votes = max(1, int(args[args.index("--votes") + 1]) if "--votes" in args else 1)
     # The window is opened this tall and the background below the content is
     # trimmed, so the default is a ceiling, not the page height.
     height = int(args[args.index("--height") + 1]) if "--height" in args else 6000
@@ -1192,30 +1302,77 @@ def cmd_critique(args: list[str]) -> int:
     w, h = Image.open(shot).size
     print(f"full page captured at {w}x{h}")
 
-    print("asking the vision model to review ...")
-    try:
-        # The page is taller than the mockup and carries the small print, so it
-        # gets a larger long edge (still well under the payload limit).
-        report = _parse_critique(
-            _vision_chat([mockup, shot], CRITIQUE_PROMPT, max_edges=[1600, 2400]))
-    except Exception as exc:  # noqa: BLE001
-        print(f"critique failed: {exc}")
-        return 1
+    # The page is taller than the mockup and carries the small print, so it gets
+    # a larger long edge (still well under the payload limit).
+    edges = [1600, 2400]
+    runs: list[list[dict]] = []
+    verdict = ""
+    for i in range(votes):
+        if votes > 1:
+            print(f"review {i + 1}/{votes} ...")
+        else:
+            print("asking the vision model to review ...")
+        try:
+            rep = _parse_critique(_vision_chat([mockup, shot], CRITIQUE_PROMPT,
+                                               max_edges=edges))
+        except Exception as exc:  # noqa: BLE001
+            print(f"critique failed: {exc}")
+            if not runs:
+                return 1
+            break
+        if i == 0:
+            verdict = str(rep.get("verdict", "")).strip()
+        runs.append(rep.get("defects") or [])
 
-    verdict = str(report.get("verdict", "")).strip()
-    defects = report.get("defects") or []
+    defects = _merge_defects(runs) if votes > 1 else (runs[0] if runs else [])
+    baseline = None
+    if base_arg:
+        try:
+            baseline = json.loads(Path(base_arg).read_text()).get("defects") or []
+        except Exception as exc:  # noqa: BLE001
+            print(f"cannot read baseline {base_arg}: {exc}")
+            return 2
+    carried, fixed = (_match_baseline(defects, baseline)
+                      if baseline is not None else (set(), set()))
+
     print()
-    print(f"verdict: {verdict or '(none)'}\n")
+    print(f"verdict: {verdict or '(none)'}")
+    if votes > 1:
+        print(f"consensus: {len(defects)} defect(s) in >= {max(1, (votes + 1) // 2)}/{votes} runs")
+    print()
     if not defects:
         print("no composition defects reported.")
-    for d in defects:
+    for i, d in enumerate(defects):
         sev = str(d.get("severity", "?")).lower()
-        print(f"  [{sev:6s}] {d.get('where', '?')} — {d.get('what', '')}")
+        tag = ""
+        if d.get("votes", 1) > 1:
+            tag += f" x{d['votes']}"
+        if baseline is not None:
+            tag += "  (carried)" if i in carried else "  NEW"
+        print(f"  [{sev:6s}]{tag} {d.get('where', '?')} — {d.get('what', '')}")
         if d.get("fix"):
             print(f"           fix: {d['fix']}")
+    if fixed:
+        print(f"\nfixed since the baseline ({len(fixed)}):")
+        for j in sorted(fixed):
+            print(f"  - [{str(baseline[j].get('severity', '?')).lower():6s}] "
+                  f"{baseline[j].get('where', '?')} — {baseline[j].get('what', '')}")
+
     if out_arg:
+        report = {"verdict": verdict, "defects": defects}
+        if baseline is not None:
+            report["baseline"] = {"carried": len(carried), "fixed": len(fixed)}
         Path(out_arg).write_text(json.dumps(report, indent=2))
         print(f"\nreport written to {out_arg}")
+
+    # An optional gate for a caller that wants the review to fail on a *new*
+    # high-severity defect (a regression), while carrying known ones.
+    if "--fail-on-new" in args and baseline is not None:
+        new_high = [d for i, d in enumerate(defects)
+                    if i not in carried and str(d.get("severity", "")).lower() == "high"]
+        if new_high:
+            print(f"\n{len(new_high)} NEW high-severity defect(s)")
+            return 1
     return 0
 
 

@@ -332,7 +332,11 @@ studio/.venv/bin/python studio/backend/doctor.py job <id>   # full status + logs
   and missing raster assets are explicitly out of scope (the page is authored in
   its own type and carries no raster images). This is the loop that found the
   hero ghosting and the composition defects; `--out report.json` keeps the raw
-  report so two builds can be compared.
+  report so two builds can be compared. A single verdict is noisy, so
+  `--votes N` reports only the complaints that recur across N runs (with a
+  vote count), and `--baseline report.json` tags each defect NEW or carried,
+  lists what got fixed, and — with `--fail-on-new` — exits non-zero on a new
+  high-severity defect.
 - **`job`/`jobs`** read the on-disk job store, so a failed job's full log is
   available after the fact.
 
