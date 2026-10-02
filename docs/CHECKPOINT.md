@@ -439,8 +439,19 @@ fixture. All four are fixed.
   *inside* the button, not below it — a "directly below" test misses it.)
 - **Card bands fill their last row.** `--cards` is set from `_balanced_cols`, so
   a four-card band is four across, not a stranded 3+1.
-- **Two new `doctor polarity` guards** cover the logic: "card bands fill their
-  last row" and "phone folds into its button".
+- **Contact panel.** The model returns a value's caption ("Call or Text",
+  "Email Us") as its own block, so grouping by x-overlap merged captions into
+  the wrong column and could promote the email address to a heading.
+  `_value_label_pairs` pairs a value (phone / email / button) with the caption
+  under it, and the panel is a titled card of value/label items.
+- **Footer.** The repeated nav links are role `other` (the model tags header
+  links `cta`), so they fell into the meta row and the footer read as one
+  jumbled wrap. `_footer_nav_links` finds the packed run of short links; the
+  brand's tagline stays with the brand; the footer is brand+nav on top with the
+  legal/meta line full width below.
+- **Four new `doctor polarity` guards** total cover the logic: "card bands fill
+  their last row", "phone folds into its button", "contact panel pairs value +
+  label", and "footer nav links detected".
 
 The fixture score is the **traced SVG rendered alone** for a `page` layout
 (`verify._render_art`), so none of this moved it — montiva stayed **4.19**. Page

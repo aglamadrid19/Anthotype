@@ -636,6 +636,84 @@ def _columns(blocks: list[Block]) -> list[list[Block]]:
     return cols
 
 
+def _is_email(b: Block) -> bool:
+    t = b.text.strip()
+    return "@" in t and "." in t.split("@")[-1] and " " not in t
+
+
+def _is_caption(b: Block) -> bool:
+    """A small label under a value ("Call or Text"), not a sentence."""
+    t = b.text.strip()
+    return (len(t) <= 28 and len(t.split()) <= 3 and not _is_email(b)
+            and not t.endswith((".", "?", "!", ":")))
+
+
+def _value_label_pairs(blocks: list[Block]) -> tuple[list[tuple[Block, Block]], set[int]]:
+    """Split a band into `(value, label)` items and the label ids.
+
+    A contact panel lists value/label items: a phone, an email or a booking
+    button, each with a small caption right under it ("Call or Text", "Email
+    Us", "Same week availability").  The model reports the caption as its own
+    block, so grouping purely by x-overlap merges the caption into the wrong
+    column and the email address can even be promoted to a heading.
+    """
+    labels: set[int] = set()
+    pairs: list[tuple[Block, Block]] = []
+    for v in blocks:
+        # Only a contact value can head a pair: a phone, an email, or a button.
+        # Accepting any short line paired a section heading with the sentence
+        # under it and swallowed the heading.
+        if id(v) in labels or not (v.role == "cta" or _is_phone(v) or _is_email(v)):
+            continue
+        cands = [l for l in blocks
+                 if l is not v and id(l) not in labels and _x_overlaps(l, v)
+                 # The caption sits in the lower half of the value or just under
+                 # it.  `decorate` grows a CTA (and snaps other boxes) to the
+                 # full plate, so the caption is often *inside* the value's box.
+                 and (v.bbox[1] + v.bbox[3]) / 2 - 2 <= l.bbox[1] <= v.bbox[3] + 12
+                 and _is_caption(l) and l.bbox[0] >= v.bbox[0] - 6]
+        if cands:
+            l = min(cands, key=lambda x: (x.bbox[1], x.bbox[0]))
+            labels.add(id(l))
+            pairs.append((v, l))
+    return pairs, labels
+
+
+def _panel_item(v: Block, l: Block, cta_href: str) -> str:
+    """One value/label item; a phone or email becomes a link."""
+    if v.role == "cta":
+        return (f'<div class="panel-item">\n          '
+                f'{_cta_html(v, cta_href, "cta small")}\n          '
+                f'<span class="pi-label">{_inline(l)}</span>\n        </div>')
+    href = (_tel(v.text) if _is_phone(v)
+            else "mailto:" + v.text.strip() if _is_email(v) else None)
+    body = (f'<span class="pi-value">{_inline(v)}</span>'
+            f'<span class="pi-label">{_inline(l)}</span>')
+    if href:
+        return f'<a class="panel-item" href="{_attr(href)}">{body}</a>'
+    return f'<div class="panel-item">{body}</div>'
+
+
+def _panel(header: list[Block], pairs: list[tuple[Block, Block]],
+           cta_href: str) -> str:
+    """A titled panel of value/label items (a contact block)."""
+    parts: list[str] = []
+    for i, b in enumerate(header):
+        if i == 0:
+            parts.append(f"<h3>{_inline(b)}</h3>")
+        elif _is_eyebrow(b):
+            parts.append(f'<p class="eyebrow">{_inline(b)}</p>')
+        else:
+            parts.append(f"<p>{_inline(b)}</p>")
+    # Left to right, as the reference lists them (reading order sorts by y first,
+    # and a caption row is rarely aligned to the pixel).
+    pairs = sorted(pairs, key=lambda p: p[0].bbox[0])
+    items = "\n          ".join(_panel_item(v, l, cta_href) for v, l in pairs)
+    parts.append(f'<div class="panel-items">\n          {items}\n        </div>')
+    return ('<div class="col panel">\n        '
+            + "\n        ".join(parts) + "\n      </div>")
+
+
 def _infer_sections(blocks: list[Block]) -> list[tuple[str, list[Block]]]:
     """Name sections by position and eyebrow keywords when the model declared none.
 
@@ -1027,12 +1105,15 @@ def _x_overlaps(a: Block, b: Block) -> bool:
 def _has_below(b: Block, others: list[Block], gap: float = 44.0) -> bool:
     """Is there copy in `b`'s own column just under it?
 
-    Then `b` heads a column rather than acting as a section-level link.
+    Then `b` heads a column rather than acting as a section-level link.  The
+    block may start *inside* `b`'s box: `decorate` grows a CTA to its plate, so a
+    caption on the plate's second line starts above the plate's bottom edge.
     """
+    h = max(1.0, b.bbox[3] - b.bbox[1])
     for o in others:
         if o is b or not _x_overlaps(o, b):
             continue
-        if -2.0 <= o.bbox[1] - b.bbox[3] < gap:
+        if -h <= o.bbox[1] - b.bbox[3] < gap:
             return True
     return False
 
@@ -1126,6 +1207,24 @@ def _band_html(name: str, band: list[Block], cta_href: str) -> str:
         else:
             # A non-grid band (contact details, a two-column blurb) keeps its
             # columns but not the card chrome.
+            pairs, pair_labels = _value_label_pairs(cards_src)
+            panel = None
+            if len(pairs) >= 2:
+                # The items define a panel: their column is one cell, the blocks
+                # above them are its header, and everything else stays a column.
+                px0 = min(min(v.bbox[0], l.bbox[0]) for v, l in pairs)
+                px1 = max(max(v.bbox[2], l.bbox[2]) for v, l in pairs)
+                # A block above the caption row is the panel's header.  Measure
+                # from the captions (not the values): `decorate` grows a CTA plate
+                # upward, so a value's top can sit above the header it follows.
+                items_top = min(l.bbox[1] for v, l in pairs)
+                used = {id(b) for v, l in pairs for b in (v, l)}
+                header = [b for b in cards_src if id(b) not in used
+                          and min(px1, b.bbox[2]) - max(px0, b.bbox[0]) > 0
+                          and b.bbox[3] <= items_top + 6]
+                used |= {id(b) for b in header}
+                cols = _columns([b for b in cards_src if id(b) not in used])
+                panel = _panel(header, pairs, cta_href)
             cells = []
             for col in cols:
                 # A run of nav links (a footer's link row the model grouped into
@@ -1152,6 +1251,8 @@ def _band_html(name: str, band: list[Block], cta_href: str) -> str:
                 _flush()
                 body = "\n        ".join(rows)
                 cells.append(f'<div class="col">\n        {body}\n      </div>')
+            if panel:
+                cells.append(panel)
             parts.append('<div class="cols">\n      '
                          + "\n      ".join(cells) + "\n    </div>")
     return "\n    ".join(parts)
@@ -1382,27 +1483,84 @@ def build_markup(sections: list[tuple[str, list[Block]]],
     return "\n  ".join(parts)
 
 
+def _footer_nav_links(blocks: list[Block]) -> set[int]:
+    """Ids of the footer's nav links.
+
+    The model tags a *header* nav link `cta` but a *footer* link `other`, so
+    `_nav_links` misses them and they land in the meta row.  A footer nav is the
+    run of short links that share a row and are packed together; the address and
+    the legal links sit apart from it (a real horizontal gap).
+    """
+    links = {id(b) for b in blocks if id(b) in _nav_links()}
+    cand = [b for b in blocks if id(b) not in links and _is_navish(b)
+            and not any(c.isdigit() for c in b.text) and "©" not in b.text]
+    rows: list[list[Block]] = []
+    for b in sorted(cand, key=lambda b: (b.bbox[1], b.bbox[0])):
+        for row in rows:
+            if any(_overlaps(b, o) for o in row):
+                row.append(b)
+                break
+        else:
+            rows.append([b])
+    for row in rows:
+        row.sort(key=lambda b: b.bbox[0])
+        cluster = [row[0]]
+        for a, b in zip(row, row[1:]):
+            if b.bbox[0] - a.bbox[2] > 40:      # a real gap ends the run
+                if len(cluster) >= 3:
+                    links |= {id(x) for x in cluster}
+                cluster = [b]
+            else:
+                cluster.append(b)
+        if len(cluster) >= 3:
+            links |= {id(x) for x in cluster}
+    return links
+
+
 def _footer_html(blocks: list[Block], cta_href: str) -> str:
-    """The footer bar: brand, a nav row, and the legal/meta lines.
+    """The footer bar: brand + tagline, a nav row, and the legal/meta lines.
 
     A reference footer is a *bar* -- brand on the left, the repeated nav links,
     then the address and the legal line.  Emitting every block as an equal sibling
-    turns it into a wall of links with no hierarchy, so the parts are grouped: the
-    brand, one nav row, and the rest as small print.
+    turns it into a wall of links with no hierarchy, so the parts are grouped:
+    the brand, one nav row, and the rest as small print.  Brand+nav share a top
+    row; the meta gets a full-width row of its own, so it does not stack into a
+    tall right-hand column.
     """
     blocks = sorted(blocks, key=lambda b: (round(b.bbox[1]), round(b.bbox[0])))
     brand = next((b for b in blocks if b.role == "brand"), None)
-    links = [b for b in blocks if id(b) in _nav_links()]
-    cta = next((b for b in blocks if b.role == "cta" and id(b) not in _nav_links()), None)
+    nav_ids = _footer_nav_links(blocks)
+    links = [b for b in blocks if id(b) in nav_ids]
+    cta = next((b for b in blocks if b.role == "cta" and id(b) not in nav_ids), None)
     rest = [b for b in blocks if b is not brand and b not in links and b is not cta]
 
-    out: list[str] = []
+    # A short line in the brand's own column is its tagline, not stray meta: left
+    # in the meta row it drifts far from the brand it describes.  It may start
+    # *inside* the brand's box -- `snap_to_ink` grows a short box to its ink rows.
+    tagline = None
     if brand is not None:
-        out.append(f'<div class="footer-brand">'
-                   f'<a class="brand" href="#top">{_inline(brand)}</a></div>')
+        bh = brand.bbox[3] - brand.bbox[1]
+        under = [b for b in rest if _x_overlaps(b, brand)
+                 and brand.bbox[1] + 0.35 * bh <= b.bbox[1] <= brand.bbox[3] + 12
+                 and len(b.text) <= 40]
+        if under:
+            tagline = min(under, key=lambda b: b.bbox[1])
+            rest.remove(tagline)
+
+    top: list[str] = []
+    if brand is not None:
+        tag = (f'<span class="footer-tag">{_inline(tagline)}</span>'
+               if tagline is not None else "")
+        top.append(f'<div class="footer-brand">'
+                   f'<a class="brand" href="#top">{_inline(brand)}</a>{tag}</div>')
     if links:
         nav = "".join(f'<a href="{_attr(cta_href)}">{_inline(b)}</a>' for b in links)
-        out.append(f'<nav class="footer-nav" aria-label="Footer">{nav}</nav>')
+        top.append(f'<nav class="footer-nav" aria-label="Footer">{nav}</nav>')
+
+    out: list[str] = []
+    if top:
+        out.append('<div class="footer-top">\n      ' + "\n      ".join(top)
+                   + "\n    </div>")
     if rest or cta:
         bits = []
         if cta is not None:
@@ -1682,6 +1840,18 @@ a {{ color: inherit; }}
 .col {{ display: grid; gap: 10px; align-content: start; }}
 .col h3 {{ font-size: clamp(20px, 2.4vw, 26px); font-weight: 600; }}
 .col p {{ color: var(--muted); font-size: 15.5px; max-width: 52ch; }}
+/* A contact panel: a title, a line of copy, then value/label items in a row. */
+.col.panel {{ gap: 8px; }}
+.panel-items {{
+  display: grid; gap: 18px 28px; margin-top: 8px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 150px), 1fr));
+}}
+.panel-item {{ display: grid; gap: 3px; align-content: start; text-decoration: none; }}
+.panel-item .pi-value {{ color: var(--ink); font-weight: 600; font-size: 15.5px; }}
+.panel-item .pi-label {{ color: var(--muted); font-size: 13.5px; }}
+a.panel-item:hover .pi-value {{ color: var(--accent); }}
+.panel-item .cta {{ justify-self: start; }}
+.panel-item .pi-label {{ justify-self: start; }}
 
 /* ---- buttons ------------------------------------------------------------ */
 .cta {{
@@ -1702,21 +1872,23 @@ a {{ color: inherit; }}
 
 /* ---- footer ------------------------------------------------------------- */
 .site-footer {{ padding: clamp(40px, 6vw, 64px) 0; }}
-.site-footer .wrap {{
-  display: flex; flex-wrap: wrap; gap: 18px 36px;
-  align-items: center; justify-content: space-between; color: var(--muted);
-  font-size: 14.5px;
+/* Brand+nav share a top row; the meta gets a full-width row of its own.  A
+   single flex row let the wide meta force the brand onto its own line and wrap
+   the rest together, and a right-hand meta column stacked five items tall. */
+.site-footer .wrap {{ display: grid; gap: 20px 40px; color: var(--muted); font-size: 14.5px; }}
+.footer-top {{
+  display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between;
+  gap: 16px clamp(24px, 4vw, 52px);
 }}
-.footer-brand {{ display: flex; align-items: center; }}
-.site-footer .brand {{ font-size: 16px; color: var(--ink); }}
-.footer-nav {{
-  display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px;
-}}
+.footer-brand {{ display: grid; gap: 4px; justify-self: start; }}
+.site-footer .brand {{ font-size: 16px; color: var(--ink); text-decoration: none; }}
+.footer-tag {{ color: var(--muted); font-size: 12px; letter-spacing: 0.06em; }}
+.footer-nav {{ display: flex; flex-wrap: wrap; align-items: center; gap: 10px 22px; }}
 .footer-nav a {{ color: var(--muted); text-decoration: none; transition: color .15s ease; }}
 .footer-nav a:hover {{ color: var(--ink); }}
 .footer-meta {{
-  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 20px;
-  justify-content: flex-end;
+  display: flex; flex-wrap: wrap; align-items: center; gap: 8px 24px;
+  border-top: 1px solid var(--border); padding-top: 18px;
 }}
 .footer-meta .footer-note {{ color: var(--muted); }}
 .footer-meta .footer-link {{ color: var(--muted); text-decoration: none; }}

@@ -568,6 +568,31 @@ def cmd_polarity(_args: list[str]) -> int:
     _line(OK if subs.get(id(btn)) is phone else BAD, "phone folds into its button",
           f"{len(subs)} sublabel(s)")
 
+    # A contact panel pairs each value with the caption under it -- even though
+    # `decorate` has grown the value's box over the caption (the plate gotcha).
+    # A long paragraph above them must not be mistaken for a value.
+    para = Block("Have a question or need help? We're here for you.",
+                 "tagline", (608, 604, 762, 612))
+    tel = Block("(801) 810-4242", "other", (630, 616, 684, 624))
+    cap = Block("Call or Text", "other", (630, 625, 662, 632))
+    pairs, _ = generate._value_label_pairs([para, tel, cap])
+    _line(OK if pairs == [(tel, cap)] else BAD, "contact panel pairs value + label",
+          f"{[(v.text, l.text) for v, l in pairs]}")
+
+    # A footer's nav links are `other`, not `cta`, and sit in a packed run; the
+    # address and the legal links must not be pulled into the nav row.
+    foot = [Block("Montiva Group", "brand", (114, 638, 198, 668)),
+            Block("Home", "other", (404, 640, 442, 648)),
+            Block("Services", "other", (442, 640, 488, 648)),
+            Block("About", "other", (486, 640, 524, 648)),
+            Block("Support", "other", (522, 640, 568, 648)),
+            Block("Contact", "other", (566, 640, 612, 648)),
+            Block("Pleasant Grove, UT", "other", (726, 640, 800, 648)),
+            Block("Privacy Policy", "other", (852, 652, 900, 660))]
+    nav_text = {b.text for b in foot if id(b) in generate._footer_nav_links(foot)}
+    _line(OK if nav_text == {"Home", "Services", "About", "Support", "Contact"} else BAD,
+          "footer nav links detected", f"{sorted(nav_text)}")
+
     print()
     if _failures:
         print(f"{_failures} check(s) failed")
