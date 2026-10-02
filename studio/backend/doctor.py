@@ -271,6 +271,29 @@ def _synth_stage(bg: tuple[int, int, int], ink: tuple[int, int, int],
     return np.asarray(img.convert("RGB")).astype(np.float32)
 
 
+def _seam_probe(flat: bool) -> float:
+    """A 120x90 stage with one blanked rect, filled flat or continued smoothly.
+
+    `flat=False` paints a white plate inside the rect on a grey ground -- the
+    shape a design review reads as a pasted-on smudge.  `flat=True` continues the
+    ground's gradient through it, which is what a correct fill looks like.
+    """
+    import numpy as np
+    from app.verify import blank_seams
+    ramp = np.linspace(60, 200, 120)
+    img = np.zeros((90, 120, 3), np.float32)
+    img[:, :] = ramp[None, :, None]                          # a left-to-right ramp
+    mask = np.zeros((90, 120), bool)
+    mask[30:60, 40:80] = True
+    if flat:
+        # The ground *continued* through the rect -- what a correct fill looks
+        # like, so there is no step at its edge.
+        img[30:60, 40:80] = ramp[40:80][None, :, None]
+    else:
+        img[30:60, 40:80] = 245.0                            # a flat white plate
+    return blank_seams(img, mask) or 0.0
+
+
 def cmd_polarity(_args: list[str]) -> int:
     """Synthetic light/dark checks -- no vision model, no pipeline, fast.
 
@@ -458,11 +481,16 @@ def cmd_polarity(_args: list[str]) -> int:
     _line(OK if names == ["hero", "features"] else BAD,
           "hero action row stays in the hero", f"{names}")
 
-    # The traced art is the whole mockup, so the hero backdrop must be cropped to
-    # the hero's own band -- otherwise the next section's cards show through.
+    # The traced art is the whole mockup, so the hero backdrop is cropped to the
+    # hero's band -- but it deliberately overshoots the section boundary, because
+    # `slice` magnifies a short band hard (2.5x on a real upload).  Guard BOTH ends:
+    # it must start at the top and reach meaningfully past the boundary (311), and
+    # must not run away to the bottom of the stage.
     band = generate.hero_band(generate.group_sections(declared))
-    ok = band is not None and band[0] == 0 and band[1] <= 311
-    _line(OK if ok else BAD, "hero backdrop cropped to the hero band", f"{band}")
+    ok = (band is not None and band[0] == 0
+          and 380 < band[1] < generate.STAGE_H)
+    _line(OK if ok else BAD, "hero backdrop band avoids magnifying the art",
+          f"{band} (boundary 311, stage {generate.STAGE_H})")
 
     # The hero's buttons are emitted where they sit, not appended: a fine-print
     # line drawn *under* the button must stay under it, not become a caption.
@@ -508,6 +536,17 @@ def cmd_polarity(_args: list[str]) -> int:
     issues = generate.structure_issues(sections, markup)
     _line(OK if not issues else BAD, "generated page structure",
           "; ".join(issues) or "clean")
+
+    # `blank_seams` is the only number covering the pixels the art score masks out,
+    # so it has to actually separate a clean fill from a pasted-on plate -- and
+    # score 0 on a trace with nothing blanked.  A seam check that always passes is
+    # how a trace the review called "unusable" reached a passing fixture.
+    from app import verify as _verify
+    seam_clean = _seam_probe(flat=True)
+    seam_plate = _seam_probe(flat=False)
+    _line(OK if seam_clean < 4 and seam_plate > 20 else BAD,
+          "blank-seam check separates a plate from a clean fill",
+          f"clean {seam_clean:.0f}/255, pasted plate {seam_plate:.0f}/255")
 
     # A light ground must produce a light palette (and a dark one a dark palette).
     light_pal = generate.palette(synthetic, (248, 249, 247))
@@ -634,22 +673,30 @@ def cmd_polarity(_args: list[str]) -> int:
 # comparable between fixtures (each masks its own region), so each is pinned
 # separately; a tracer regression (half-resolution bands, baked-in text) raises
 # one and fails the fixture.
+#
+# `seam_max` bounds `blank_seam`, the tonal step the trace leaves at the rects the
+# tracer had to fill.  `score_max` masks those rects out, so on its own it cannot
+# see a fill that went wrong -- this bound is what covers them.
 FIXTURES: dict[str, dict] = {
     "light": dict(
         ref="light-ref.png", blocks="light-blocks.json",
         note="synthetic light ground: a hero-only page (structure + art)",
-        expect=["hero"], page=8, artwork=0, score_max=3.0,
+        expect=["hero"], page=8, artwork=0, score_max=3.0, seam_max=8.0,
     ),
     "montiva": dict(
         ref="montiva-ref.png", blocks="montiva-blocks.json",
         note="real multi-section landing page (header/nav/hero/sections/footer)",
         expect=["header", "nav", "main", "section", "footer",
-                "testimonials", "contact"], score_max=5.0,
+                "testimonials", "contact"],
+        # Tightened 5.0 -> 4.0 when the studio gained chroma sub-banding and
+        # turdsize 12: this fixture's art mean fell 4.21 -> 3.44.  The bound is the
+        # guard that stops the gain silently evaporating.
+        score_max=4.0, seam_max=8.0,
     ),
     "antho": dict(
         ref="antho-ref.png", blocks="antho-blocks.json",
         note="real photorealistic hero: a hero-only page",
-        expect=["header", "hero"], page=8, score_max=3.0,
+        expect=["header", "hero"], page=8, score_max=3.0, seam_max=8.0,
     ),
 }
 LIGHT_FIXTURE = STUDIO_DIR / "fixtures"
@@ -749,6 +796,11 @@ def _run_fixture(name: str, keep: bool = False) -> int:
         print(f"fidelity : art region mean {j.score:.2f}"
               + (f"  (max {bound:g})" if bound is not None else ""))
     print(f"blocks   : {len(page)} page, {len(art)} artwork left to the tracer")
+    seam = j.blank_seam
+    if seam is not None:
+        cap = spec.get("seam_max")
+        print(f"seam     : {seam:.0f}/255 at the blanked rects"
+              + (f"  (max {cap:g})" if cap is not None else ""))
     print(f"job dir  : {j.dir}")
 
     failed = _fixture_ok(spec, info, page, art) + issues
@@ -757,6 +809,14 @@ def _run_fixture(name: str, keep: bool = False) -> int:
             failed.append("art fidelity not measured (no score)")
         elif j.score >= bound:
             failed.append(f"art region mean {j.score:.2f} >= max {bound:g}")
+    # The art score masks the blanked rects out, so bound the seam separately --
+    # otherwise a fixture passes while the backdrop has pasted-on plates in it.
+    seam_bound = spec.get("seam_max")
+    if seam_bound is not None:
+        if j.blank_seam is None:
+            failed.append("blank seam not measured")
+        elif j.blank_seam > seam_bound:
+            failed.append(f"blank seam {j.blank_seam:.0f}/255 > max {seam_bound:g}")
     ok = j.status == "done" and not failed
 
     if not keep:
@@ -829,6 +889,32 @@ def _state_consistency(measured: dict[str, float]) -> list[str]:
                 bad.append(f"STATE.json targets has no '{v}' (design target {want})")
             elif abs(float(targets[v]) - float(want)) > 1e-9:
                 bad.append(f"STATE.json targets.{v} = {targets[v]} but designs/{v}.json says {want}")
+
+    # The fixture bounds are guarded in code (FIXTURES above) and recorded in
+    # STATE.json under verification.fixture_bounds.  Those two drifted silently
+    # once already: montiva's score_max was tightened 5.0 -> 4.0 and a seam_max
+    # guard was added, while STATE.json's prose still claimed 5.0 and never
+    # mentioned seams.  A guard whose documented value is wrong is worse than no
+    # guard, because the next agent trusts it -- so compare the numbers, which is
+    # why they are recorded as data rather than left inside a sentence.
+    recorded = (state.get("verification") or {}).get("fixture_bounds")
+    if not isinstance(recorded, dict):
+        bad.append("STATE.json verification.fixture_bounds is missing -- record each "
+                   "fixture's score_max/seam_max there (this check compares them to FIXTURES)")
+    else:
+        for name, spec in FIXTURES.items():
+            want = {k: spec[k] for k in ("score_max", "seam_max") if k in spec}
+            got = recorded.get(name)
+            if not isinstance(got, dict):
+                bad.append(f"STATE.json fixture_bounds has no entry for '{name}'")
+                continue
+            for k, w in want.items():
+                if k not in got:
+                    bad.append(f"STATE.json fixture_bounds.{name} is missing '{k}' "
+                               f"(the code enforces {w})")
+                elif float(got[k]) != float(w):
+                    bad.append(f"STATE.json fixture_bounds.{name}.{k} = {got[k]} but "
+                               f"doctor.py FIXTURES enforces {w}")
     return bad
 
 

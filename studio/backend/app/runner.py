@@ -236,12 +236,15 @@ class PipelineRunner:
         self.store.update(jid, score=result.get("art_score"),
                           pct_over_30=result.get("art_pct"),
                           whole_score=result.get("whole_score"),
-                          whole_pct=result.get("whole_pct"))
+                          whole_pct=result.get("whole_pct"),
+                          blank_seam=result.get("blank_seam"))
+        seam = result.get("blank_seam")
         self.store.log(
             jid, f"fidelity: art region mean {result['art_score']:.2f} "
                  f"(pct>30 {result['art_pct']:.2f}%, "
                  f"from the {result.get('art_source', 'page')}), "
-                 f"whole page mean {result['whole_score']:.2f}")
+                 f"whole page mean {result['whole_score']:.2f}"
+                 + (f", blank seam {seam:.0f}/255" if seam is not None else ""))
         for issue in result.get("issues") or []:
             self.store.log(jid, f"  structure: {issue}")
             self.store.update(jid, warnings=(self.store.get(jid).warnings or [])

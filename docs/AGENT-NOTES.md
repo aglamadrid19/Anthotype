@@ -242,3 +242,105 @@ Rules of thumb:
 - **Action:** Any box/param change must be scored over the region the box covers,
   and eyeballed. Never compare a studio `art_score` to an A/B/C poster score.
 
+
+## 2026-10-02 — The banding is chroma-blind; that IS the posterisation
+- **What:** `mkart` cuts bands on **luminance only** and paints each with ONE
+  median RGB. A band spanning blue sky, green foliage and brown wood therefore
+  gets their average. That single decision is the lost colour *and* the
+  posterisation a design review reported on real uploads.
+- **Evidence:** isolated the cost of the banding model alone (no potrace, no
+  blanking, no SVG). Per-band split along the two opponent chroma axes
+  (CIELAB a*/b*-like) recovers **48%** on a photographic upload, 8% on flat art.
+  Real end-to-end (traced + rendered + scored), turdsize 12, chroma_cells 2,
+  gate 16, smooth 4: montiva 4.18 -> **3.47** mean, 17.67 -> **12.67** p95;
+  anthotype 2.45 -> **2.04**, 13.00 -> **8.67**. The **p95** is the number that
+  matters -- that is the blotchiness the eye reads as posterisation.
+- **Gotcha that cost the most time:** a *pixel-error proxy* that only paints bands
+  onto a canvas promises ~48% and 3x regions; the real trace gives **17-23%** and
+  **4.5x payload**, because intersecting a cumulative luminance mask with a chroma
+  cell shatters it and potrace spends thousands of points on the ragged boundary.
+  Always bench with a real trace + render + score (`qa/` has the harness).
+- **The fix that made it affordable:** `chroma_smooth` -- blur the chroma field
+  BEFORE thresholding it, so each cell boundary is a smooth curve. That alone took
+  montiva from 16.9 MB to 5.5 MB for most of the quality.
+- **Action:** keep `chroma_cells=2, chroma_gate=16, chroma_smooth=4,
+  turdsize=12` in `generate.write_all`. The gate keeps flat art on one colour per
+  band, so A/B/C are byte-identical (verified). Do NOT raise `turdsize` to 30 to
+  save payload: it eats fine line art (a glow-line design goes 1.72 -> 1.91).
+
+## 2026-10-02 — `turdsize` 2 -> 12 is free payload
+- **What:** the studio shipped `turdsize=2` (tuned for the flat A/B/C posters,
+  which want every speck). On real photographic uploads that is pure waste:
+  **-28% to -42% SVG size at an unchanged art mean** (montiva 3.80 -> 2.73 MB,
+  4.19 -> 4.18; anthotype 6.24 -> 3.65 MB; anthosting 6.01 -> 3.91 MB).
+- **Action:** the studio pins `turdsize=12`. Do not "restore" 2 -- it is A/B/C's
+  value, not the studio's, and the two media want different answers.
+
+## 2026-10-02 — harmonic inpainting the text rects is a REGRESSION (measured)
+- **What:** replacing the nearest-non-ink fill with a diffusion fill (solve
+  Laplace in the hole, so a gradient continues through it) is intuitively right --
+  the blanked rects really are 4x-35x flatter than the artwork around them. It
+  is measurably worse: montiva art mean **4.19 -> 4.54**, SVG **3.8 -> 9.3 MB**.
+- **Why:** the tracer has to *band* whatever the fill produces. A smooth gradient
+  across a big rect means every band edge crosses the hole, so the rect shatters
+  into dozens of slivers. A flat plate is dull but traces cleanly and cheaply.
+- **Action:** `inpaint=` defaults to `nearest`; `_hole_fill` is kept but unused,
+  with the measurement recorded, because it is right for a *small* hole on a
+  strong gradient. Do not "fix" this without re-measuring payload.
+
+## 2026-10-02 — a filled button rect is NOT a visible artefact
+- **What:** reviewing the **standalone traced SVG** makes every blanked button
+  rect look like a pasted-on white plate, and a design review reading that image
+  reports "worm-like smudge trails". On the **built page** the DOM button covers
+  the rect exactly and there is nothing to see.
+- **Evidence:** montiva's biggest diff blobs are 97% / 86% / 72% inside the
+  removed-rect mask -- i.e. exactly where the page draws live DOM over the top.
+  Screenshotting the real `index.html` shows a clean hero.
+- **Action:** **always review the built page, never the bare SVG**, when judging
+  whether blanking hurt. The SVG is a *decoration layer*; it is supposed to have
+  holes where the chrome goes. This cost a wrong diagnosis and a rejected fix.
+
+## 2026-10-02 — `whole_score` >> `art_score` is expected, not a blind metric
+- **What:** `whole` is ~14x `art` on a real upload (60.94 vs 4.21). That is NOT
+  evidence the art score is broken: the text rects are ~28% of the stage and the
+  reference has crisp type there while the trace has none, so the unmasked mean is
+  dominated by copy the page deliberately replaces.
+- **Correction:** an earlier note in this session claimed the metric was
+  "structurally blind" to the damage. It is not. Outside the rects it does score
+  tracer defects -- the biggest montiva blob (1416 px) lies 0% inside the mask.
+- **Action:** the gap is not a bug to fix. What genuinely needed covering was the
+  fill *quality* at the rect edges, which is now `verify.blank_seams` (an absolute
+  0-255 step, reported as `blank_seam`). It reads 3.5 on montiva vs 1.0/0.0 on the
+  two clean designs, and is negative-tested in `doctor polarity`.
+
+## 2026-10-02 — the hero was MAGNIFYING the art 2.5x; that was the "not sharp"
+- **What:** the user reported the imagery was "not sharp enough" on the
+  photographic uploads. It was not the tracer. `hero_band` cut the backdrop's
+  viewBox to exactly the hero's own slice, and the hero box is far taller than
+  that slice, so `preserveAspectRatio=slice` scaled the art to COVER it:
+  **a 311 px band in a 785 px hero = 2.52x**, showing only **406 px of the 1024 px
+  traced width (40%)**. On a 2x display, 5x. Every traced band was a huge blob.
+- **Evidence:** rendered the same built page at band 311 / 550 / 768. At 550
+  (1.45x) the laptop, tower, desk and real mountain ridgelines all appear; at 311
+  they are unrecognisable blobs. `HERO_BAND_OVERSHOW=0.6` takes the band to 498
+  (1.58x) and a bottom fade on `.hero-art::after` dissolves the overshoot, so the
+  next section's cards do not read as clutter.
+- **Action:** the crop existed to stop lower sections bleeding in -- keep that
+  intent, but **overshoot and fade rather than cut exactly at the boundary**. A
+  hard cut at the boundary maximises magnification. Guarded in `doctor polarity`
+  ("hero backdrop band avoids magnifying the art", expects 380 < y1 < 768).
+
+## 2026-10-02 — the tracer is SATURATED; stop tuning it for photographs
+- **What:** measured every remaining knob on the worst photographic upload. None of
+  them move it: bands 96 -> 192 gives 3.50 -> 3.43; chroma_gate 16 -> 0 gives
+  3.50 -> 3.45; `up` 2 -> 4 gives 3.50 -> **3.43 while taking 888 s instead of 84 s**.
+  p95 sits at 12.67 across nearly every configuration.
+- **Why:** the residual is concentrated in the hero photograph (mean 10.62, p95
+  27.07) while the rest of the page is 0.2-3.1. A photograph has effectively
+  continuous tone; ~200 flat-filled vector regions cannot represent it, and no
+  amount of banding resolution changes that. It is a limit of the representation,
+  not of the parameters.
+- **Action:** do NOT spend more effort tuning bands/up/turd/chroma against a
+  photograph -- the returns are flat and the cost is large. The remaining levers
+  are representational (SVG gradient fills instead of flat ones) or accepting the
+  limit. Sharpness complaints are usually the *magnification* bug above, not this.

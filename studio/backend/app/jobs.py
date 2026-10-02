@@ -48,6 +48,10 @@ class Job:
     warnings: list[str] = field(default_factory=list)
     score: float | None = None      # fidelity of the ARTWORK region (lower better)
     pct_over_30: float | None = None
+    # Step the trace leaves at the blanked rects, 0-255 intensity units.  The art
+    # score masks those rects out, so this is the only number that covers the
+    # pixels where the fill went wrong.
+    blank_seam: float | None = None
     whole_score: float | None = None  # whole-stage mean, informational only
     whole_pct: float | None = None
     src: dict | None = None         # source image info

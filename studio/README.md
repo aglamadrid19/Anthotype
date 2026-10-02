@@ -222,6 +222,57 @@ For a *website* the size backstop is deliberately lax — dropping a real nav li
 ("Home", "Services") breaks the page, while emitting a stray caption is cosmetic.
 Only a genuinely tiny `other` fragment is rejected.
 
+### Why the artwork is posterised, and what fixes it
+
+The tracer cuts bands on **luminance only** and paints each with **one median RGB**
+— which is cheap, and exactly right for flat art like the A/B/C posters. On a
+*photograph* it is the whole problem: a band spanning blue sky, green foliage and
+brown wood gets their average, so colour desaturates and smooth gradients break into
+flat blobs. A design review on real uploads called it "the hero photo has dissolved
+into white blotches" and "mountains flattened into jagged stepped blobs".
+
+Two settings fix most of it, both pinned in `generate.write_all` (studio-only; the
+A/B/C posters are untouched and stay byte-identical):
+
+- **`chroma_cells=2, chroma_gate=16`** — a band whose chroma spread exceeds the gate
+  is split along the two opponent chroma axes before painting, so it carries two
+  colours instead of their average. The gate keeps flat art on one colour per band.
+- **`chroma_smooth=4`** — blur the chroma field *before* thresholding it. This is
+  what makes the split affordable: the cell boundaries become the traced contours,
+  so raw per-pixel thresholding gives a ragged edge and potrace spends thousands of
+  points on it. Unsmoothed it took one upload from 3.8 MB to 16.9 MB; smoothed, 5.5 MB.
+- **`turdsize=12`** — the studio shipped A/B/C's value of 2, tuned for flat art that
+  wants every speck. On photographs that is pure waste: −28% to −42% payload at an
+  unchanged score. Do not raise it to 30 to save more; that eats fine line art.
+
+Measured end to end (traced, rendered, scored), against what the studio shipped:
+
+| design | art mean | p95 | SVG |
+|---|---|---|---|
+| montiva | 4.21 → **3.44** | 17.7 → **12.7** | 3.8 → 5.5 MB |
+| anthotype | 2.40 → **2.04** | 12.7 → **8.7** | 6.2 → 6.0 MB |
+| anthosting | 1.72 → **1.65** | 5.0 → **4.7** | 6.0 → 4.5 MB |
+
+The **p95** is the number that matters — that is the blotchiness the eye reads as
+posterisation. The mean alone hides it.
+
+Two things that look like bugs and are not:
+
+- **A blanked button rect is a hole in the SVG on purpose.** Reviewing the
+  *standalone* SVG shows a white plate where each CTA was; the built page draws the
+  real button over it. Judge blanking on the built page, never on the bare SVG.
+- **`whole_score` is ~14× `art_score`, and that is expected.** The text rects are
+  ~28% of the stage and the reference has crisp type there while the trace has none.
+  The unmasked mean is dominated by copy the page deliberately replaces.
+
+### `blank_seam`: the number that covers the masked pixels
+
+`art_score` is measured *outside* the text rects, so on its own it cannot see a fill
+that went wrong. `verify.blank_seams` measures the tonal step the trace leaves at the
+edge of every rect the tracer had to fill — an absolute 0–255 value, so it stays
+meaningful on a nearly flat design. It is reported per job as `blank_seam`, warns
+above 12, and each fixture pins it with `seam_max`.
+
 ### The honest limit: the type is not reproduced
 
 The generated page is authored in the vendored Inter at a role-based scale; the

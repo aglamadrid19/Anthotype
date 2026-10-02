@@ -91,6 +91,33 @@ def _art_mask(pipeline: Path, name: str) -> np.ndarray | None:
     return mask
 
 
+def _removed_mask(pipeline: Path, name: str) -> np.ndarray | None:
+    """Every rectangle the tracer *removed* pixels from: `text` plus `blank`.
+
+    Distinct from `_art_mask` on purpose.  The art score masks out `text` because
+    the page replaces that copy with live DOM; `blank` (a CTA's whole plate) is
+    chrome the tracer also has to fill, and it is where the visible pasted-on
+    shapes come from.  A seam check that only looked at `text` would miss every
+    button plate on the page.
+    """
+    cfg = pipeline / "designs" / f"{name}.json"
+    if not cfg.is_file():
+        return None
+    try:
+        data = json.loads(cfg.read_text())
+        rects = list(data.get("text") or []) + list(data.get("blank") or [])
+    except Exception:  # noqa: BLE001
+        return None
+    if not rects:
+        return None
+    mask = np.zeros((STAGE_H, STAGE_W), bool)
+    for x0, y0, x1, y1 in rects:
+        x0, y0 = max(0, int(x0)), max(0, int(y0))
+        x1, y1 = min(STAGE_W, int(x1)), min(STAGE_H, int(y1))
+        mask[y0:y1, x0:x1] = True
+    return mask if mask.any() else None
+
+
 def _art_box(pipeline: Path, name: str) -> tuple[int, int, int, int] | None:
     """The tracer's box from `designs/<name>.json`, clamped to the stage.
 
@@ -183,6 +210,64 @@ def _render_art(chrome: str, svg: str, bg: tuple[int, int, int]) -> np.ndarray:
     return full
 
 
+# How far into a blanked rect the seam is measured (pixels).
+_SEAM_RING = 3
+
+
+def blank_seams(render: np.ndarray, mask: np.ndarray | None) -> float | None:
+    """How hard a step the blanked rectangles leave, relative to the art's own detail.
+
+    The art score masks the text rects *out* (`per_px[~mask]`), so it is measured
+    only on the pixels that were already working -- and is structurally blind to
+    the damage inside the blanks.  That is how a trace the design review called
+    "unusable" still scored 4.21: masked 4.21 against 60.94 unmasked, a 14x gap.
+
+    A blanked rect is filled from its surroundings, so if the fill does not match
+    the local gradient it leaves a *step* at the rectangle's edge -- the hard
+    organic-edged plate a review reads as a "worm-like smudge".  A smooth fill has
+    no step.  So measure the step directly: for every pixel just inside a blank,
+    the tonal distance to the nearest pixel just outside it, in 0-255 intensity
+    units.  An absolute measure, not a ratio, so it stays meaningful on a design
+    that is nearly flat (where a ratio to "typical detail" divides by ~0).
+
+    ~0 is invisible; past ~12 the boundary is a visible pasted-on edge.
+    Returns None when there is nothing masked to measure.
+    """
+    if mask is None or not mask.any():
+        return None
+    # Nearest non-blank pixel for each blank pixel, by repeated dilation of the
+    # known indices.  Written in numpy rather than scipy because this module is
+    # the fidelity scorer and the studio venv pins only numpy/PIL (scipy lives in
+    # the *pipeline* venv, which is a different environment).  A few passes is all
+    # it needs: we only ever ask about the ring touching real artwork.
+    h, w = mask.shape
+    idx = np.full(h * w, -1, np.int64)
+    # Flat indices of the pixels that are NOT blanked -- these are what index into
+    # `render.reshape(-1, 3)`.  (Ranks would be wrong: they are not positions.)
+    idx[~mask.ravel()] = np.flatnonzero(~mask.ravel())
+    idx = idx.reshape(h, w)
+    for _ in range(_SEAM_RING):
+        filled = idx >= 0
+        if (mask & ~filled).sum() == 0:
+            break
+        prop = idx.copy()
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            src = np.roll(np.roll(idx, dy, axis=0), dx, axis=1)
+            # A rolled-in edge would wrap around; never adopt a wrapped neighbour.
+            if dy == 1: src[0, :] = -1
+            if dy == -1: src[-1, :] = -1
+            if dx == 1: src[:, 0] = -1
+            if dx == -1: src[:, -1] = -1
+            prop = np.where((~filled) & (src >= 0), src, prop)
+        idx = np.where(filled, idx, prop)
+    ring_in = mask & (idx >= 0)
+    if not ring_in.any():
+        return None
+    outside = render.reshape(-1, 3)[idx.ravel()].reshape(h, w, 3)
+    step = np.abs(render - outside).mean(axis=2)[ring_in]
+    return float(step.mean())
+
+
 def assess(job_id: str, page: Path, ref_png: Path, *,
            pipeline: Path | None = None, art_svg: Path | None = None,
            layout: str = "poster",
@@ -223,10 +308,30 @@ def assess(job_id: str, page: Path, ref_png: Path, *,
         if mask is not None:
             mask = mask[max(0, y0):min(STAGE_H, y1), max(0, x0):min(STAGE_W, x1)]
     per_px = art.mean(axis=2)
+    # Measured on the RENDER, not the diff: this asks whether the trace itself has
+    # a step at a blank's edge, which is what the eye sees as a pasted-on plate.
+    # Measured on the diff it would just re-report that the reference has text
+    # there -- true of every design, good fill or not.
+    #
+    # It is also the check that covers the very pixels `art_score` throws away, so
+    # a trace cannot look good there by having blanked the region it got wrong.
+    seam_src = rendered if out.get("art_source") == "svg" else render
+    seam = blank_seams(np.asarray(seam_src, dtype=np.float32),
+                       _removed_mask(pipeline, job_id) if pipeline else None)
+    if seam is not None:
+        out["blank_seam"] = round(seam, 1)
     if mask is not None and (~mask).any():
         per_px = per_px[~mask]
     out["art_score"] = float(per_px.mean())
     out["art_pct"] = float(100.0 * (per_px > 30).mean())
+
+    # Surfaced as an advisory, not folded into the score: the two measures answer
+    # different questions, and a high seam is a *readability* problem (a pasted-on
+    # plate behind the copy) rather than a pixel-parity one.
+    if seam is not None and seam > 12.0:
+        out.setdefault("issues", []).append(
+            f"blanked rectangles leave a hard seam ({seam:.0f}/255) — the hero "
+            f"backdrop has pasted-on shapes where text was removed")
 
     try:
         from . import structure as _structure

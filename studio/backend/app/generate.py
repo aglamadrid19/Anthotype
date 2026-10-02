@@ -38,6 +38,15 @@ TEXT_RECT_GROW = 6
 # section.  Used only as a backstop -- see `group_sections`.
 GROUP_GAP = 2.5
 
+# How far the hero backdrop's slice reaches *past* the first block of the section
+# below the hero, as a multiple of the band's own height.  The hero box is far
+# taller than the hero band and `slice` scales the art to cover it, so a band cut
+# exactly at the section boundary gets magnified hard -- 2.5x on a real upload,
+# showing 40% of the traced width.  Overshooting keeps the magnification near
+# 1.4x; the extra is dissolved by the bottom fade on `.hero-art` rather than shown
+# as a hard cut.  See `hero_band`.
+HERO_BAND_OVERSHOW = 0.6
+
 
 def _as_array(png: Path) -> np.ndarray:
     return np.asarray(Image.open(png).convert("RGB")).astype(np.float32)
@@ -1613,6 +1622,16 @@ def hero_band(sections: list[tuple[str, list[Block]]]) -> list[int] | None:
     backdrop is the hero's own band: from the top of the mockup (a hero near the
     top is a full-bleed banner, so the art above the copy is part of it) down to
     where the next section starts.
+
+    It deliberately overshoots that boundary by `HERO_BAND_OVERSHOW`.  The hero
+    box is much taller than the hero band, and `preserveAspectRatio=slice` scales
+    the art to COVER it -- so a short band is blown up hard.  Measured on a real
+    upload: a 311 px band in a 785 px hero is magnified **2.5x** and shows only
+    40% of the traced width, which is why a photograph looked soft and "zoomed".
+    A 540 px band is 1.45x and the artwork reads properly.
+
+    The extra slice is what would otherwise bleed, so it is dissolved by the
+    bottom fade in `.hero-art:after` rather than shown as a hard cut.
     """
     hero = [b for n, g in sections if n == "hero" for b in g]
     if not hero:
@@ -1622,6 +1641,9 @@ def hero_band(sections: list[tuple[str, list[Block]]]) -> list[int] | None:
     below = [b.bbox[1] for n, g in sections
              if n not in ("header", "nav", "hero", "footer") for b in g]
     y1 = min(below) if below else min(STAGE_H, bottom + max(60.0, bottom - top))
+    if below:
+        y1 += HERO_BAND_OVERSHOW * max(1.0, y1 - (0 if top < STAGE_H * 0.5
+                                                   else max(0.0, top - (bottom - top))))
     y0 = 0 if top < STAGE_H * 0.5 else max(0.0, top - (bottom - top))
     y1 = min(STAGE_H, max(y0 + 40.0, y1))
     return [int(round(y0)), int(round(y1))]
@@ -1754,11 +1776,24 @@ a {{ color: inherit; }}
    column itself stays dark. */
 .hero-art::after {{
   content: ""; position: absolute; inset: 0;
-  background: radial-gradient(ellipse 48% 74% at 0% 52%,
-    color-mix(in srgb, var(--bg) 97%, transparent) 0%,
-    color-mix(in srgb, var(--bg) 94%, transparent) 54%,
-    color-mix(in srgb, var(--bg) 55%, transparent) 76%,
-    color-mix(in srgb, var(--bg) 6%, transparent) 94%, transparent 100%);
+  /* Layer 1 holds the page ground across the copy column, then releases the art
+     outward; layer 2 dissolves the band's overshoot into the page at the bottom.
+     Both are needed now that `hero_band` deliberately reaches past the section
+     boundary -- without the fade the next section's cards read as clutter.
+     The fade completes at ~86%, which is just past where the *real* hero ends
+     inside the overshooting band, so the artwork is never cut mid-subject. */
+  background:
+    linear-gradient(to bottom,
+      transparent 0%,
+      transparent 44%,
+      color-mix(in srgb, var(--bg) 64%, transparent) 60%,
+      color-mix(in srgb, var(--bg) 94%, transparent) 70%,
+      var(--bg) 78%),
+    radial-gradient(ellipse 48% 74% at 0% 52%,
+      color-mix(in srgb, var(--bg) 97%, transparent) 0%,
+      color-mix(in srgb, var(--bg) 94%, transparent) 54%,
+      color-mix(in srgb, var(--bg) 55%, transparent) 76%,
+      color-mix(in srgb, var(--bg) 6%, transparent) 94%, transparent 100%);
 }}
 .hero-copy {{
   position: relative; z-index: 1; display: grid; gap: clamp(14px, 2vw, 22px);
@@ -2076,6 +2111,37 @@ def write_all(pipeline: Path, name: str, blocks: list[Block],
         # 4.144), and beyond 96 it degrades again -- it is a knee, not "more is
         # better".  Pin it here so the studio does not inherit the scaffold value.
         "bands": 96, "up": 2,
+        # Despeckle harder than the A/B/C posters do (they are flat art and want
+        # every speck).  Measured on three real uploads, turdsize 2 -> 12 cuts the
+        # SVG by 28-42% with the art mean unchanged (montiva 4.19 -> 4.18,
+        # anthotype 2.40 -> 2.45, anthosting 1.72 -> 1.74).  30 is too far: it
+        # eats the fine glow lines on a line-art design (1.72 -> 1.91).
+        "turdsize": 12,
+        # CHROMA SUB-BANDING.  The bands are cut on luminance alone, so each is
+        # painted with ONE median colour -- and a band spanning blue sky, green
+        # foliage and brown wood gets their average.  That is the lost colour and
+        # the posterisation a design review reported on a real upload ("the hero
+        # photo has dissolved into white blotches").  `chroma_cells=2` splits a
+        # chromatically *mixed* band along the two opponent chroma axes; the
+        # `chroma_gate` keeps flat art on one colour per band, so line art and the
+        # A/B/C posters are unaffected.
+        #
+        # `chroma_smooth` is what makes it affordable.  The cell boundaries become
+        # the traced contours, so thresholding raw per-pixel chroma gives a ragged
+        # pixel-scale edge and potrace spends thousands of points on it: unsmoothed
+        # it took the montiva upload from 3.8 MB to 16.9 MB.  Blurring the chroma
+        # field first turns each boundary into a smooth curve -- 5.5 MB for most of
+        # the quality.
+        #
+        # Measured (art-region mean / p95 / SVG), turdsize 12 throughout:
+        #   montiva    4.18 / 17.67 / 2.7 MB  ->  3.47 / 12.67 / 5.5 MB
+        #   anthotype  2.45 / 13.00 / 3.7 MB  ->  2.04 /  8.67 / 6.0 MB
+        #   anthosting 1.74 /  5.00 / 3.9 MB  ->  1.65 /  4.67 / 4.5 MB
+        # i.e. -17%/-17%/-5% mean and -28%/-33%/-7% p95, for 1.1-2x the payload;
+        # against the *shipped* studio defaults two of the three are smaller AND
+        # better.  The p95 is the number that matters: that is the posterisation
+        # the eye reads as blotches.
+        "chroma_cells": 2, "chroma_gate": 16.0, "chroma_smooth": 4.0,
     })
     # Text exclusion polarity.
     #

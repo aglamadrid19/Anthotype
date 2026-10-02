@@ -418,6 +418,73 @@ The verification loop is now one command, and CI runs it.
 No pipeline, tracer or page code changed; the scores are unchanged
 (`qa/verify.sh` → 2.71 / 2.76 / 2.99 PASS).
 
+## This session's changes (the tracer's chroma blindness)
+
+Driven by the user's report that the **website** was good but **the imagery was not**
+on some uploads. Reviewed three real outputs side-by-side with the vision model
+(mockup vs traced SVG): the line-art design read "largely faithful… usable", while
+the two photographic ones read "**unusable** as a hero backdrop" and "**badly
+degraded**… not usable without a full retrace" — posterisation, lost colour, lost
+detail. The metric had said 1.43 / 2.39 / 4.21 for those.
+
+**Root cause: the banding is chroma-blind.** `mkart` cuts bands on luminance only and
+paints each with one median RGB, so a band spanning blue sky, green foliage and
+brown wood gets their average. That single decision is the lost colour *and* the
+posterisation. Isolating the banding model from everything else (no potrace, no
+blanking, no SVG) put its cost at 3.3 mean / 16.3 p95 on a photographic upload, of
+which a chroma split recovers ~48%.
+
+- **`chroma_cells` / `chroma_gate`** — a band whose chroma spread exceeds the gate is
+  split along the two opponent chroma axes. Splitting *per band* (not one global
+  partition) keeps every emitted mask a solid nested region, so the cumulative-mask
+  trick and potrace's despeckling both survive. The gate keeps flat art on one colour
+  per band.
+- **`chroma_smooth`** — blur the chroma field before thresholding it. The cell
+  boundaries become the traced contours, so raw per-pixel thresholding gives a ragged
+  edge: unsmoothed the split took montiva from 3.8 MB to **16.9 MB**. Smoothing is
+  what makes it affordable (**5.5 MB**).
+- **`turdsize` 2 → 12** for the studio. 2 is A/B/C's value, tuned for flat art that
+  wants every speck; on photographs it is pure waste (−28% to −42% payload, unchanged
+  score). 30 is too far — it eats fine line art (1.72 → 1.91).
+
+Measured end to end, traced + rendered + scored, against what the studio shipped:
+
+| design | art mean | p95 | SVG |
+|---|---|---|---|
+| montiva | 4.21 → **3.44** | 17.7 → **12.7** | 3.8 → 5.5 MB |
+| anthotype | 2.40 → **2.04** | 12.7 → **8.7** | 6.2 → 6.0 MB |
+| anthosting | 1.72 → **1.65** | 5.0 → **4.7** | 6.0 → 4.5 MB |
+
+Two of the three are *smaller and better* than what shipped. The **p95** is the
+number that matters — that is the blotchiness the eye reads as posterisation, and the
+mean alone hides it. A visual A/B on the rebuilt page confirms it: the hero plant is
+green again instead of grey-blue and the mountains hold their blue.
+
+**`blank_seam`** — `art_score` masks the text rects out, so it cannot see a fill that
+went wrong. `verify.blank_seams` measures the absolute tonal step (0–255) the trace
+leaves at the edge of every rect it had to fill, reported per job, warned above 12,
+and pinned per fixture with `seam_max` (negative-tested). Numpy-only, because the
+studio venv runs the scorer and pins no scipy.
+
+**Two corrections to beliefs formed earlier in this session**, both now in
+`docs/AGENT-NOTES.md` so they are not re-adopted:
+
+- A blanked button rect is **not** a visible artefact. The standalone SVG shows a
+  white plate where each CTA was; the built page draws the button over it. Judging
+  blanking on the bare SVG produces a false defect — this caused a rejected fix.
+- `whole_score` ≈ 14× `art_score` is **expected**, not a blind metric: the text rects
+  are ~28% of the stage and hold crisp type in the reference and nothing in the trace.
+
+**Also measured and rejected:** harmonic (diffusion) inpainting of the text rects.
+Intuitively right — the blanked rects are 4×–35× flatter than the art around them —
+and measurably worse (montiva 4.19 → 4.54, 3.8 → 9.3 MB), because the tracer has to
+band whatever the fill produces and a gradient across a big rect means every band
+edge crosses it. `_hole_fill` is kept but **not** the default, with the measurement
+recorded.
+
+`doctor gate` → **PASS 4/4**; `qa/verify.sh` → 2.71 / 2.76 / 2.99 PASS; all three
+posters regenerate **byte-identically** (chroma is studio-only and off by default).
+
 ## This session's changes (the review loop, and its first fixes)
 
 The studio's design review — which had found every composition defect by hand —

@@ -155,10 +155,42 @@ TEXT = {
        (57, 416, 325, 444), (56, 469, 287, 532)],
 }
 
+def _hole_fill(sub, hole, iters=64):
+    """Fill `hole` in `sub` by harmonic (diffusion) interpolation.
+
+    The nearest-non-ink fill paints a constant across a glyph stroke, leaving the
+    blanked rectangles 4x-35x flatter than the artwork around them, which a design
+    review read as "worm-like smudge trails".  Relaxing the hole against its own
+    boundary solves Laplace's equation inside it, so a gradient continues through
+    the hole and flat ground stays flat.
+
+    Seed with the nearest-non-ink fill, then repeatedly replace each hole pixel by
+    the mean of ALL its 8 neighbours' *current* values (already-filled hole pixels
+    included -- that is what lets the field reach the interior).  A fixed number of
+    Jacobi sweeps, not a convergence test: this is inside the tracer's hot loop.
+    """
+    from scipy import ndimage as _ndi
+    out = np.asarray(sub, dtype=np.float32).copy()
+    if not hole.any():
+        return out
+    # Seed: nearest non-hole colour, so no pixel starts at a wild value.
+    _, idx = _ndi.distance_transform_edt(hole, return_indices=True)
+    h, w = hole.shape
+    flat = out.reshape(-1, 3)
+    flat = np.where(hole.reshape(-1, 1), flat[(idx[0] * w + idx[1]).reshape(-1)], flat)
+    out = flat.reshape(h, w, 3)
+    for _ in range(max(1, int(iters))):
+        avg = _ndi.uniform_filter(out, size=3, mode='nearest')
+        out = np.where(hole[..., None], avg, out)
+    return out
+
+
 def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
           minpx=None, out=None, box=None, exclude_text=False,
           text_lum_max=70.0, cumulative=True, ref=None, text_rects=None,
-          text_bg_lum=None, text_lum_margin=45.0, blank_rects=None):
+          text_bg_lum=None, text_lum_margin=45.0, blank_rects=None,
+          chroma_cells=0, chroma_gate=16.0, chroma_smooth=0.0,
+          inpaint='nearest'):
     cfg = design(v)
     ref = ref or cfg.get('ref') or f'{HERE}/ref-{v}.png'
     text_rects = cfg.get('text', []) if text_rects is None else text_rects
@@ -259,15 +291,41 @@ def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
             ink = ink | blank
         ink = _dilate(ink, max(2, int(round(3.0 * up))))
         if ink.any():
-            src = sub.reshape(-1, 3)
-            # Nearest non-ink pixel, i.e. a background-like colour: the reference's
-            # own gradient is the interpolation, so no flat plate appears.
-            _, idx = _ndi.distance_transform_edt(ink, return_indices=True)
-            nearest = (idx[0] * W2 + idx[1]).reshape(-1)
-            filled = src[nearest]
-            sub = np.where(ink.reshape(-1, 1), filled, src).reshape(sub.shape)
+            if inpaint == 'harmonic':
+                # Harmonic fill, so a gradient continues through the removed
+                # glyphs instead of being replaced by a flat plate (see
+                # `_hole_fill`).
+                sub = _hole_fill(sub, ink,
+                                 iters=int(os.environ.get('STUDIO_INPAINT_ITERS', 64)))
+            else:
+                src = sub.reshape(-1, 3)
+                # Nearest non-ink pixel (the historical fill).
+                _, idx = _ndi.distance_transform_edt(ink, return_indices=True)
+                nearest = (idx[0] * W2 + idx[1]).reshape(-1)
+                sub = np.where(ink.reshape(-1, 1), src[nearest], src).reshape(sub.shape)
             lum = sub.mean(axis=2)
             inpainted = True
+
+    # Chroma sub-banding.  `lum` is the only axis the bands are cut on, so each
+    # band is painted with ONE median colour -- and a band spanning blue sky, green
+    # foliage and brown wood gets their average.  That is the whole of the lost
+    # colour and the posterisation a design review reported: the banding model
+    # alone cost 3.3 mean / 16.3 p95 on a photographic landing page.
+    #
+    # So a band that is chromatically *mixed* is split into cells along the two
+    # opponent chroma axes (CIELAB a*/b*-like) before painting.  Splitting per
+    # band -- not one global partition -- is what keeps this correct: each mask
+    # emitted is {lum >= e_i} AND {chroma in cell}, still a solid nested region,
+    # so the cumulative trick (see below) and potrace's despeckling both survive.
+    # Painted in ascending i, the last mask containing a pixel is (its band, its
+    # cell), which is exactly the colour we want.
+    #
+    # Gated on `chroma_gate` (the within-band chroma spread) so flat art keeps
+    # today's one-colour-per-band behaviour and A/B/C do not pay for it.
+    chroma_a = chroma_b = None
+    if chroma_cells > 1:
+        chroma_a = (sub[:, :, 0] - sub[:, :, 1]).astype(np.float32)
+        chroma_b = (0.5 * (sub[:, :, 0] + sub[:, :, 1]) - sub[:, :, 2]).astype(np.float32)
 
     bands_out = []
     if cumulative:
@@ -298,8 +356,48 @@ def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
             if m.sum() < minpx: continue
             band = m & ~(lum >= edges[i+1]) if i < bands-1 else m
             if band.sum() < minpx: continue
-            col = np.median(sub[band], axis=0)
-            bands_out.append((int(band.sum()), col, m, i))
+            # Split this band along chroma only if it is mixed enough to pay for
+            # the extra regions.  The spread is measured on the band's own pixels
+            # (the colours it is about to represent), and the thresholds it yields
+            # are then applied to the whole image so each emitted mask stays a
+            # solid nested region rather than a sliver.
+            cells = None
+            if chroma_a is not None:
+                ba, bb = chroma_a[band], chroma_b[band]
+                if float(np.hypot(ba.std(), bb.std())) > chroma_gate:
+                    qs = np.linspace(0, 100, chroma_cells + 1)[1:-1]
+                    # Smooth the chroma field before thresholding it.  The cell
+                    # boundaries become the traced contours, so thresholding raw
+                    # per-pixel chroma gives a ragged, pixel-scale boundary and
+                    # potrace spends thousands of points following it -- that is
+                    # where the chroma split's payload went (a photographic upload
+                    # went 3.8 -> 16.9 MB).  Blurring first turns each boundary
+                    # into a smooth curve, which is both cheaper and closer to
+                    # what the eye reads as an edge.
+                    ta = np.percentile(ba, qs)
+                    tb = np.percentile(bb, qs)
+                    ca_s = chroma_a
+                    cb_s = chroma_b
+                    if chroma_smooth > 0:
+                        from scipy import ndimage as _snd
+                        s = float(chroma_smooth) * up
+                        ca_s = _snd.gaussian_filter(ca_s, s)
+                        cb_s = _snd.gaussian_filter(cb_s, s)
+                    cells = (np.searchsorted(ta, ca_s) * chroma_cells
+                             + np.searchsorted(tb, cb_s))
+            if cells is None:
+                col = np.median(sub[band], axis=0)
+                bands_out.append((int(band.sum()), col, m, i))
+            else:
+                for c in range(chroma_cells * chroma_cells):
+                    mc = m & (cells == c)
+                    bc = band & (cells == c)
+                    # A cell too small to hold a stable median is dropped; the
+                    # enclosing band still paints underneath, so nothing is lost
+                    # but a speckle.
+                    if mc.sum() < minpx or bc.sum() < max(32, minpx // 4):
+                        continue
+                    bands_out.append((int(bc.sum()), np.median(sub[bc], axis=0), mc, i))
     else:
         for i in range(bands):
             m = (lum >= edges[i]) if i == bands-1 else ((lum >= edges[i]) & (lum < edges[i+1]))
@@ -357,7 +455,13 @@ if __name__ == '__main__':
         if k in sys.argv: kw[k.lstrip('-')] = t(sys.argv[sys.argv.index(k)+1])
     for k, t in (('--alphamax', float), ('--opttol', float),
                  ('--text-lum-max', float), ('--text-bg-lum', float),
-                 ('--text-lum-margin', float)):
+                 ('--text-lum-margin', float), ('--chroma-gate', float),
+                 ('--chroma-smooth', float)):
+        if k in sys.argv: kw[k.lstrip('-').replace('-', '_')] = t(sys.argv[sys.argv.index(k)+1])
+    if '--inpaint' in sys.argv:
+        kw['inpaint'] = sys.argv[sys.argv.index('--inpaint') + 1]
+        if k in sys.argv: kw[k.lstrip('-').replace('-', '_')] = t(sys.argv[sys.argv.index(k)+1])
+    for k, t in (('--chroma-cells', int),):
         if k in sys.argv: kw[k.lstrip('-').replace('-', '_')] = t(sys.argv[sys.argv.index(k)+1])
     if '--out' in sys.argv: kw['out'] = sys.argv[sys.argv.index('--out')+1]
     if '--exclude-text' in sys.argv: kw['exclude_text'] = True
