@@ -344,3 +344,26 @@ Rules of thumb:
   photograph -- the returns are flat and the cost is large. The remaining levers
   are representational (SVG gradient fills instead of flat ones) or accepting the
   limit. Sharpness complaints are usually the *magnification* bug above, not this.
+
+## 2026-10-02 — SVG `linearGradient` fills do NOT work for this tracer (measured)
+- **What:** the last untried lever for photographic colour was replacing flat
+  per-band fills with SVG `<linearGradient>`s. Built and measured it. **It is worse
+  than flat**, decisively: montiva art mean **2.20 -> 4.45** in a paint
+  simulation that replicates mkart's real cumulative paint order.
+- **Also measured, same harness:** per-component flat colour (one median per
+  CONNECTED COMPONENT of the cumulative mask, instead of per band cell) is
+  **neutral** — 2.20 -> 2.21. Not worth the extra regions.
+- **Why gradients fail:** a band is a thin luminance *ring* that wraps around
+  objects, so the colour inside it is not a function of position along any single
+  axis. Ceiling measurement: a per-channel least-squares linear model in (y, x) —
+  strictly MORE expressive than one SVG gradient axis — explains only **24.5%** of
+  montiva's within-band residual energy (46.5% on anthotype). A gradient
+  interpolates between stops, so on a region where the fit is poor it overshoots at
+  the extremes, which is where most of the area is: worse than a median.
+- **Action:** do NOT implement gradient fills. This is the measured dead end the
+  session note ("the only untried lever") pointed at, and it is now closed. The
+  representation really is at its ceiling for photographs. Remaining options, all
+  measured: more chroma cells (2 -> 3 buys p95 12.67 -> 10.67 for 5.6 -> 8.4 MB;
+  4 cells costs 21.5 MB), more bands (96 -> 192 buys 3.50 -> 3.43 and leaves p95
+  unchanged), or accepting the limit. Sharpness complaints are the hero-magnitude
+  bug, not this — see the magnification note.
