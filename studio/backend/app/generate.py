@@ -1745,16 +1745,20 @@ a {{ color: inherit; }}
    let the lede sit over the photograph and a review called the body copy
    unreadable.  This keeps the copy legible *and* leaves the art a real image.
    The falloff is RADIAL and centred on the copy column, not a full-height
-   linear band: a review found that a linear scrim dimmed the artwork directly
-   above and below the copy (a hero whose art surrounds the text lost its
-   top-left and bottom-left nodes), which a copy-local ellipse does not. */
+   linear band: a linear scrim dimmed the artwork directly above and below the
+   copy (a hero whose art surrounds the text lost its top-left and bottom-left
+   nodes).  The ellipse is deliberately tight and offset down (48% x 74% at
+   0% 52%): the artwork's own mid-left node sits level with the copy, and a
+   wider ellipse left it a ghost (measured: node green 138 in the mockup, 24
+   through the scrim, 69 with this).  The first stop is 97% ground so the copy
+   column itself stays dark. */
 .hero-art::after {{
   content: ""; position: absolute; inset: 0;
-  background: radial-gradient(ellipse 66% 80% at 0% 50%,
-    color-mix(in srgb, var(--bg) 96%, transparent) 0%,
-    color-mix(in srgb, var(--bg) 92%, transparent) 48%,
-    color-mix(in srgb, var(--bg) 70%, transparent) 70%,
-    color-mix(in srgb, var(--bg) 10%, transparent) 90%, transparent 100%);
+  background: radial-gradient(ellipse 48% 74% at 0% 52%,
+    color-mix(in srgb, var(--bg) 97%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 94%, transparent) 54%,
+    color-mix(in srgb, var(--bg) 55%, transparent) 76%,
+    color-mix(in srgb, var(--bg) 6%, transparent) 94%, transparent 100%);
 }}
 .hero-copy {{
   position: relative; z-index: 1; display: grid; gap: clamp(14px, 2vw, 22px);
