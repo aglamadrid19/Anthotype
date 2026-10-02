@@ -37,6 +37,11 @@ Rules of thumb:
 
 ## Notes
 
+## 2026-10-01 — Structure defects are already detected and shown; fix the CAUSE
+- **What:** `structure_issues` (from `generate.structure_issues` and `app.structure.inspect`) is not an invisible warning: the fixture gate already **fails** on it (`_run_fixture`: `failed = _fixture_ok(...) + issues`), and the studio UI shows it (the result card switches to "Your site is built — review the notes", lists the issues, and the Headings stat reads `h1×2`). So do not "add" detection — the real work is fixing the *causes* for designs the fixtures do not cover, and adding a cheap `doctor polarity` guard so a cause cannot come back.
+- **Why / evidence:** the AntHosting upload reported `2 <h1> elements (should be one)` and still showed it in the UI — the defect was visible, it just was not *fixed*. The cause was a two-line hero lockup arriving as two `headline` blocks (see the note above); the guard is "two headline blocks -> one h1".
+- **Action:** when a novel upload trips a structure issue, reproduce it as a `doctor polarity` case (synthetic blocks, no model) and fix the generator. The fixtures only cover three designs; the polarity suite is where a new shape gets pinned.
+
 ## 2026-10-01 — A hero lockup is two `headline` blocks; that shipped two `h1`s
 - **What:** a real upload ("AntHosting" / "Coming soon" drawn as a two-line lockup) came back from the model as **two `headline` blocks**, and `_hero_html` emitted an `<h1>` for each — a page with **two `h1`s**, which is exactly what the north star's "one `h1`" forbids. `structure_issues` / `app.structure` both caught it, but only as a job *warning*: the pipeline reported the defect and shipped it anyway. The fix emits the first headline as the `h1` and any further headline block as the secondary accent line (`.subhead.accent`, the accent colour the mockup uses).
 - **Why / evidence:** `structure_issues: ['2 <h1> elements (should be one)']` on job `c77d28058a31`; the built `index.html` had `grep -o '<h1' | wc -l` = 2. A `doctor polarity` guard now drives `_hero_html` with two headline blocks and asserts one `h1` plus the accent subhead.
