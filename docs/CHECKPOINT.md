@@ -440,7 +440,18 @@ fixture. All four are fixed.
   unreadable); the final gradient holds the ground across the copy and releases
   the art by ~88%, with the hero copy capped at 520px and a smaller `h1`
   (36–60px). Art mean **194**, std 54 → 61: copy legible, art visible on the
-  right.
+  right. **Later made radial** (`ellipse 66% 80% at 0% 50%`): the full-height
+  linear band also dimmed the artwork *above and below* the copy, so a hero whose
+  art surrounds the text (a real upload, "AntHosting") lost its top-left and
+  bottom-left nodes — a stable `critique --votes` finding, 3/3 runs.
+- **A two-line hero lockup is one `h1`, not two.** A design drawn as
+  "AntHosting" / "Coming soon" came back from the model as **two `headline`
+  blocks** and shipped **two `h1`s** — the exact thing the north star's "one
+  `h1`" forbids. `structure_issues` caught it, but only as a warning, so the page
+  shipped anyway. The first headline is now the `h1`; a further headline block
+  becomes the secondary accent line (`.subhead.accent`), which is also the
+  colour the mockup uses. This is why the pipeline *reports* a structure defect:
+  act on the report.
 - **A phone line folds into its button.** The model returns a two-line button's
   second line ("Call Now" / "(801) 810-4242") as its own block; it rendered as an
   orphan paragraph under the button row. `generate._cta_sublabels` folds it in as
@@ -458,9 +469,9 @@ fixture. All four are fixed.
   jumbled wrap. `_footer_nav_links` finds the packed run of short links; the
   brand's tagline stays with the brand; the footer is brand+nav on top with the
   legal/meta line full width below.
-- **Four new `doctor polarity` guards** total cover the logic: "card bands fill
+- **Five new `doctor polarity` guards** total cover the logic: "card bands fill
   their last row", "phone folds into its button", "contact panel pairs value +
-  label", and "footer nav links detected".
+  label", "footer nav links detected", and "two headline blocks -> one h1".
 
 The fixture score is the **traced SVG rendered alone** for a `page` layout
 (`verify._render_art`), so none of this moved it — montiva stayed **4.19**. Page

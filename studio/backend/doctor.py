@@ -593,6 +593,18 @@ def cmd_polarity(_args: list[str]) -> int:
     _line(OK if nav_text == {"Home", "Services", "About", "Support", "Contact"} else BAD,
           "footer nav links detected", f"{sorted(nav_text)}")
 
+    # A hero drawn as a two-line lockup ("AntHosting" / "Coming soon") comes back
+    # from the model as TWO `headline` blocks.  Only the first may be the page's
+    # single h1 -- a second h1 is a structure defect (the north star wants one),
+    # and the page shipped it.  The extra line becomes the secondary accent line.
+    brand = Block("AntHosting", "headline", (60, 250, 452, 320))
+    second = Block("Coming soon", "headline", (60, 330, 340, 380))
+    hero = generate._hero_html([brand, second], "#contact")
+    n_h1 = hero.count("<h1")
+    _line(OK if n_h1 == 1 and 'class="subhead accent"' in hero else BAD,
+          "two headline blocks -> one h1",
+          f"{n_h1} h1, accent subhead={'subhead accent' in hero}")
+
     print()
     if _failures:
         print(f"{_failures} check(s) failed")

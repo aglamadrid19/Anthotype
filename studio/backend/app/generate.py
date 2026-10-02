@@ -1347,7 +1347,7 @@ def _hero_html(blocks: list[Block], cta_href: str,
     # ("Open source · Community driven · Powered by Antseed"), which then reads as
     # a caption for the buttons.
     out: list[str] = []
-    actions_done = badges_done = False
+    actions_done = badges_done = headline_done = False
     for b in _reading_order(blocks):
         if b.role == "cta":
             if not actions_done:
@@ -1363,7 +1363,16 @@ def _hero_html(blocks: list[Block], cta_href: str,
                 badges_done = True
             continue
         if b.role == "headline":
-            out.append(f'<h1>{_inline(b)}</h1>')
+            # A hero can hold two headline-role blocks (a brand line and a
+            # secondary line under it -- "AntHosting" / "Coming soon").  Only the
+            # first may be the page's single h1; the rest read as the secondary
+            # accent line, which is also how the mockup draws them.  Emitting a
+            # second h1 is a structure defect the pipeline only warned about.
+            if not headline_done:
+                out.append(f'<h1>{_inline(b)}</h1>')
+                headline_done = True
+            else:
+                out.append(f'<p class="subhead accent">{_inline(b)}</p>')
         elif b.role == "subhead":
             out.append(f'<p class="subhead">{_inline(b)}</p>')
         elif b.role == "brand":
@@ -1730,19 +1739,22 @@ a {{ color: inherit; }}
 .hero-art svg {{ width: 100%; height: 100%; display: block; }}
 /* A scrim over the artwork so the copy keeps contrast whatever the art does.
    It holds the page ground across the copy column, then releases the art
-   abruptly on the right.  Two earlier versions were wrong in opposite ways: the
-   first faded too slowly (~86% ground out to two-thirds of the width), washing
-   the traced art to near-white and reading as an empty panel; a later, very
-   soft version let the lede sit over the photograph and a review called the
-   body copy unreadable.  This keeps the copy legible *and* leaves the art a
-   real image on the right. */
+   outward.  Two earlier versions were wrong in opposite ways: the first faded
+   too slowly (~86% ground out to two-thirds of the width), washing the traced
+   art to near-white and reading as an empty panel; a later, very soft version
+   let the lede sit over the photograph and a review called the body copy
+   unreadable.  This keeps the copy legible *and* leaves the art a real image.
+   The falloff is RADIAL and centred on the copy column, not a full-height
+   linear band: a review found that a linear scrim dimmed the artwork directly
+   above and below the copy (a hero whose art surrounds the text lost its
+   top-left and bottom-left nodes), which a copy-local ellipse does not. */
 .hero-art::after {{
   content: ""; position: absolute; inset: 0;
-  background: linear-gradient(96deg,
-    color-mix(in srgb, var(--bg) 95%, transparent) 0%,
-    color-mix(in srgb, var(--bg) 88%, transparent) 36%,
-    color-mix(in srgb, var(--bg) 82%, transparent) 52%,
-    color-mix(in srgb, var(--bg) 14%, transparent) 72%, transparent 88%);
+  background: radial-gradient(ellipse 66% 80% at 0% 50%,
+    color-mix(in srgb, var(--bg) 96%, transparent) 0%,
+    color-mix(in srgb, var(--bg) 92%, transparent) 48%,
+    color-mix(in srgb, var(--bg) 70%, transparent) 70%,
+    color-mix(in srgb, var(--bg) 10%, transparent) 90%, transparent 100%);
 }}
 .hero-copy {{
   position: relative; z-index: 1; display: grid; gap: clamp(14px, 2vw, 22px);
@@ -1755,6 +1767,9 @@ a {{ color: inherit; }}
 .hero-copy > * {{ max-width: min(100%, 520px); }}
 .hero h1 {{ font-size: clamp(36px, 5.6vw, 60px); font-weight: 600; }}
 .hero .subhead {{ font-size: clamp(18px, 2.4vw, 27px); font-weight: 600; }}
+/* A hero's second headline line (the mockup's two-tone brand lockup) is the
+   accent colour, as drawn. */
+.hero .subhead.accent {{ color: var(--accent); }}
 .hero .lede {{ font-size: clamp(16px, 1.7vw, 20px); color: var(--muted); }}
 .hero .eyebrow {{ margin-bottom: 2px; }}
 .hero .brand {{ font-size: 20px; font-weight: 600; }}
