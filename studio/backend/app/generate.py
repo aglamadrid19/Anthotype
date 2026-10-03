@@ -47,6 +47,34 @@ GROUP_GAP = 2.5
 # as a hard cut.  See `hero_band`.
 HERO_BAND_OVERSHOW = 0.6
 
+# The aspect the hero band aims for, and the whole point of `hero_band`'s crop.
+#
+# `slice` / `object-fit: cover` scales the art by `max(box_w / band_w,
+# box_h / band_h)`, so the *smallest* scale -- the least magnification, and the
+# least cropping -- is when the band's aspect equals the hero box's.  The hero is
+# full-bleed and its copy column is capped at 520 px, so its height stops growing
+# with the viewport: at a 1400 px desktop the box is about 1400x800, aspect 1.75.
+# A band taller than that is trimmed symmetrically about the hero copy until it
+# matches (see `hero_band`).
+#
+# Only *shrinking* is done.  A band already wider than the target is left alone:
+# reaching the target from below would mean pulling in the next section's copy,
+# which is exactly the clutter the band exists to keep out.
+HERO_BAND_ASPECT = 1.75
+
+# How far below the mockup's own header the band starts, as a multiple of the
+# header's height.  The page renders its own `<header>` above the hero, so the
+# mockup's nav bar must not be in the backdrop -- starting at the top of the
+# stage puts a second, ghost nav bar inside the hero.  The header's *text* boxes
+# are tighter than its drawn bar (a nav link sits inside a pill taller than its
+# glyphs), so the band starts a little under the glyph bottom.
+#
+# Capped, because the model's header box is sometimes loose: a real upload's
+# header came back 89 px tall for a ~20 px nav row, and the proportional term
+# alone would then crop 53 px of the hero artwork above the copy.
+HERO_BAND_HEADER_GAP = 0.6
+HERO_BAND_HEADER_GAP_MAX = 12.0
+
 
 def _as_array(png: Path) -> np.ndarray:
     return np.asarray(Image.open(png).convert("RGB")).astype(np.float32)
@@ -1613,15 +1641,73 @@ def cta_target(sections: list[tuple[str, list[Block]]],
     return "#top"
 
 
+def hero_band_info(sections: list[tuple[str, list[Block]]]) -> dict | None:
+    """The hero band, plus whether it reaches into the section below the hero.
+
+    See `hero_band` for the band itself.  `overshoot` is what the bottom fade on
+    `.hero-art::after` exists to dissolve: a band that reaches past the hero into
+    the next section shows that section's cards and icons behind the copy, so the
+    fade is needed.  A band that stops at the hero's own end has nothing to
+    dissolve -- and the fade is full-width, so keeping it there darkens the bottom
+    half of the artwork for no reason.  The page CSS is generated from this.
+    """
+    hero = [b for n, g in sections if n == "hero" for b in g]
+    if not hero:
+        return None
+    top = min(b.bbox[1] for b in hero)
+    bottom = max(b.bbox[3] for b in hero)
+    below = [b.bbox[1] for n, g in sections
+             if n not in ("header", "nav", "hero", "footer") for b in g]
+    first_below = min(below) if below else None
+    y1 = min(below) if below else min(STAGE_H, bottom + max(60.0, bottom - top))
+    if below:
+        y1 += HERO_BAND_OVERSHOW * max(1.0, y1 - (0 if top < STAGE_H * 0.5
+                                                   else max(0.0, top - (bottom - top))))
+    y0 = 0.0 if top < STAGE_H * 0.5 else max(0.0, top - (bottom - top))
+
+    # Start below the mockup's own header, so its nav bar is not duplicated
+    # inside the hero.  Never crop into the hero's own copy: if the header's
+    # bottom sits below the hero's first block (an art-bleeding header), the band
+    # starts at the copy instead.
+    head = [b for n, g in sections if n == "header" for b in g]
+    floor = 0.0
+    if head:
+        head_top = min(b.bbox[1] for b in head)
+        head_bottom = max(b.bbox[3] for b in head)
+        gap = min(HERO_BAND_HEADER_GAP * max(0.0, head_bottom - head_top),
+                  HERO_BAND_HEADER_GAP_MAX)
+        floor = min(head_bottom + gap, top)
+    y0 = max(y0, floor)
+
+    # Trim a too-tall band to the aspect the hero box actually has, so `cover`
+    # stops magnifying it.  Shifted (not resized) into the stage so the height is
+    # kept whenever it fits.
+    max_h = STAGE_W / HERO_BAND_ASPECT
+    if y1 - y0 > max_h:
+        centre = (top + bottom) / 2.0
+        a, b = centre - max_h / 2.0, centre + max_h / 2.0
+        if a < floor:
+            a, b = floor, floor + max_h
+        if b > STAGE_H:
+            a, b = STAGE_H - max_h, STAGE_H
+        if a < floor:                      # the window cannot fit; take what there is
+            a, b = floor, STAGE_H
+        y0, y1 = a, b
+
+    y1 = min(STAGE_H, max(y0 + 40.0, y1))
+    return {"band": [int(round(y0)), int(round(y1))],
+            "overshoot": first_below is not None and y1 > first_below}
+
+
 def hero_band(sections: list[tuple[str, list[Block]]]) -> list[int] | None:
     """The mockup's vertical slice that the hero backdrop should show.
 
     The traced artwork is the *whole* mockup.  Spliced into the hero unchanged it
     shows the section below the hero too -- the next section's cards, icons and
     eyebrow bleed into the backdrop and read as clutter behind the copy.  The
-    backdrop is the hero's own band: from the top of the mockup (a hero near the
-    top is a full-bleed banner, so the art above the copy is part of it) down to
-    where the next section starts.
+    backdrop is the hero's own band: from just below the mockup's own header (the
+    page renders its own header, so the mockup's nav bar must not be in the
+    backdrop) down to where the next section starts.
 
     It deliberately overshoots that boundary by `HERO_BAND_OVERSHOW`.  The hero
     box is much taller than the hero band, and `preserveAspectRatio=slice` scales
@@ -1631,22 +1717,20 @@ def hero_band(sections: list[tuple[str, list[Block]]]) -> list[int] | None:
     A 540 px band is 1.45x and the artwork reads properly.
 
     The extra slice is what would otherwise bleed, so it is dissolved by the
-    bottom fade in `.hero-art:after` rather than shown as a hard cut.
+    bottom fade in `.hero-art:after` rather than shown as a hard cut.  That fade
+    is only applied when the band really does overshoot -- see `hero_band_info`.
+
+    A hero near the top of the page has nothing below it inside its own section,
+    so the "stop at the next section" rule never fires and the band ran to the
+    bottom of the stage -- letterbox padding from the ingest fit, the mockup's
+    nav bar, and the empty strip under the artwork, all inside a band whose
+    aspect (1.33) is nothing like the hero box's (1.75).  `cover` then magnified
+    the art 1.37x at 1400 px and 1.88x at 1920 px and cropped a quarter of it
+    away.  So the band is also trimmed to `HERO_BAND_ASPECT`, symmetrically about
+    the hero copy, which is the shape that needs the least scaling.
     """
-    hero = [b for n, g in sections if n == "hero" for b in g]
-    if not hero:
-        return None
-    top = min(b.bbox[1] for b in hero)
-    bottom = max(b.bbox[3] for b in hero)
-    below = [b.bbox[1] for n, g in sections
-             if n not in ("header", "nav", "hero", "footer") for b in g]
-    y1 = min(below) if below else min(STAGE_H, bottom + max(60.0, bottom - top))
-    if below:
-        y1 += HERO_BAND_OVERSHOW * max(1.0, y1 - (0 if top < STAGE_H * 0.5
-                                                   else max(0.0, top - (bottom - top))))
-    y0 = 0 if top < STAGE_H * 0.5 else max(0.0, top - (bottom - top))
-    y1 = min(STAGE_H, max(y0 + 40.0, y1))
-    return [int(round(y0)), int(round(y1))]
+    info = hero_band_info(sections)
+    return info["band"] if info else None
 
 
 def build_content(sections: list[tuple[str, list[Block]]], name: str) -> dict:
@@ -1660,22 +1744,42 @@ def build_content(sections: list[tuple[str, list[Block]]], name: str) -> dict:
     sections = [(s, _reading_order(g)) for s, g in sections]
     probe = build_markup(sections, "#top")
     href = cta_target(sections, probe)
+    band = hero_band_info(sections)
     return {
         "title": title,
         "description": tagline.text if tagline else "Built from a design reference.",
         "cta": cta.text if cta else "",
         "cta_href": href,
         "stage": [STAGE_W, STAGE_H],
-        "hero_band": hero_band(sections),
+        "hero_band": band["band"] if band else None,
+        # Whether the band reaches into the section below the hero.  The page CSS
+        # uses it to decide whether `.hero-art::after` needs its bottom fade: a
+        # band that stops at the hero's own end has nothing to dissolve, and the
+        # fade is full-width, so keeping it would darken real artwork.
+        "hero_overshoot": bool(band and band["overshoot"]),
         "sections": [s for s, _ in sections],
         "markup": build_markup(sections, href),
     }
 
 
-def build_page_css(palette_: dict) -> str:
-    """The generated site's stylesheet: normal flow, responsive, role-based scale."""
+def build_page_css(palette_: dict, hero_overshoot: bool = True) -> str:
+    """The generated site's stylesheet: normal flow, responsive, role-based scale.
+
+    `hero_overshoot` keeps the default `True` so a caller that does not know the
+    band (a synthetic palette probe, say) gets the conservative page.
+    """
     p = palette_
     scheme = "light" if p["light"] else "dark"
+    # The bottom fade dissolves a hero band that reaches into the section below.
+    # With no overshoot there is nothing to dissolve, and the fade spans the full
+    # width, so it would dim the lower half of the hero artwork.
+    hero_fade = ("""    linear-gradient(to bottom,
+      transparent 0%,
+      transparent 44%,
+      color-mix(in srgb, var(--bg) 64%, transparent) 60%,
+      color-mix(in srgb, var(--bg) 94%, transparent) 70%,
+      var(--bg) 78%),
+""" if hero_overshoot else "")
     return f"""/* Generated by Anthotype Studio.  A real website: flow layout, responsive,
    role-based type scale.  No absolute positioning, no fixed stage. */
 :root {{
@@ -1782,20 +1886,15 @@ a {{ color: inherit; }}
    column itself stays dark. */
 .hero-art::after {{
   content: ""; position: absolute; inset: 0;
-  /* Layer 1 holds the page ground across the copy column, then releases the art
-     outward; layer 2 dissolves the band's overshoot into the page at the bottom.
-     Both are needed now that `hero_band` deliberately reaches past the section
-     boundary -- without the fade the next section's cards read as clutter.
-     The fade completes at ~86%, which is just past where the *real* hero ends
-     inside the overshooting band, so the artwork is never cut mid-subject. */
+  /* The scrim holds the page ground across the copy column, then releases the
+     art outward.  `hero_fade` is the second, optional layer: it dissolves a hero
+     band that reaches into the section below, which would otherwise show that
+     section's cards as clutter behind the copy.  It is emitted only when the band
+     really does overshoot (`content.hero_overshoot`); when the band stops at the
+     hero's own end the fade has nothing to dissolve and, being full-width, would
+     dim the lower half of the artwork. */
   background:
-    linear-gradient(to bottom,
-      transparent 0%,
-      transparent 44%,
-      color-mix(in srgb, var(--bg) 64%, transparent) 60%,
-      color-mix(in srgb, var(--bg) 94%, transparent) 70%,
-      var(--bg) 78%),
-    radial-gradient(ellipse 48% 74% at 0% 52%,
+{hero_fade}    radial-gradient(ellipse 48% 74% at 0% 52%,
       color-mix(in srgb, var(--bg) 97%, transparent) 0%,
       color-mix(in srgb, var(--bg) 94%, transparent) 54%,
       color-mix(in srgb, var(--bg) 55%, transparent) 76%,
@@ -2083,7 +2182,9 @@ def write_all(pipeline: Path, name: str, blocks: list[Block],
     (pipeline / f"content-{name}.json").write_text(
         json.dumps(content, indent=2, ensure_ascii=False) + "\n")
 
-    (pipeline / f"{name}.page.css").write_text(build_page_css(palette(blocks, background)))
+    (pipeline / f"{name}.page.css").write_text(
+        build_page_css(palette(blocks, background),
+                       hero_overshoot=bool(content.get("hero_overshoot"))))
 
     # The exclusion rects are EVERY text block the model found -- the page copy
     # that becomes DOM *and* the text inside the artwork (labels on a device

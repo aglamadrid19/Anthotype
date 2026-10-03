@@ -12,11 +12,16 @@ The backdrop takes one of two forms, chosen by measuring the hero:
 
 | hero content | what the page ships | why |
 |---|---|---|
-| flat / vector art | **traced SVG** | exact, tiny, code-native, re-colourable |
+| flat art, uploaded at the stage's own width | **traced SVG** | exact, tiny, code-native, re-colourable |
 | photographic | **WebP at the upload's own resolution** | the tracer plateaus around 3.5 mean on a photograph while every knob is flat; the image is a fraction of the size and looks like the original |
+| flat art, but a *wider* upload | **WebP at the upload's own resolution** | the trace is bounded by the 1024 px stage and the hero is full-bleed, so on any wider screen the traced art is magnified (1.37× at 1400 px, 1.88× at 1920 px) and soft, while the raster is ~1:1 |
 
-A photographic export is built from your **original upload** (not the 1024×768
-working reference, which throws away real resolution) and from the tracer's
+Either of two independent reasons is enough (`app/heroart.py::wants_raster`): the
+artwork is continuous-tone, **or** the upload carries ≥1.2× the stage's linear
+resolution. The reason is reported per job as `hero_reason`.
+
+The export is built from your **original upload** (not the 1024×768 working
+reference, which throws away real resolution) and from the tracer's
 **text-removed** image — otherwise the mockup's own nav bar, headline and buttons
 would sit behind the real DOM copy as ghosts. It is inlined into the page as a
 data URI and also shipped as a standalone file. The traced SVG master is produced
@@ -186,6 +191,15 @@ clutter.  `generate.hero_band()` computes the mockup's hero slice and
 `gen-page.mjs` narrows the *spliced* SVG's `viewBox` to it — the SVG file itself
 is untouched, so the art metric still renders the full artwork.  Content flows
 over it.
+
+The band starts **below the mockup's own header** (the page renders its own
+header, so the mockup's nav bar would otherwise show as a second nav inside the
+hero) and is **trimmed to the hero box's aspect** (`HERO_BAND_ASPECT`, 1.75),
+symmetrically about the hero copy.  Without that trim a hero-only page — which has
+no section below it, so the boundary rule never fires — ran the band to the bottom
+of the stage (letterbox padding, nav bar and an empty strip) at aspect 1.33, and
+`cover` magnified the art 1.37× at 1400 px and 1.88× at 1920 px, cropping a quarter
+of it away.
 
 ### The artwork must not contain a ghost of the copy
 
@@ -364,11 +378,15 @@ studio/.venv/bin/python studio/backend/doctor.py job <id>   # full status + logs
 - **`fixtures`** is the end-to-end guard: each fixture is a *saved extraction*
   replayed against its reference through the whole local pipeline (structure,
   `mkart` tracing, Astro build, art-fidelity scoring), so it is deterministic,
-  free, and needs no vision model.  It guards **both measures**: the page's
-  structure and the artwork's pixel fidelity (`score_max`, the art-region mean
-  with a little headroom — a tracer regression such as half-resolution bands or
-  baked-in text raises it).  The scores are not comparable *between* fixtures;
-  each pins its own.
+  free, and needs no vision model.  It guards **both measures**: the page's structure and the artwork's pixel
+  fidelity — `score_max` bounds the art-region mean with a little headroom (a
+  tracer regression such as half-resolution bands or baked-in text raises it), and
+  `art_p95_max` bounds the *tail* of the same diff over the pixels the eye reads as
+  artwork, because the mean is dominated by whatever is flat and large (a real dark
+  design passed at 1.37 while its artwork p95 was 17.3 against 4.7 for a raster of
+  the same hero).  Each also pins `hero_kind`, `hero_max` on the shipped raster,
+  and `seam_max` on the blanked rects.  The scores are not comparable *between*
+  fixtures; each pins its own.
   - `light` — the synthetic light design: a hero-only page; asserts the structure
     and that all 8 page blocks are emitted as DOM while every `artwork` block is
     left to the tracer.

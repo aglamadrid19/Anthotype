@@ -482,15 +482,75 @@ def cmd_polarity(_args: list[str]) -> int:
           "hero action row stays in the hero", f"{names}")
 
     # The traced art is the whole mockup, so the hero backdrop is cropped to the
-    # hero's band -- but it deliberately overshoots the section boundary, because
-    # `slice` magnifies a short band hard (2.5x on a real upload).  Guard BOTH ends:
-    # it must start at the top and reach meaningfully past the boundary (311), and
-    # must not run away to the bottom of the stage.
+    # hero's band.  Three things must hold, and each was a real defect:
+    #   * it reaches meaningfully past the section boundary (311) -- a band cut
+    #     exactly there is magnified 2.5x by `slice` -- but not to the bottom;
+    #   * it starts BELOW the mockup's own header: starting at the top of the
+    #     stage put a second, ghost nav bar inside the hero;
+    #   * a hero near the top has no section below it, so the boundary rule never
+    #     fires and the band ran to the bottom of the stage -- 128 px of ingest
+    #     letterbox, the header, and an empty strip -- inside a 1.33-aspect band
+    #     when the hero box is 1.75.  `cover` then magnified the art 1.37x at
+    #     1400 px and 1.88x at 1920 px and cropped a quarter of it away.  Such a
+    #     band must be trimmed to the box's aspect.
     band = generate.hero_band(generate.group_sections(declared))
     ok = (band is not None and band[0] == 0
           and 380 < band[1] < generate.STAGE_H)
     _line(OK if ok else BAD, "hero backdrop band avoids magnifying the art",
           f"{band} (boundary 311, stage {generate.STAGE_H})")
+
+    hero_only = generate.hero_band(generate.group_sections([
+        Block("Anthosting", "brand", (52, 80, 140, 100), section="header"),
+        Block("Private hosting", "other", (700, 86, 800, 98), section="header"),
+        Block("BUILT FOR ANTSEED", "tagline", (52, 209, 200, 221), section="hero"),
+        Block("Managed private hosting", "headline", (52, 248, 400, 344), section="hero"),
+        Block("Book a setup call", "cta", (52, 500, 200, 530), section="hero"),
+    ]))
+    want_h = generate.STAGE_W / generate.HERO_BAND_ASPECT
+    ok = (hero_only is not None
+          and hero_only[0] > 100                       # below the header (bottom 100)
+          and abs((hero_only[1] - hero_only[0]) - want_h) < 3)
+    _line(OK if ok else BAD, "hero-only page: band trimmed to the box's aspect",
+          f"{hero_only} is {hero_only[1] - hero_only[0]} px tall (want {want_h:.0f}); "
+          f"it must also start below the header" if hero_only else "no band")
+
+    # The bottom fade on `.hero-art::after` exists to dissolve a band that reaches
+    # into the section BELOW the hero.  A band that stops at the hero's own end has
+    # nothing to dissolve, and the fade is full-width, so keeping it would dim the
+    # lower half of the artwork for nothing.  The CSS is generated from the flag.
+    hero_only_sections = generate.group_sections([
+        Block("Anthosting", "brand", (52, 80, 140, 100), section="header"),
+        Block("BUILT FOR ANTSEED", "tagline", (52, 209, 200, 221), section="hero"),
+        Block("Managed private hosting", "headline", (52, 248, 400, 344), section="hero"),
+    ])
+    multi_sections = generate.group_sections(declared)
+    only_c = generate.build_content(hero_only_sections, "ho")
+    multi_c = generate.build_content(multi_sections, "mu")
+    pal = generate.palette(hero_only_sections[1][1], (11, 16, 17))
+    only_css = generate.build_page_css(pal, hero_overshoot=bool(only_c["hero_overshoot"]))
+    multi_css = generate.build_page_css(pal, hero_overshoot=bool(multi_c["hero_overshoot"]))
+    fade = "linear-gradient(to bottom"
+    ok = (only_c["hero_overshoot"] is False and multi_c["hero_overshoot"] is True
+          and fade not in only_css and fade in multi_css)
+    _line(OK if ok else BAD, "the hero bottom fade follows the band's overshoot",
+          f"hero-only overshoot={only_c['hero_overshoot']} fade={'yes' if fade in only_css else 'no'}; "
+          f"multi-section overshoot={multi_c['hero_overshoot']} fade={'yes' if fade in multi_css else 'no'}")
+
+    # ...and a LOOSE model header box must not crop the hero artwork.  A real
+    # upload's header came back 89 px tall for a ~20 px nav row; the proportional
+    # offset alone would then reach 53 px into the art above the copy, which on a
+    # hero whose artwork sits in that strip silently cuts it off.  The offset is
+    # capped, so an 80 px header box moves the band by the cap (12), not by 48.
+    loose = generate.hero_band(generate.group_sections([
+        Block("Anthosting", "brand", (52, 80, 140, 160), section="header"),
+        Block("BUILT FOR ANTSEED", "tagline", (52, 209, 200, 221), section="hero"),
+        Block("Managed private hosting", "headline", (52, 248, 400, 344), section="hero"),
+    ]))
+    limit = 174.0        # header box bottom 160 + the 12 px cap + 1 px rounding
+    ok = loose is not None and loose[0] <= limit
+    _line(OK if ok else BAD, "a loose header box cannot crop the hero art",
+          f"{loose} starts at {loose[0] if loose else '?'} (an 80 px header box must "
+          f"stay <= {limit:.0f}; uncapped it would start at 208)")
 
     # The hero's buttons are emitted where they sit, not appended: a fine-print
     # line drawn *under* the button must stay under it, not become a caption.
@@ -548,11 +608,12 @@ def cmd_polarity(_args: list[str]) -> int:
           "blank-seam check separates a plate from a clean fill",
           f"clean {seam_clean:.0f}/255, pasted plate {seam_plate:.0f}/255")
 
-    # The hero backdrop is a traced SVG for flat artwork and a fixed-resolution
-    # raster for a photograph.  If this classifier drifts, a photographic hero
-    # silently goes back to the smeared, posterised vector backdrop the raster
-    # path exists to fix -- and, because `art_score` masks the text rects and
-    # measures the SVG, nothing else in the gate would notice.
+    # The hero backdrop is a traced SVG for flat artwork at the stage's own
+    # resolution, and a fixed-resolution raster otherwise.  If this classifier
+    # drifts, a photographic hero silently goes back to the smeared, posterised
+    # vector backdrop the raster path exists to fix -- and, because `art_score`
+    # masks the text rects and measures the SVG, nothing else in the gate would
+    # notice.
     #
     # The signal is how many distinct colours survive area-averaging, so the
     # synthetic photograph has to be *busy* (many objects/tones) rather than a
@@ -575,6 +636,18 @@ def cmd_polarity(_args: list[str]) -> int:
     _line(OK if (not flat_photo and real_photo) else BAD,
           "hero backdrop picks raster only for a photograph",
           f"flat {flat_score} < {heroart.PHOTO_DISTINCT} <= photo {photo_score}")
+
+    # ...and the second, independent arm: an upload carrying more resolution than
+    # the 1024 px stage must rasterise even when the artwork is flat, because the
+    # traced SVG is bounded by the stage and a full-bleed hero magnifies it.  This
+    # is the arm that caught a real dark dashboard whose colour score (113) sat
+    # under the cut while 1.55x of its linear detail went unused.
+    want_hi, _, m_hi, why_hi = heroart.wants_raster(flat, None, 1 / 1.6)
+    want_lo, _, m_lo, why_lo = heroart.wants_raster(flat, None, 1.0)
+    ok = want_hi and not want_lo and not flat_photo and why_hi and why_lo
+    _line(OK if ok else BAD, "hero backdrop uses the upload's resolution when it has more",
+          f"upload {m_hi:.2f}x the stage -> raster ({why_hi}); "
+          f"{m_lo:.2f}x -> SVG ({why_lo})")
 
     # The raster must be exported at the UPLOAD's own resolution, not the
     # normalised 1024x768 reference: the ingest fit downscales a real upload
@@ -729,21 +802,29 @@ def cmd_polarity(_args: list[str]) -> int:
 # separately; a tracer regression (half-resolution bands, baked-in text) raises
 # one and fails the fixture.
 #
+# `art_p95_max` bounds the tail of the same diff, over the pixels the eye reads as
+# artwork.  The mean is dominated by whatever is flat and large: a real dark
+# design passed `score_max` at 1.37 while its artwork p95 was 17.3 against 4.7 for
+# a raster of the same hero.  This bound is the one that sees posterisation.
+#
 # `seam_max` bounds `blank_seam`, the tonal step the trace leaves at the rects the
 # tracer had to fill.  `score_max` masks those rects out, so on its own it cannot
 # see a fill that went wrong -- this bound is what covers them.
 #
-# `hero_kind` / `hero_max` guard the OTHER representation: a photographic hero
-# ships a fixed-resolution raster, and `hero_max` bounds its mean against the
-# reference band (removed rects masked out, so it measures the artwork and not
+# `hero_kind` / `hero_max` guard the OTHER representation: a hero with
+# continuous-tone artwork, or an upload carrying more resolution than the 1024 px
+# stage, ships a fixed-resolution raster, and `hero_max` bounds its mean against
+# the reference band (removed rects masked out, so it measures the artwork and not
 # the deliberate text removal).  `score_max` still bounds the SVG master, which
 # such a page no longer shows -- so without these two the raster path would be
-# entirely unguarded.
+# entirely unguarded.  (All three fixtures are photographic; a flat fixture whose
+# upload is wider than the stage exercises the other arm of the rule.)
 FIXTURES: dict[str, dict] = {
     "light": dict(
         ref="light-ref.png", blocks="light-blocks.json",
         note="synthetic light ground: a hero-only page (structure + art)",
-        expect=["hero"], page=8, artwork=0, score_max=3.0, seam_max=8.0,
+        expect=["hero"], page=8, artwork=0, score_max=3.0, art_p95_max=32.0,
+        seam_max=8.0,
         hero_kind="photographic", hero_max=2.5,
     ),
     "montiva": dict(
@@ -754,13 +835,14 @@ FIXTURES: dict[str, dict] = {
         # Tightened 5.0 -> 4.0 when the studio gained chroma sub-banding and
         # turdsize 12: this fixture's art mean fell 4.21 -> 3.44.  The bound is the
         # guard that stops the gain silently evaporating.
-        score_max=4.0, seam_max=8.0,
+        score_max=4.0, art_p95_max=48.0, seam_max=8.0,
         hero_kind="photographic", hero_max=2.5,
     ),
     "antho": dict(
         ref="antho-ref.png", blocks="antho-blocks.json",
         note="real photorealistic hero: a hero-only page",
-        expect=["header", "hero"], page=8, score_max=3.0, seam_max=8.0,
+        expect=["header", "hero"], page=8, score_max=3.0, art_p95_max=32.0,
+        seam_max=8.0,
         hero_kind="photographic", hero_max=2.5,
     ),
 }
@@ -862,6 +944,7 @@ def _run_fixture(name: str, keep: bool = False) -> int:
         print("fidelity : n/a")
     else:
         print(f"fidelity : art region mean {j.score:.2f}"
+              + (f", p95 {j.art_p95:.2f}" if j.art_p95 is not None else "")
               + (f"  (max {bound:g})" if bound is not None else ""))
     if spec.get("hero_kind") or spec.get("hero_max") is not None:
         hb = spec.get("hero_max")
@@ -883,6 +966,16 @@ def _run_fixture(name: str, keep: bool = False) -> int:
             failed.append("art fidelity not measured (no score)")
         elif j.score >= bound:
             failed.append(f"art region mean {j.score:.2f} >= max {bound:g}")
+    # The mean is dominated by whatever is flat and large -- on a dark design it
+    # sat at 1.37 while the artwork itself was wrong by five times that -- so
+    # bound the tail separately.  This is the number that would have caught the
+    # posterised backdrop a reviewer flagged under a passing mean.
+    p95_bound = spec.get("art_p95_max")
+    if p95_bound is not None:
+        if j.art_p95 is None:
+            failed.append("art p95 not measured (too few artwork pixels)")
+        elif j.art_p95 >= p95_bound:
+            failed.append(f"art region p95 {j.art_p95:.2f} >= max {p95_bound:g}")
     # The art score masks the blanked rects out, so bound the seam separately --
     # otherwise a fixture passes while the backdrop has pasted-on plates in it.
     seam_bound = spec.get("seam_max")
@@ -987,12 +1080,13 @@ def _state_consistency(measured: dict[str, float]) -> list[str]:
     recorded = (state.get("verification") or {}).get("fixture_bounds")
     if not isinstance(recorded, dict):
         bad.append("STATE.json verification.fixture_bounds is missing -- record each "
-                   "fixture's score_max/seam_max/hero_kind/hero_max there (this check "
-                   "compares them to FIXTURES)")
+                   "fixture's score_max/art_p95_max/seam_max/hero_kind/hero_max "
+                   "there (this check compares them to FIXTURES)")
     else:
         for name, spec in FIXTURES.items():
             want = {k: spec[k] for k in
-                    ("score_max", "seam_max", "hero_kind", "hero_max") if k in spec}
+                    ("score_max", "art_p95_max", "seam_max", "hero_kind", "hero_max")
+                    if k in spec}
             got = recorded.get(name)
             if not isinstance(got, dict):
                 bad.append(f"STATE.json fixture_bounds has no entry for '{name}'")

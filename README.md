@@ -9,7 +9,8 @@ page.
 
 Turn a flat design PNG into a **real, code-native website** — a responsive,
 semantic page with DOM text and CSS, whose artwork is traced SVG geometry where
-the artwork is flat and a fixed-resolution image export where it is photographic.
+the artwork is flat and carries no more resolution than the working stage, and a
+fixed-resolution image export otherwise.
 
 ## The north star: a website, not a poster
 
@@ -17,9 +18,10 @@ The output is **not a pixel copy of the mockup**, and it is not a screenshot.
 It is a website:
 
 - **The artwork** is traced into real vector geometry (the landing page's
-  decorative backdrop) — or, when the backdrop is *photographic*, exported at a
-  fixed resolution to WebP. Flat vector regions cannot represent photographic
-  tone at a web payload; see "Two representations for the hero" below.
+  decorative backdrop) — or exported at a fixed resolution to WebP. Flat vector
+  regions cannot represent photographic tone at a web payload, and a 1024 px
+  trace cannot carry an upload that has more detail than that; see "Two
+  representations for the hero" below.
 - **The page** is semantic and responsive — `header`, `nav`, a hero, one
   `section` per page region, a `footer` — in normal document flow, with a
   role-based type scale and real links.
@@ -36,15 +38,24 @@ fonts.
 
 | hero content | what the page ships | why |
 |---|---|---|
-| flat / vector art | **traced SVG** | exact, tiny, code-native, re-colourable |
+| flat art, uploaded at the stage's own width | **traced SVG** | exact, tiny, code-native, re-colourable |
 | photographic | **WebP, at the upload's own resolution** | the tracer plateaus around 3.5 mean on a photograph while every knob is flat; the image is a fraction of the size and looks like the original |
+| flat art, but a *wider* upload | **WebP, at the upload's own resolution** | the trace is bounded by the 1024 px stage, and the hero is full-bleed: on any desktop wider than 1024 the traced art is magnified (1.37× at 1400 px, 1.88× at 1920 px) and soft, while the raster is ~1:1 |
 
-The choice is made by measurement, not by guessing: `app/heroart.py` samples how
-much colour survives area-averaging the hero band to a fixed grid — flat art
-scores 29–91, photographs 245–358 — and is deliberately biased toward
-rasterising, because a misclassified flat design merely costs bytes while a
-misclassified photograph produces the smeared, posterised backdrop this exists
-to fix.
+The choice is made by measurement, not by guessing, and either of two independent
+reasons is enough (`app/heroart.py`):
+
+- `is_photographic` samples how much colour survives area-averaging the hero band
+  to a fixed grid — flat art scores 29–91, photographs 245–358 — deliberately
+  biased toward rasterising, because a misclassified flat design merely costs
+  bytes while a misclassified photograph produces the smeared, posterised backdrop
+  this exists to fix; and
+- `native_factor` measures how much more linear resolution the upload carries than
+  the stage (`1 / stage_scale`, capped). At ≥ 1.2 the raster is worth shipping for
+  its own sake. This arm caught a real dark dashboard: its colour score was 113,
+  under the cut, so the old rule kept a magnified SVG — while the artwork the eye
+  reads was wrong by 17.3 p95 against 4.7 for a raster of the same hero, with
+  1.55× of its linear detail unused.
 
 Two things the raster gets right, and both are easy to get wrong:
 
@@ -56,8 +67,12 @@ Two things the raster gets right, and both are easy to get wrong:
   buttons into the backdrop, where they ghost behind the real DOM copy.
 
 The **SVG art master is always produced** and always shipped in the project zip.
-For a photographic design the page does not use it, so it is a secondary
-artifact and is not tuned.
+When the page ships the raster instead, the master is a secondary artifact and is
+not tuned.
+
+Both representations are cropped to the **hero band** — the mockup's own header is
+excluded (the page renders its own), and the band is trimmed to the hero box's
+aspect so `cover` stops magnifying it. See `generate.hero_band`.
 
 ## What it does
 

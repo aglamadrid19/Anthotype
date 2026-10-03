@@ -22,9 +22,12 @@ The output is **a website, not a pixel copy of the mockup**. Three things follow
 
 - The **artwork** is judged on pixels — mean-abs-pixel-difference over the **art
   region** (page-copy rects masked out). This is the tracer's job and the moat.
-- The **shipped hero** is judged separately when the backdrop is photographic:
-  the page ships a fixed-resolution image, not the traced SVG, so its own mean
-  against the reference band is what covers the thing a visitor actually sees.
+  Its tail is reported as `art_p95`, over the pixels the eye reads as artwork:
+  the mean is dominated by whatever is flat and large, so a dark design can score
+  1.37 while its artwork is wrong by five times that.
+- The **shipped hero** is judged separately when the page ships a raster rather
+  than the traced SVG: the raster's own mean against the reference band is what
+  covers the thing a visitor actually sees.
 - The **website** is judged on **structure** — landmarks, sections, one `h1`,
   resolving links, flow layout, reflow.
 
@@ -89,9 +92,9 @@ landmines in `docs/HANDOFF.md` §5 (15 of them).
    any page-originated request or remote asset. (It once silently depended on the
    Google Fonts CDN — offline, scores went 2.71 → 4.22.)
 
-5. **A photographic hero's raster must come from the tracer's *prepared* image,
-   at the upload's own resolution.** Two failure modes, both invisible to
-   `art_score` (which masks text rects and measures the SVG):
+5. **A raster hero must come from the tracer's *prepared* image, at the upload's
+   own resolution.** Two failure modes, both invisible to `art_score` (which
+   masks text rects and measures the SVG):
    - **Cropping the raw reference** bakes the mockup's own nav bar, headline and
      buttons into the backdrop, where they sit behind the real DOM copy as
      ghosts of themselves. The glyphs are inpainted out by `mkart.py`, so the
@@ -103,6 +106,21 @@ landmines in `docs/HANDOFF.md` §5 (15 of them).
      is a single factor `m`.
 
    `doctor polarity` guards both, and each fixture pins `hero_kind`/`hero_max`.
+
+6. **The hero band must describe the hero, not the frame.** `hero_band` starts
+   *below* the mockup's own header (the page renders its own header, so the
+   mockup's nav bar would otherwise appear as a second nav ghost inside the hero)
+   and is **trimmed to `HERO_BAND_ASPECT` (1.75)**, symmetrically about the hero
+   copy. A hero-only page has no section below it, so the "stop at the boundary"
+   rule never fires and the band ran to the bottom of the stage — 128 px of ingest
+   letterbox, the nav bar and an empty strip — inside a **1.33**-aspect band when
+   the hero box's aspect is 1.75. `cover` then magnified the art **1.37× at
+   1400 px and 1.88× at 1920 px** and cropped a quarter of it away. Only shrinking
+   is done: a band already wider than the target is left alone, because reaching
+   the target from below would pull in the next section.
+
+   `doctor polarity` guards both ends ("band avoids magnifying the art",
+   "hero-only page: band trimmed to the box's aspect").
 
 Also: the artwork SVG is `aria-hidden` **decoration** (the copy carries the
 meaning), and only the vendored font weights 400/500/600 are ever requested.
@@ -133,6 +151,11 @@ meaning), and only the vendored font weights 400/500/600 are ever requested.
 - **`doctor fixtures` guards structure and a per-fixture art bound, not pixel
   parity.** Comparing studio fixture scores to A/B/C's is meaningless — a studio
   page reflows and is authored in its own type.
+- **The hero is not raster *only* for photographs.** A flat design whose upload
+  carries more resolution than the 1024 px stage also ships the raster
+  (`heroart.MIN_NATIVE_GAIN`, 1.2), because the traced SVG is bounded by the stage
+  and a full-bleed hero magnifies it on any wider screen. So `hero_kind` is not a
+  synonym for "photographic" — read `hero_reason`.
 - **`mkart --prepared-out` is a separate mode: it saves the text-removed image
   and returns before tracing.** It reads whatever config it is given, so the
   studio points it at a generated `designs/<id>-hi.json` whose box and rects are
@@ -172,7 +195,9 @@ Measured and settled (full reasoning in `docs/HANDOFF.md` §4):
 - **SVG `linearGradient` fills and harmonic/diffusion inpainting are dead ends**
   for the same job (montiva 2.20 → 4.45 and 4.19 → 4.54 respectively).
 - **Native-resolution SVG tracing is pointless** while the page ships a raster
-  for photos; the SVG master stays at stage resolution.
+  for a hero with more resolution than the stage; the SVG master stays at stage
+  resolution. (This is now the rule, not just a photo rule — see
+  `heroart.MIN_NATIVE_GAIN`.)
 
 > **The caveat worth remembering:** anything in that list judged only by the
 > aggregate mean was measured through a scorer that was later found to be
@@ -209,7 +234,7 @@ pipeline/
 sites/variant-{a,b,c}/ the three worked examples (the tracer's regression suite)
 preview/               one static server for all builds + a generated gallery
 studio/                the upload -> site web app (FastAPI + React)
-  backend/app/heroart.py   flat-vs-photograph decision + the raster hero export
+  backend/app/heroart.py   flat-vs-photograph + resolution decision, raster export
   backend/app/runner.py    the orchestrator (stages, verify, package)
 docs/                  HANDOFF.md, CHECKPOINT.md, STATE.json, HOME.md, ...
 ```
@@ -245,7 +270,9 @@ automatically once the page CSS exists.
 A design whose hero is a photograph needs no extra config: the studio measures
 the hero band (`app/heroart.py`), and on a photographic result builds the raster
 from a native-resolution reference and the tracer's own text-removed image. A
-flat design is unaffected and keeps the traced SVG.
+flat design uploaded at the stage's own 1024 px width is unaffected and keeps the
+traced SVG; one uploaded wider ships the raster too, for the resolution it
+carries.
 
 Useful entry points for investigation: `python qa/<tool>.py --help`, and the
 "ones that matter" list in `pipeline/qa/INDEX.md`. `qa/artfloor.py` answers "is
@@ -269,7 +296,7 @@ Read in this order for depth:
 |---|---|
 | `AGENTS.md` (this file) | entry point: rules, landmines, orientation |
 | `README.md` | how the pipeline works; the product view |
-| `docs/CHECKPOINT.md` | current state + "the two things future work must not break" |
+| `docs/CHECKPOINT.md` | current state + "the four things future work must not break" |
 | `docs/HANDOFF.md` | the full route: what was tried, what is exhausted, the 15 landmines |
 | `docs/STATE.json` | machine-readable state (scores, params, targets, history) |
 | `pipeline/qa/INDEX.md` | every QA tool and which matter |

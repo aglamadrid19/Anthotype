@@ -15,6 +15,15 @@ biased toward the raster: misclassifying flat art as photographic costs bytes
 and the code-native property but looks the same, whereas misclassifying a photo
 as flat produces the smeared, posterised backdrop this module exists to fix.
 
+Two independent things decide it, and either one is enough:
+
+  * **the artwork is continuous-tone** -- a photograph cannot be flat regions.
+  * **the upload carries more resolution than the stage** -- the stage is 1024
+    wide and the hero is full-bleed, so on any desktop wider than that the traced
+    art is magnified (1.37x at 1400 px, 1.88x at 1920 px) and reads soft.  The
+    raster is built from the upload, so when the upload is meaningfully wider
+    there is real detail to gain by shipping it.  See `MIN_NATIVE_GAIN`.
+
 Two things the raster must get right, and both are easy to get wrong:
 
   * **The reference's own text must be gone.**  Handing the raw reference to the
@@ -57,6 +66,22 @@ DETECT_SHIFT = 3            # 5 bits per channel
 # direction is the expensive one.  Sits between 91 (the most photographic flat
 # art measured) and 245 (the least photographic photograph), with ~60% margin.
 PHOTO_DISTINCT = 150
+
+# How much more linear resolution than the 1024 px stage the upload must carry
+# before the raster is worth shipping for its own sake.
+#
+# The traced SVG is bounded by the stage; the hero is full-bleed, so at 1400 px
+# it is magnified 1.37x and at 1920 px 1.88x, and soft.  A raster built from the
+# upload (`native_reference`) has the upload's own detail, so it is ~1:1 at
+# 1400 px and downscaled -- crisp -- above that.  This arm exists because the
+# colour score is *not* the right question for a dark, glow-heavy design: a real
+# upload scored 113 (under the cut) while its artwork-region p95 was 17.3, and a
+# raster of the same hero scored 4.7.  There was 1.55x the linear detail sitting
+# in the upload, unused.
+#
+# 1.2 rather than 1.0 so a small rounding gain does not flip a design: at 1024
+# px wide the factor is exactly 1.0 and the traced SVG stays.
+MIN_NATIVE_GAIN = 1.2
 
 # --- export ----------------------------------------------------------------
 # The hero box is `min-height: clamp(460px, 70vh, 680px)` and full-bleed, so on a
@@ -106,6 +131,45 @@ def is_photographic(arr: np.ndarray, band: list[int] | None) -> tuple[bool, int]
     return score >= PHOTO_DISTINCT, score
 
 
+def native_factor(stage_scale: float, max_scale: float = MAX_NATIVE_SCALE) -> float:
+    """The stage -> native factor `m` (see `native_reference`).
+
+    Split out because the *decision* to rasterise needs `m` before any file is
+    written: it is exactly `1 / stage_scale` (the factor that shows the upload at
+    its own resolution), capped.
+    """
+    scale = stage_scale if stage_scale and stage_scale > 0 else 1.0
+    return max(1.0, min(1.0 / scale, float(max_scale)))
+
+
+def wants_raster(arr: np.ndarray, band: list[int] | None,
+                 stage_scale: float) -> tuple[bool, int, float, str]:
+    """Should the page ship a raster export of the hero rather than the traced SVG?
+
+    Two independent reasons, either sufficient:
+
+      * the artwork is continuous-tone (`is_photographic`), or
+      * the upload carries more resolution than the stage kept
+        (`native_factor >= MIN_NATIVE_GAIN`), so a full-bleed hero is magnified
+        on any desktop wider than the stage.
+
+    Returns `(verdict, colour_score, m, reason)` so the caller can log which arm
+    fired -- a decision this consequential must not be silent.
+    """
+    photo, score = is_photographic(arr, band)
+    m = native_factor(stage_scale)
+    gain = m >= MIN_NATIVE_GAIN
+    if photo:
+        reason = f"photographic (colour score {score} >= {PHOTO_DISTINCT})"
+    elif gain:
+        reason = (f"flat, but the upload is {m:.2f}x the stage's resolution "
+                  f"(colour score {score} < {PHOTO_DISTINCT})")
+    else:
+        reason = (f"flat artwork at stage resolution (colour score {score} < "
+                  f"{PHOTO_DISTINCT}, upload {m:.2f}x the stage)")
+    return (photo or gain), score, m, reason
+
+
 def native_reference(source_png: Path, dest: Path, stage_w: int, stage_h: int,
                      stage_scale: float, stage_offset: tuple[int, int],
                      background: tuple[int, int, int],
@@ -129,8 +193,7 @@ def native_reference(source_png: Path, dest: Path, stage_w: int, stage_h: int,
     """
     img = Image.open(source_png).convert("RGB")
     sw, sh = img.size
-    scale = stage_scale if stage_scale and stage_scale > 0 else 1.0
-    m = max(1.0, min(1.0 / scale, float(max_scale)))
+    m = native_factor(stage_scale, max_scale)
     cw, ch = max(1, round(stage_w * m)), max(1, round(stage_h * m))
     hi = min(cw / sw, ch / sh, 1.0)                 # native, never upscaled
     fw, fh = max(1, round(sw * hi)), max(1, round(sh * hi))

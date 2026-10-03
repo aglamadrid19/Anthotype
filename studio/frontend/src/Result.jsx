@@ -17,8 +17,12 @@ export default function Result({ job, onReset }) {
   const sections = info.sections || [];
   const issues = job.structure_issues || info.issues || [];
   // "svg" (flat artwork, traced geometry) or "photographic" (a fixed-resolution
-  // image export).  The SVG art master is produced either way.
+  // image export).  The SVG art master is produced either way.  The export is
+  // not only for photographs: a flat design whose upload carries more resolution
+  // than the 1024px stage also ships the image, because the traced SVG is bounded
+  // by the stage and a full-bleed hero magnifies it on a wider screen.
   const heroKind = job.hero_kind;
+  const heroReason = job.hero_reason;
 
   return (
     <div className="result">
@@ -31,8 +35,8 @@ export default function Result({ job, onReset }) {
               <code>header</code>, <code>nav</code>, <code>section</code>s and a{' '}
               <code>footer</code> — plus the full Astro project.{' '}
               {heroKind === 'photographic'
-                ? 'The photographic hero is exported as a fixed-resolution image;'
-                : 'The traced artwork is the hero backdrop;'}{' '}
+                ? 'The hero backdrop is exported as a fixed-resolution image '
+                : 'The traced artwork is the hero backdrop; '}{' '}
               the copy is real DOM.
             </p>
           </div>
@@ -98,9 +102,10 @@ export default function Result({ job, onReset }) {
           {heroKind === 'photographic' ? (
             <>
               <strong>{fmt(job.hero_fidelity)}</strong> measures the{' '}
-              <em>image the page ships</em> against the reference — a
-              photograph cannot be represented as flat vector regions at a web
-              payload, so it is exported at a fixed resolution instead.{' '}
+              <em>image the page ships</em> against the reference.{' '}
+              {heroReason ? <>{heroReason[0].toUpperCase() + heroReason.slice(1)} — </> : null}
+              the image is built from your upload at its own resolution, so a
+              full-bleed hero stays sharp instead of magnifying the 1024px trace.{' '}
               <strong>{fmt(job.score)}</strong> is the traced SVG master, kept
               as a separate deliverable.
             </>

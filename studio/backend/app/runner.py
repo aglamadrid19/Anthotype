@@ -207,11 +207,15 @@ class PipelineRunner:
         A photograph cannot be traced to flat vector regions at a sane payload
         (measured: the tracer plateaus around 3.5 mean on a photo hero while every
         knob is flat), so a photographic hero ships a fixed-resolution WebP on the
-        page.  Flat artwork keeps the traced SVG, which is exact, small and
-        code-native.  The SVG master is produced either way -- it is deliverable
-        one, shipped in the zip.
+        page.  And a *flat* hero whose upload is wider than the 1024 px stage ships
+        the raster too, because the traced SVG is bounded by the stage and a
+        full-bleed hero is magnified on any desktop wider than that (1.37x at
+        1400 px, 1.88x at 1920 px) -- so the resolution the upload carries would
+        otherwise be thrown away.  Flat artwork at the stage's own resolution
+        keeps the traced SVG, which is exact, small and code-native.  The SVG
+        master is produced either way -- it is deliverable one, shipped in the zip.
 
-        The decision is measured on the hero band (see `heroart`).  The raster is
+        The decision is measured (see `heroart.wants_raster`).  The raster is
         built by the tracer itself, from a native-resolution reference made from
         the ORIGINAL upload: the ingest fit throws away real resolution (a real
         upload was reduced to 61% of its linear detail), and -- more importantly --
@@ -220,11 +224,11 @@ class PipelineRunner:
         """
         band = content.get("hero_band")
         ref = np.asarray(Image.open(norm.path).convert("RGB"))
-        photo, score = heroart.is_photographic(ref, band)
-        if not photo:
-            self.store.log(jid, f"hero backdrop: flat artwork (colour score {score} "
-                                f"< {heroart.PHOTO_DISTINCT}) -> traced SVG")
-            self.store.update(jid, hero_kind="svg", hero_distinct=score)
+        raster, score, _m, reason = heroart.wants_raster(ref, band, norm.scale)
+        if not raster:
+            self.store.log(jid, f"hero backdrop: traced SVG -- {reason}")
+            self.store.update(jid, hero_kind="svg", hero_distinct=score,
+                              hero_reason=reason)
             return {"kind": "svg"}
 
         try:
@@ -249,17 +253,20 @@ class PipelineRunner:
         except Exception as exc:  # noqa: BLE001 - fall back to the SVG master
             self.store.log(jid, f"hero backdrop: raster export failed ({exc}); "
                                 f"falling back to the traced SVG")
-            self.store.update(jid, hero_kind="svg", hero_distinct=score)
+            self.store.update(jid, hero_kind="svg", hero_distinct=score,
+                              hero_reason=f"raster export failed: {exc}")
             return {"kind": "svg"}
 
         if not written:
-            self.store.log(jid, "hero backdrop: photographic, but no raster could be "
+            self.store.log(jid, "hero backdrop: raster wanted, but no image could be "
                                 "written -- falling back to the traced SVG")
-            self.store.update(jid, hero_kind="svg", hero_distinct=score)
+            self.store.update(jid, hero_kind="svg", hero_distinct=score,
+                              hero_reason="raster wanted but not written")
             return {"kind": "svg"}
 
         meta = written["webp"]
         info = {"kind": "photographic", "score": score, "native_scale": round(m, 3),
+                "reason": reason,
                 "w": meta["w"], "h": meta["h"], "bytes": meta["bytes"],
                 "webp": meta["name"]}
         # The page reads this from `content-<id>.json` (see `gen-page.mjs`).
@@ -272,11 +279,11 @@ class PipelineRunner:
         cfg_path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
 
         for ext, meta in sorted(written.items()):
-            self.store.log(jid, f"hero backdrop: photographic (colour score {score}) "
+            self.store.log(jid, f"hero backdrop: raster export ({reason}) "
                                 f"-> {meta['name']} {meta['w']}x{meta['h']} "
                                 f"{meta['bytes'] // 1024} KB")
         self.store.update(jid, hero_kind="photographic", hero_distinct=score,
-                          hero_bytes=written["webp"]["bytes"])
+                          hero_reason=reason, hero_bytes=written["webp"]["bytes"])
         return info
 
     def _extract(self, jid: str, ref_png: Path, background: tuple[int, int, int]):
@@ -335,22 +342,27 @@ class PipelineRunner:
                               + [f"self-check unavailable: {exc}"])
             return
         self.store.update(jid, score=result.get("art_score"),
+                          art_p95=result.get("art_p95"),
                           pct_over_30=result.get("art_pct"),
                           whole_score=result.get("whole_score"),
                           whole_pct=result.get("whole_pct"),
                           blank_seam=result.get("blank_seam"),
                           hero_fidelity=result.get("hero_score"))
         seam = result.get("blank_seam")
+        p95 = result.get("art_p95")
         self.store.log(
             jid, f"fidelity: art region mean {result['art_score']:.2f} "
-                 f"(pct>30 {result['art_pct']:.2f}%, "
-                 f"from the {result.get('art_source', 'page')}), "
-                 f"whole page mean {result['whole_score']:.2f}"
+                 + (f"(p95 {p95:.2f} on the artwork), " if p95 is not None else "")
+                 + f"(pct>30 {result['art_pct']:.2f}%, "
+                   f"from the {result.get('art_source', 'page')}), "
+                   f"whole page mean {result['whole_score']:.2f}"
                  + (f", blank seam {seam:.0f}/255" if seam is not None else ""))
         if result.get("hero_source") == "raster":
             self.store.log(jid, f"hero backdrop: shipped raster matches the reference "
-                                f"at {result['hero_score']:.2f} mean "
-                                f"(the traced master is {result['art_score']:.2f})")
+                                f"at {result['hero_score']:.2f} mean"
+                                + (f" / {result['hero_p95']:.2f} p95"
+                                   if result.get("hero_p95") is not None else "")
+                                + f" (the traced master is {result['art_score']:.2f})")
         for issue in result.get("issues") or []:
             self.store.log(jid, f"  structure: {issue}")
             self.store.update(jid, warnings=(self.store.get(jid).warnings or [])
@@ -371,6 +383,12 @@ class PipelineRunner:
         shutil.copy2(ws.dist_page, out / "index.html")
         zip_path = out / "dist.zip"
         site = ws.site
+        # The traced art master lands beside the page too.  `artifacts["svg"]`
+        # advertises it and the API serves job-dir files by name, but the tracer
+        # writes it into the workspace -- so the advertised path used to 404.
+        svg = ws.pipeline / f"{jid}.svg"
+        if svg.is_file():
+            shutil.copy2(svg, out / svg.name)
         # The hero raster, when the page ships one: the page inlines it, but the
         # picture is deliverable two in its own right (a resolution-fixed image
         # that renders properly on the web), so it also lands beside the page and

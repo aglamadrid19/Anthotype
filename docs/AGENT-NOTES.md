@@ -37,6 +37,70 @@ Rules of thumb:
 
 ## Notes
 
+## 2026-10-03 — The hero band must describe the hero, not the frame
+- **What:** a real dark-dashboard upload (1586×992, job `57e872a21037`) shipped a
+  backdrop that "needs work to match the original image": the artwork was
+  oversized, re-centred, and a **second nav bar** was ghosted inside the hero.
+  `hero_band` returned `[0, 768]` — the whole stage, including 128 px of ingest
+  letterbox and the mockup's own header. Its aspect was **1.33** while the hero
+  box's is **1.75**, so `cover` magnified the art **1.37× at 1400 px and 1.88× at
+  1920 px** and cropped a quarter of it away.
+- **Why / evidence:** `hero_band` only stops at the next section when there *is*
+  one below the hero; a hero-only page has none, so the band ran to the bottom.
+  Measured the rendered box with `getBoundingClientRect` (1000×700 → 1.373) and
+  derived 1400×800 → 1.75 from the CSS (`padding clamp(80,12vw,140)` +
+  `min-height clamp(460,70vh,680)`, copy capped at 520 px so height stops growing
+  with the viewport). New band `[112, 697]` = 585 px = 1024/1.75.
+- **Action:** the band starts below the mockup's header (capped at +12 px so a
+  loose model box cannot crop art) and is trimmed to `HERO_BAND_ASPECT` (1.75),
+  symmetrically about the hero copy. **Only shrinking** — reaching the target from
+  below would pull in the next section. Guarded by two `doctor polarity` checks
+  and the "loose header box cannot crop the hero art" guard.
+
+## 2026-10-03 — Rasterise when the upload carries more resolution than the stage
+- **What:** the colour score (113) sat just under the 150 cut, so this design kept
+  a traced SVG bounded by the 1024 px stage — while its upload had **1.55×** more
+  linear detail. Full-bleed at 1400 px is therefore magnified 1.37× and at
+  1920 px 1.88×; a raster built from the upload is ~1:1 at 1400 px and downscaled
+  above that. `heroart.wants_raster` now has a **second, independent arm**:
+  `native_factor` (== `1/stage_scale`, capped at 3) ≥ `MIN_NATIVE_GAIN` (1.2).
+- **Why / evidence:** measured artwork-region p95 on the real traced SVG = **17.3**
+  vs **4.7** for a raster of the same hero — but the p95 of the *flat posters we
+  accept* is 15.3–26.0, so the colour score and the banding error were **not** the
+  discriminator. Resolution was. This is why no tracer knob was retuned.
+- **Action:** `hero_kind == "photographic"` no longer means "photographic" — read
+  `hero_reason` (now recorded per job). Flat art uploaded at the stage's own width
+  (m = 1.0) still keeps the traced SVG; a wider flat upload ships the raster too.
+  That is the accepted trade of "use the upload's resolution when it exists".
+
+## 2026-10-03 — The mean hides the artwork; report p95 over the pixels the eye reads
+- **What:** `art_score` read **1.37** on that upload while the artwork the eye
+  actually reads (7% of the art region, once the flat near-black ground is
+  excluded) was **6.84** mean / **23.3** p95. The mean is dominated by whatever is
+  flat and large, so it could not see the posterised glow the user complained
+  about — and every metric in the gate was green.
+- **Why / evidence:** `verify.artwork_mask` selects pixels that depart from the
+  design's **median** luminance by > 14 (polarity-agnostic, so a light page selects
+  its ink). `art_p95` is the 95th percentile of the per-pixel diff there; each
+  fixture now pins `art_p95_max` (measured 21.0 / 39.0 / 21.0), and
+  `hero_fidelity` returns a p95 too. This is the same lesson as the chroma note
+  below ("p95 is the number that matters"), now enforced rather than noted.
+- **Action:** when a score looks fine but the page does not, compute the p95 over
+  the artwork before believing the mean. A new fixture bound needs its measured
+  value recorded in `docs/STATE.json` `verification.fixture_bounds` in the same
+  commit — `doctor regress` compares them.
+
+## 2026-10-03 — `artifacts["svg"]` advertised a file that was never written
+- **What:** `runner` set `artifacts["svg"] = "<jid>/<jid>.svg"`, but the tracer
+  writes the SVG into `workspace/pipeline/` and `_package` only put it *inside the
+  zip*. Nothing ever copied it into the job dir, so any route serving that path
+  404'd (the artifact is exposed through the API's file route).
+- **Why / evidence:** `os.path.exists(job/<jid>.svg)` → False while
+  `workspace/pipeline/<jid>.svg` exists (3.5 MB on that job).
+- **Action:** `_package` now copies the traced SVG beside the page, like the hero
+  webp. When adding an `artifacts[...]` entry, make sure the file is actually
+  placed in the job dir — the map is a promise the API serves.
+
 ## 2026-10-02 — A photographic hero ships a raster, and a RAW crop of it ghosts the mockup's own text
 - **What:** the no-raster rule is relaxed for a photographic hero. The page now
   ships a fixed-resolution WebP (inlined as a data URI) instead of the traced

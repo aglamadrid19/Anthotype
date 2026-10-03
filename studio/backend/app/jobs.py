@@ -48,11 +48,20 @@ class Job:
     warnings: list[str] = field(default_factory=list)
     score: float | None = None      # fidelity of the ARTWORK region (lower better)
     pct_over_30: float | None = None
+    # The 95th percentile of the same per-pixel diff the mean above summarises.
+    # The mean is dominated by whatever is flat and large (a dark ground can hold
+    # it at ~1.4 while the artwork the eye reads is 5x worse), so this is the
+    # number that actually tracks posterisation.  See `verify.assess`.
+    art_p95: float | None = None
     # How the hero backdrop is represented on the page: "svg" (flat artwork,
     # traced geometry) or "photographic" (a fixed-resolution WebP export).  The
     # SVG art master is still produced either way -- see `runner._hero_art`.
     hero_kind: str | None = None
     hero_distinct: int | None = None  # distinct-colour score that decided the kind
+    # Why that representation was chosen, in words.  Two independent reasons can
+    # fire (continuous-tone artwork, or an upload carrying more resolution than
+    # the stage kept), and "photographic" alone does not say which.
+    hero_reason: str | None = None
     hero_bytes: int | None = None     # bytes of the raster the page ships
     # Mean abs diff of the SHIPPED hero art against the reference band: the
     # number that covers what the page actually shows.  `score` above is the

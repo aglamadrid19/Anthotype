@@ -7,6 +7,11 @@ is exactly the target this project deliberately abandoned.
 
 Two numbers and one structure report:
   * `art_score`  -- mean abs diff over the art region (the text rects masked out)
+  * `art_p95`    -- the 95th percentile of the same diff, over the pixels the eye
+                    reads as artwork (see `artwork_mask`).  The mean is dominated
+                    by whatever is flat and large -- on a dark design it can read
+                    1.4 while the artwork is wrong by five times that -- so this
+                    is the number that tracks posterisation.
   * `whole_score`-- mean abs diff over the whole stage, kept for reference only
   * `structure`  -- the DOM structure (sections, headings, links, flow layout)
 
@@ -268,8 +273,36 @@ def blank_seams(render: np.ndarray, mask: np.ndarray | None) -> float | None:
     return float(step.mean())
 
 
+# How far from the design's own dominant tone a pixel must sit before the eye
+# reads it as artwork rather than background (0-255 intensity units).  Used to
+# restrict the p95 below to the artwork: see `artwork_mask`.
+_EYE_FLOOR = 14.0
+# Fewer than this many artwork pixels and the percentile is noise, not a measure.
+_EYE_MIN_PX = 200
+
+
+def artwork_mask(ref: np.ndarray, keep: np.ndarray | None = None) -> np.ndarray:
+    """The pixels the eye reads as artwork: not the design's own flat ground.
+
+    The art-region *mean* is dominated by whatever is flat and large, so on a dark
+    design with a bright illustration it can read 1.4 while the artwork itself is
+    wrong by five times that -- and a reviewer sees exactly the artwork, not the
+    ground.  The p95 over these pixels is the number that tracks posterisation.
+
+    Polarity-agnostic: the design's dominant tone is the *median*, and artwork is
+    whatever departs from it in either direction, so a light page (dark ink on a
+    light ground) selects the ink rather than nothing.
+    """
+    lum = ref.mean(axis=2)
+    ground = float(np.median(lum))
+    eye = np.abs(lum - ground) > _EYE_FLOOR
+    if keep is not None:
+        eye = eye & keep
+    return eye
+
+
 def hero_fidelity(ref: np.ndarray, band: list[int], raster: Path,
-                  mask: np.ndarray | None = None) -> float | None:
+                  mask: np.ndarray | None = None) -> tuple[float, float | None] | None:
     """How faithfully the SHIPPED hero art matches the reference band.
 
     `art_score` measures the traced SVG, which for a photographic design is a
@@ -281,6 +314,9 @@ def hero_fidelity(ref: np.ndarray, band: list[int], raster: Path,
     score excludes it: the export deliberately inpaints the mockup's own text
     out, so scoring those pixels would penalise exactly the removal that makes
     the backdrop usable.  What remains is the artwork.
+
+    Returns `(mean, p95)`; the p95 is over the artwork pixels (see
+    `artwork_mask`) and is None when there are too few to measure.
     """
     y0, y1 = (int(round(v)) for v in band)
     y0, y1 = max(0, min(ref.shape[0] - 1, y0)), min(ref.shape[0], y1)
@@ -291,11 +327,15 @@ def hero_fidelity(ref: np.ndarray, band: list[int], raster: Path,
     if img.size != (target.shape[1], target.shape[0]):
         img = img.resize((target.shape[1], target.shape[0]), Image.LANCZOS)
     per_px = np.abs(np.asarray(img, np.float32) - target).mean(axis=2)
+    keep = np.ones(per_px.shape, bool)
     if mask is not None:
         m = mask[y0:y1]
         if (~m).any():
-            per_px = per_px[~m]
-    return float(per_px.mean())
+            keep = ~m
+    eye = artwork_mask(target, keep)
+    p95 = (round(float(np.percentile(per_px[eye], 95)), 2)
+           if int(eye.sum()) >= _EYE_MIN_PX else None)
+    return float(per_px[keep].mean()), p95
 
 
 def assess(job_id: str, page: Path, ref_png: Path, *,
@@ -304,7 +344,7 @@ def assess(job_id: str, page: Path, ref_png: Path, *,
            background: tuple[int, int, int] | None = None,
            hero_image: Path | None = None,
            hero_band: list[int] | None = None) -> dict:
-    """Return {art_score, art_pct, whole_score, whole_pct, structure, issues}."""
+    """Return {art_score, art_p95, art_pct, whole_score, whole_pct, structure, issues}."""
     chrome = find_chrome()
     if not chrome:
         raise RuntimeError("Chrome not found (set CHROME=...)")
@@ -334,9 +374,11 @@ def assess(job_id: str, page: Path, ref_png: Path, *,
     # hero band, which is all the page shows).  Compare like for like: scoring the
     # un-traced area below the band against the reference would count empty space
     # as error and report a box crop as a regression when it is an improvement.
+    ref_c = ref
     if box and (box[1] > 0 or box[3] < STAGE_H or box[0] > 0 or box[2] < STAGE_W):
         x0, y0, x1, y1 = box
         art = art[max(0, y0):min(STAGE_H, y1), max(0, x0):min(STAGE_W, x1)]
+        ref_c = ref[max(0, y0):min(STAGE_H, y1), max(0, x0):min(STAGE_W, x1)]
         if mask is not None:
             mask = mask[max(0, y0):min(STAGE_H, y1), max(0, x0):min(STAGE_W, x1)]
     per_px = art.mean(axis=2)
@@ -352,19 +394,29 @@ def assess(job_id: str, page: Path, ref_png: Path, *,
                        _removed_mask(pipeline, job_id) if pipeline else None)
     if seam is not None:
         out["blank_seam"] = round(seam, 1)
-    if mask is not None and (~mask).any():
-        per_px = per_px[~mask]
-    out["art_score"] = float(per_px.mean())
-    out["art_pct"] = float(100.0 * (per_px > 30).mean())
+    keep = (np.ones(per_px.shape, bool) if mask is None or not (~mask).any()
+            else ~mask)
+    vals = per_px[keep]
+    out["art_score"] = float(vals.mean())
+    out["art_pct"] = float(100.0 * (vals > 30).mean())
+    # The mean above is dominated by whatever is flat and large.  The p95 over the
+    # pixels the eye actually reads as artwork is the number that tracks
+    # posterisation -- the glow, the render, the gradient.  See `artwork_mask`.
+    eye = artwork_mask(ref_c, keep)
+    if int(eye.sum()) >= _EYE_MIN_PX:
+        out["art_p95"] = round(float(np.percentile(per_px[eye], 95)), 2)
 
     # What the page actually ships for the hero, when that is a raster rather
     # than the traced SVG.  Reported alongside `art_score` (the tracer's own
     # number on the master) so neither hides the other.
     if hero_image is not None and hero_band and Path(hero_image).is_file():
-        val = hero_fidelity(ref, hero_band, Path(hero_image),
+        got = hero_fidelity(ref, hero_band, Path(hero_image),
                             _removed_mask(pipeline, job_id) if pipeline else None)
-        if val is not None:
+        if got is not None:
+            val, p95 = got
             out["hero_score"] = round(val, 2)
+            if p95 is not None:
+                out["hero_p95"] = p95
             out["hero_source"] = "raster"
 
     # Surfaced as an advisory, not folded into the score: the two measures answer

@@ -11,9 +11,10 @@ State at the end of the session that packaged this repo. Read this first, then
 
 Turn a flat design PNG into a **real, code-native website** — a responsive,
 semantic page with DOM text and CSS, whose decorative hero backdrop is either
-traced SVG artwork (flat designs) or a fixed-resolution photographic export
-(designs with a photo hero). The reference PNG is input to the pipeline, not a
-copy of the page.
+traced SVG artwork (flat designs with no more resolution than the working stage)
+or a fixed-resolution image export (a photo hero, or an upload carrying more
+detail than the stage). The reference PNG is input to the pipeline, not a copy of
+the page.
 
 **The north star changed.** This used to be a pixel-parity project: whole-page
 mean-abs-pixel-difference against the reference, with a large text-measurement
@@ -23,21 +24,27 @@ typeface is not the vendored Inter), which no sizing or tuning removes. The
 metric is now split:
 
 - **the artwork** is scored on pixels, over the **art region** only (the page-copy
-  rects masked out) — the tracer's job;
-- **the shipped hero** is scored separately when the backdrop is photographic:
-  the page ships a fixed-resolution image, not the traced SVG, so its own mean
-  against the reference band covers what a visitor actually sees;
+  rects masked out) — the tracer's job — and its tail is reported as `art_p95`,
+  over the pixels the eye reads as artwork, because the mean is dominated by
+  whatever is flat and large;
+- **the shipped hero** is scored separately when the page ships a raster rather
+  than the traced SVG: its own mean against the reference band covers what a
+  visitor actually sees;
 - **the website** is scored on **structure** — landmarks, sections, one `h1`,
   resolving links, flow layout, reflow — which is what makes it a website.
 
 **The no-raster rule was relaxed, deliberately.** A photograph cannot be
 represented as flat vector regions at a sane payload: the tracer plateaus around
 3.5 mean on a photo hero while every knob is flat, and coherent segmentation
-reaches 0.89 only at ~214k regions / ~60 MB of SVG. So a photographic hero ships
-a WebP built from the original upload (not the 1024×768 working reference) and
-from the tracer's **text-removed** image (not the raw reference, whose nav bar
-and headline would ghost behind the DOM copy). Flat designs keep the traced SVG
-unchanged, and the SVG art master is produced for every design regardless.
+reaches 0.89 only at ~214k regions / ~60 MB of SVG. A second, independent reason
+to ship the raster: the traced SVG is bounded by the 1024 px stage and the hero is
+full-bleed, so on any desktop wider than 1024 it is magnified (1.37× at 1400 px,
+1.88× at 1920 px) while the upload may carry much more detail. So the page ships a
+WebP when **either** the artwork is continuous-tone **or** the upload carries
+≥1.2× the stage's linear resolution. It is built from the original upload (not the
+1024×768 working reference) and from the tracer's **text-removed** image (not the
+raw reference, whose nav bar and headline would ghost behind the DOM copy). The
+SVG art master is produced for every design regardless.
 
 The retired text-metrics machinery (`measure_lines`, `measure_weight`,
 `sample_line_colors`, per-line gradients, glow, `cap_top_offset` placement,
@@ -58,10 +65,12 @@ are fixed 1024×768 posters (`"layout": "poster"`) scored exactly as before.
 
 - `qa/verify.sh` → **2.71 / 2.76 / 2.99 PASS** (unchanged: the poster shell and
   the tracer are untouched).
-- `doctor polarity` → all checks pass (ink/box/two-tone/scope, the new
-  structure-inference checks, and the hero-representation guards).
-- `doctor fixtures` → **light / montiva / antho all PASS**, each now also pinning
-  `hero_kind=photographic` and a shipped-hero-art bound (means 1.33 / 1.60 / 1.33).
+- `doctor polarity` → all checks pass (ink/box/two-tone/scope, the structure
+  checks, the hero-representation guards, the two hero-band guards, and the
+  "loose header box cannot crop the hero art" guard).
+- `doctor fixtures` → **light / montiva / antho all PASS**, each pinning
+  `hero_kind=photographic`, a shipped-hero-art bound (means 1.54 / 1.87 / 1.54)
+  and an `art_p95_max` bound (21.0 / 39.0 / 21.0 measured).
 - `doctor regress` → **regression PASS**.
 - The studio builds a real page end to end on the montiva fixture (a real vision
   call): header + nav, hero, **3 content sections** (features / testimonials /
@@ -87,8 +96,9 @@ are fixed 1024×768 posters (`"layout": "poster"`) scored exactly as before.
 - **`"page"`** (default for scaffolded designs, and what the studio emits) — a
   responsive website: semantic sections in normal flow, a role-based type scale,
   the artwork as the hero backdrop (`<!--ART-->` placeholder). The backdrop is
-  the traced SVG for flat art, or an inlined fixed-resolution WebP for a
-  photographic hero (chosen by `studio/backend/app/heroart.py`).
+  the traced SVG for flat art uploaded at the stage's own width, or an inlined
+  fixed-resolution WebP otherwise — a photo hero, or a wider-than-stage upload
+  (chosen by `studio/backend/app/heroart.py`).
 - **`"poster"`** (A/B/C) — the historical fixed 1024×768 stage scaled to the
   viewport, so `qa/verify.sh` keeps scoring the traced art as it always did.
 
@@ -112,7 +122,7 @@ node gen-page.mjs <name> && node to-astro.mjs <name>
 `layout`, `target` (the score `verify.sh` enforces), `box`, `text` rects, tracing
 `params`, and optional `regions`.
 
-## The three things future work must not break
+## The four things future work must not break
 
 1. **potrace fills the BLACK (bit-0) region.** Pass `(~mask)*255`. Get it wrong
    and every band becomes an opaque plate while the page still *looks* fine.
@@ -120,12 +130,17 @@ node gen-page.mjs <name> && node to-astro.mjs <name>
 2. **Trace the CUMULATIVE mask `{lum >= e_i}`, painted darkest-first** — not
    disjoint bands. Mathematically identical, but potrace gets one solid nested
    region per band instead of 1px slivers: ~0.8 better mean, ~half the file size.
-3. **A photographic hero's raster comes from the tracer's prepared image, at the
-   upload's own resolution.** Cropping the raw reference ghosts the mockup's own
-   text behind the DOM copy; cropping the normalised 1024×768 reference inherits
-   the ingest downscale. `app/heroart.py::native_reference` + `mkart
-   --prepared-out`, guarded by `doctor polarity` and each fixture's `hero_kind` /
-   `hero_max`.
+3. **A raster hero comes from the tracer's prepared image, at the upload's own
+   resolution.** Cropping the raw reference ghosts the mockup's own text behind
+   the DOM copy; cropping the normalised 1024×768 reference inherits the ingest
+   downscale. `app/heroart.py::native_reference` + `mkart --prepared-out`, guarded
+   by `doctor polarity` and each fixture's `hero_kind` / `hero_max`.
+4. **The hero band describes the hero, not the frame.** It starts below the
+   mockup's own header and is trimmed to the hero box's aspect (`1.75`), so
+   `cover` does not magnify it — a hero-only page otherwise ran the band to the
+   bottom of the stage (letterbox + nav bar + empty strip) at aspect 1.33, which
+   `cover` magnified 1.37×/1.88× and cropped a quarter away.
+   `generate.hero_band`, guarded by two `doctor polarity` checks.
 
 `qa/verify.sh` guards the rest: it fails on a score regression, on remote
 assets, on an external stylesheet, and on any page-originated network request
@@ -506,6 +521,53 @@ recorded.
 
 `doctor gate` → **PASS 4/4**; `qa/verify.sh` → 2.71 / 2.76 / 2.99 PASS; all three
 posters regenerate **byte-identically** (chroma is studio-only and off by default).
+
+## This session's changes (hero framing + using the upload's resolution)
+
+Driven by the user's report that a real upload's backdrop "needs work to match
+the original image" and "the quality needs to improve". The dark dashboard
+upload (`57e872a21037`, 1586×992) had shipped as a **traced SVG** (colour score
+113, just under the 150 cut) inside a band that magnified it.
+
+- **The hero band was the whole frame.** `hero_band` returns the slice from just
+  below the mockup's header to where the next section starts. A hero-only page
+  has no section below it, so the second half of that never fired and the band
+  ran to the bottom of the stage — 128 px of ingest letterbox, the mockup's own
+  nav bar, and an empty strip — at aspect **1.33** when the hero box's aspect is
+  **1.75**. `cover` then magnified the art **1.37× at 1400 px and 1.88× at
+  1920 px** and cropped a quarter of it away; the built page showed the artwork
+  oversized, re-centred, with a **second nav bar** ghosted inside the hero. Now
+  the band starts below the mockup's header and is trimmed to
+  `HERO_BAND_ASPECT` (1.75), symmetrically about the hero copy — only *shrinking*,
+  because reaching the target from below would pull in the next section.
+  Yours: `[0, 768]` → `[112, 697]`. (A loose header box is capped at 12 px so it
+  cannot crop hero art.)
+- **The upload's resolution was thrown away.** The traced SVG is bounded by the
+  1024 px stage, so a full-bleed hero on a 1400 px desktop is magnified 1.37× and
+  on 1920 px 1.88× — structurally soft. The upload carried 1.55× more linear
+  detail than the tracer used. `heroart.wants_raster` now has a **second,
+  independent reason** to ship the raster: `native_factor` (== 1/stage_scale) ≥
+  `MIN_NATIVE_GAIN` (1.2). Flat art uploaded at the stage's own width keeps the
+  traced SVG; a wider flat upload ships the raster too.
+- **What was NOT the problem, and the measurement that says so.** The traced
+  SVG's artwork-region p95 for this design was **17.3** — inside the range of the
+  flat posters considered fine (15.3–26.0). So the tracer's banding was not the
+  bottleneck; resolution and framing were. This is why no tracer knob was
+  retuned.
+- **The metric that would have caught it.** `art_score` read **1.37** because the
+  mean is dominated by the flat near-black ground, while the artwork the eye
+  reads (7% of the region) was **6.84** mean / **23.3** p95 — against 4.7 p95 for
+  a raster of the same hero. `verify.assess` now reports `art_p95` alongside the
+  mean and each fixture pins `art_p95_max`. `hero_fidelity` likewise gained a
+  p95.
+- **A dead artifact path.** `artifacts["svg"]` pointed at `<jid>/<jid>.svg`,
+  which the tracer never wrote to the job dir (it lives in `workspace/pipeline/`
+  and inside the zip), so any route serving it 404'd. `_package` now copies it
+  beside the page.
+
+Guarded by `doctor polarity` (band aspect, header floor, the resolution arm, the
+loose-header cap) and the fixture bounds; both negative-tested. `doctor gate` →
+**PASS 4/4**; `qa/verify.sh` → 2.71 / 2.76 / 2.99 PASS.
 
 ## This session's changes (the review loop, and its first fixes)
 
