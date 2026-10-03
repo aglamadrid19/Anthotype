@@ -37,6 +37,68 @@ Rules of thumb:
 
 ## Notes
 
+## 2026-10-02 — A photographic hero ships a raster, and a RAW crop of it ghosts the mockup's own text
+- **What:** the no-raster rule is relaxed for a photographic hero. The page now
+  ships a fixed-resolution WebP (inlined as a data URI) instead of the traced
+  SVG, chosen by measurement in `studio/backend/app/heroart.py`. The first
+  implementation cropped the hero band straight out of the reference — and the
+  rendered page showed the mockup's own **nav bar, headline, buttons and section
+  headings ghosting behind the real DOM copy**, because the reference is a
+  picture *of a page*.
+- **Why / evidence:** looked at the built page (screenshot), not a score — every
+  numeric metric was green. `art_score` could never see it: it masks the text
+  rects and measures the SVG. The fix is to export from the tracer's
+  **prepared** image (`mkart --prepared-out`), which is the same
+  text-inpainted pixels the SVG master is built from.
+- **Action:** never crop the raw reference for anything that lands on the page.
+  Any future raster export must go through `mkart --prepared-out`. The review
+  prompt (`doctor critique`) was updated to call a ghosted backdrop a defect, so
+  the loop can catch a regression here.
+
+## 2026-10-02 — Export the raster from the UPLOAD, not the normalised reference
+- **What:** `normalize()` aspect-fits every upload onto the 1024×768 stage, and
+  that is lossy: a real upload went **1672×941 → 1024×576** (61% of its linear
+  detail) before it was ever traced. A raster exported from the normalised
+  reference therefore bakes in the ingest downscale.
+- **Why / evidence:** `heroart.native_reference` writes a stage-sized reference
+  at the upload's own scale and returns a single factor `m`
+  (`native = stage * m`), so the tracer's existing config carries over with the
+  box and rects multiplied by `m`. Measured: montiva `m`=1.633 (1672×1254
+  canvas), anthotype 1.732, a 1024×768 upload 1.0. The prepared image then has
+  the upload's real pixels, not 1024 of them.
+- **Action:** the generated `designs/<id>-hi.json` is the mechanism — point
+  `mkart` at it with `--prepared-out` **and `--up 1`** (the reference is already
+  at full scale; the default `up=2` would upscale it for nothing). Guarded by
+  `doctor polarity` ("hero raster is built from the upload at its own
+  resolution", 1600×800 source → 1600 px export, where a reference crop gives
+  1024).
+
+## 2026-10-02 — Photographic detection: a FIXED sample grid, not an aspect-derived one
+- **What:** the signal is how many distinct 5-bit colours survive area-averaging
+  the hero band. Deriving the sample width from the band's aspect made the score
+  drift **60%** for the same artwork; a fixed `(64, 32)` grid is stable.
+- **Why / evidence:** over every unique reference in the repo, flat art scores
+  **29–91** and photographs **245–358** (2.7× gap). `PHOTO_DISTINCT = 150` sits
+  between them with ~60% margin either way.
+- **Action:** the cut is deliberately biased toward rasterising — a misclassified
+  flat design becomes a WebP that looks identical (cheap), while a misclassified
+  photograph goes back to the smeared backdrop this exists to fix (expensive).
+  A synthetic test must use **low-frequency colour noise**, not a smooth
+  gradient: a gradient averages down to a handful of colours and is not a
+  photograph (`doctor polarity` guards this).
+
+## 2026-10-02 — `hero_fidelity` must mask the removed rects, like `art_score` does
+- **What:** the shipped raster is deliberately text-removed, so comparing it to
+  the *raw* reference band penalises exactly the removal that makes it usable:
+  montiva read **8.73** unmasked vs **1.60** over the artwork. `hero_fidelity`
+  now takes the tracer's `_removed_mask`.
+- **Why / evidence:** the same reasoning as `art_score` masking `text` — inside
+  those rects the reference holds the mockup's type, which the page replaces
+  with DOM.
+- **Action:** each fixture pins `hero_kind` + `hero_max`, so a page that stopped
+  rasterising, or whose export drifted, fails the gate instead of passing on
+  `score_max` (which measures the SVG master such a page no longer shows).
+
 ## 2026-10-01 — Structure defects are already detected and shown; fix the CAUSE
 - **What:** `structure_issues` (from `generate.structure_issues` and `app.structure.inspect`) is not an invisible warning: the fixture gate already **fails** on it (`_run_fixture`: `failed = _fixture_ok(...) + issues`), and the studio UI shows it (the result card switches to "Your site is built — review the notes", lists the issues, and the Headings stat reads `h1×2`). So do not "add" detection — the real work is fixing the *causes* for designs the fixtures do not cover, and adding a cheap `doctor polarity` guard so a cause cannot come back.
 - **Why / evidence:** the AntHosting upload reported `2 <h1> elements (should be one)` and still showed it in the UI — the defect was visible, it just was not *fixed*. The cause was a two-line hero lockup arriving as two `headline` blocks (see the note above); the guard is "two headline blocks -> one h1".

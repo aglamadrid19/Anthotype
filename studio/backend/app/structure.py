@@ -28,6 +28,10 @@ _HREF = re.compile(r"<a\b[^>]*\bhref=\"([^\"]*)\"", re.I)
 _ABS = re.compile(r"position\s*:\s*absolute", re.I)
 _TAG = re.compile(r"<[^>]+>")
 _ART_SVG = re.compile(r"<svg\b", re.I)
+# A photographic hero ships a fixed-resolution raster rather than traced geometry
+# (see `app/heroart.py`), so the backdrop counts as artwork either way -- the
+# question this answers is "does the page have a hero backdrop?".
+_ART_IMG = re.compile(r"<img\b[^>]*\bclass=\"hero-img\"", re.I)
 # `<style>`/`<script>` are not the DOM structure -- the decorative hero backdrop
 # is legitimately absolutely positioned, but the *content* must be in flow.
 _STYLE = re.compile(r"<(style|script)\b[^>]*>.*?</\1>", re.I | re.S)
@@ -69,7 +73,8 @@ def inspect(page: Path) -> dict:
         "dead_links": dead,
         "unresolved_anchors": unresolved,
         "flow_layout": not bool(_ABS.search(body)),
-        "has_art": bool(_ART_SVG.search(body)),
+        "has_art": bool(_ART_SVG.search(body) or _ART_IMG.search(body)),
+        "has_svg": bool(_ART_SVG.search(body)),
         "bytes": page.stat().st_size,
     }
 

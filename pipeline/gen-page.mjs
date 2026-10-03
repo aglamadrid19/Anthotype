@@ -4,8 +4,10 @@
 //
 //   "page"  (default for generated designs) -- a REAL WEBSITE: semantic sections
 //           in normal document flow, a role-based type scale, responsive down to
-//           mobile.  The traced artwork is the hero backdrop.  The generated
-//           markup carries a `<!--ART-->` placeholder where the art is spliced in.
+//           mobile.  The artwork is the hero backdrop: the traced SVG, or a
+//           fixed-resolution raster for a photographic hero (see below).  The
+//           generated markup carries a `<!--ART-->` placeholder where it is
+//           spliced in.
 //
 //   "poster" (the hand-authored A/B/C examples) -- the original fixed 1024x768
 //           stage, scaled to the viewport.  Kept so `qa/verify.sh` still scores
@@ -94,17 +96,34 @@ ${artCss}
 </body>
 </html>`;
 } else {
-  // A real website: the traced art is the hero backdrop, content flows.
+  // A real website: the hero backdrop, content flows.
   //
-  // The traced SVG is the *whole* mockup, so splicing it whole shows the section
-  // below the hero in the backdrop -- the next section's cards and icons read as
-  // clutter behind the copy.  `content.hero_band` is the vertical slice that is
-  // actually the hero, so the viewBox is narrowed to it.  `slice` then makes the
-  // band cover the hero box instead of letterboxing inside it, and the scrim in
-  // the page CSS keeps the copy legible over it.
+  // Two representations, chosen by the studio from the reference (see
+  // `app/heroart.py`):
+  //
+  //   photographic -- a fixed-resolution WebP, inlined as a data URI.  Flat
+  //     vector regions cannot represent photographic tone at a web payload, so
+  //     the page ships the image.  Inlining keeps the page a single file that
+  //     renders over file://, which is how the QA screenshots and the studio
+  //     preview load it.  `object-fit: cover` in the page CSS is the exact
+  //     equivalent of the SVG's `preserveAspectRatio="... slice"`.
+  //
+  //   flat -- the traced SVG, narrowed to the hero band.  The traced artwork is
+  //     the *whole* mockup, so splicing it whole shows the section below the
+  //     hero in the backdrop -- the next section's cards and icons read as
+  //     clutter behind the copy.  `content.hero_band` is the vertical slice that
+  //     is actually the hero, so the viewBox is narrowed to it.  `slice` then
+  //     makes the band cover the hero box instead of letterboxing inside it, and
+  //     the scrim in the page CSS keeps the copy legible over it.
   const band = Array.isArray(content.hero_band) ? content.hero_band : null;
-  let heroArt = artSvg;
-  if (band && band[1] > band[0]) {
+  const hero = content.hero_image;
+  let heroArt;
+  if (hero && hero.webp) {
+    const b64 = readFileSync(join(HERE, hero.webp)).toString('base64');
+    heroArt = `<picture><img class="hero-img" src="data:image/webp;base64,${b64}"`
+      + ` width="${hero.w}" height="${hero.h}" alt=""`
+      + ` decoding="async" fetchpriority="high"></picture>`;
+  } else if (band && band[1] > band[0]) {
     const [y0, y1] = band;
     heroArt = artSvg
       .replace(/viewBox="[^"]*"/, `viewBox="0 ${y0} 1024 ${y1 - y0}"`)

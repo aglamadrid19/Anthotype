@@ -48,6 +48,17 @@ class Job:
     warnings: list[str] = field(default_factory=list)
     score: float | None = None      # fidelity of the ARTWORK region (lower better)
     pct_over_30: float | None = None
+    # How the hero backdrop is represented on the page: "svg" (flat artwork,
+    # traced geometry) or "photographic" (a fixed-resolution WebP export).  The
+    # SVG art master is still produced either way -- see `runner._hero_art`.
+    hero_kind: str | None = None
+    hero_distinct: int | None = None  # distinct-colour score that decided the kind
+    hero_bytes: int | None = None     # bytes of the raster the page ships
+    # Mean abs diff of the SHIPPED hero art against the reference band: the
+    # number that covers what the page actually shows.  `score` above is the
+    # tracer's own number on the SVG master, which for a photographic design is
+    # a secondary artifact.
+    hero_fidelity: float | None = None
     # Step the trace leaves at the blanked rects, 0-255 intensity units.  The art
     # score masks those rects out, so this is the only number that covers the
     # pixels where the fill went wrong.

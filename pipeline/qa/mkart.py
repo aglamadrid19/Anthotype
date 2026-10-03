@@ -190,7 +190,7 @@ def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
           text_lum_max=70.0, cumulative=True, ref=None, text_rects=None,
           text_bg_lum=None, text_lum_margin=45.0, blank_rects=None,
           chroma_cells=0, chroma_gate=16.0, chroma_smooth=0.0,
-          inpaint='nearest'):
+          inpaint='nearest', prepared_out=None):
     cfg = design(v)
     ref = ref or cfg.get('ref') or f'{HERE}/ref-{v}.png'
     text_rects = cfg.get('text', []) if text_rects is None else text_rects
@@ -305,6 +305,30 @@ def build(v, bands=26, up=2, turdsize=3, alphamax=1.0, opttol=0.16, prec=1,
                 sub = np.where(ink.reshape(-1, 1), src[nearest], src).reshape(sub.shape)
             lum = sub.mean(axis=2)
             inpainted = True
+
+    # A photographic hero ships as a fixed-resolution image rather than traced
+    # geometry, and that image must come from THIS image -- the one the glyphs
+    # have just been inpainted out of -- not from the raw reference.
+    #
+    # Handing the raw reference to the page bakes a copy of the mockup's own text
+    # into the backdrop, which then sits behind the real DOM copy as a ghost of
+    # itself.  Measured on a real upload: the exported hero showed the reference's
+    # nav bar, headline, buttons and section headings through the photograph.
+    # Inpainting happens here (it needs the design's text rects and scipy), so the
+    # prepared pixels are dumped here rather than recomputed by the caller.
+    if prepared_out:
+        if not inpainted:
+            # A prepared image that was never inpainted still carries the
+            # reference's own text, and exporting it ghosts that text behind the
+            # DOM copy.  The studio always sets `text_bg_lum`, so this only fires
+            # on a misconfiguration -- make it loud rather than silent.
+            print(f'{prepared_out}: WARNING: no text was inpainted '
+                  f'(exclude_text={exclude_text}, text_bg_lum={text_bg_lum}); '
+                  f'the prepared image still contains the reference text')
+        Image.fromarray(np.clip(sub, 0, 255).astype(np.uint8)).save(prepared_out)
+        print(f'{prepared_out}: prepared reference '
+              f'{sub.shape[1]}x{sub.shape[0]} (text removed)')
+        return prepared_out
 
     # Chroma sub-banding.  `lum` is the only axis the bands are cut on, so each
     # band is painted with ONE median colour -- and a band spanning blue sky, green
@@ -464,6 +488,9 @@ if __name__ == '__main__':
     for k, t in (('--chroma-cells', int),):
         if k in sys.argv: kw[k.lstrip('-').replace('-', '_')] = t(sys.argv[sys.argv.index(k)+1])
     if '--out' in sys.argv: kw['out'] = sys.argv[sys.argv.index('--out')+1]
+    if '--ref' in sys.argv: kw['ref'] = sys.argv[sys.argv.index('--ref')+1]
+    if '--prepared-out' in sys.argv:
+        kw['prepared_out'] = sys.argv[sys.argv.index('--prepared-out')+1]
     if '--exclude-text' in sys.argv: kw['exclude_text'] = True
     if 'turd' in kw: kw['turdsize'] = kw.pop('turd')
     build(v, **kw)

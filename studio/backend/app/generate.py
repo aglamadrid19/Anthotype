@@ -1759,6 +1759,12 @@ a {{ color: inherit; }}
 .hero {{ position: relative; overflow: hidden; border-bottom: 1px solid var(--border); }}
 .hero-art {{ position: absolute; inset: 0; z-index: 0; }}
 .hero-art svg {{ width: 100%; height: 100%; display: block; }}
+/* A photographic hero ships as a raster instead of traced geometry (see
+   `app/heroart.py`).  `object-fit: cover` is the exact equivalent of the SVG's
+   `preserveAspectRatio="… slice"`: the image fills the hero box and is cropped,
+   never letterboxed or stretched. */
+.hero-art picture, .hero-art img {{ width: 100%; height: 100%; display: block; }}
+.hero-art img {{ object-fit: cover; }}
 /* A scrim over the artwork so the copy keeps contrast whatever the art does.
    It holds the page ground across the copy column, then releases the art
    outward.  Two earlier versions were wrong in opposite ways: the first faded

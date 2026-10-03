@@ -3,13 +3,13 @@
 > *an anthotype is a photographic image made from a natural process — plant
 > pigments, sunlight, and time, instead of film and chemistry.*
 
-This is a software anthotype: a picture goes in, a real website comes out, and
-the picture is not part of the result. The reference image is **input** to
-recover geometry and colour, never an embedded asset.
+This is a software anthotype: a picture goes in, a real website comes out. The
+reference image is **input** to recover geometry and colour, never a copy of the
+page.
 
 Turn a flat design PNG into a **real, code-native website** — a responsive,
-semantic page with DOM text, CSS and traced SVG geometry, and no raster images
-in the output.
+semantic page with DOM text and CSS, whose artwork is traced SVG geometry where
+the artwork is flat and a fixed-resolution image export where it is photographic.
 
 ## The north star: a website, not a poster
 
@@ -17,7 +17,9 @@ The output is **not a pixel copy of the mockup**, and it is not a screenshot.
 It is a website:
 
 - **The artwork** is traced into real vector geometry (the landing page's
-  decorative backdrop).
+  decorative backdrop) — or, when the backdrop is *photographic*, exported at a
+  fixed resolution to WebP. Flat vector regions cannot represent photographic
+  tone at a web payload; see "Two representations for the hero" below.
 - **The page** is semantic and responsive — `header`, `nav`, a hero, one
   `section` per page region, a `footer` — in normal document flow, with a
   role-based type scale and real links.
@@ -25,20 +27,59 @@ It is a website:
   reference by a vision model. The reference's own typeface is *not*
   reproduced; imitating it glyph-for-glyph is not the art of the landing page.
 
-The reference PNG is consumed entirely: by the time the page ships there is no
-raster image left in it.
+The reference PNG is consumed as **input** and never embedded as a copy of the
+page. Text is never traced: every text block is excluded (or inpainted) before
+the tracer runs, so the SVG art master contains artwork only — no glyphs, no
+fonts.
+
+### Two representations for the hero
+
+| hero content | what the page ships | why |
+|---|---|---|
+| flat / vector art | **traced SVG** | exact, tiny, code-native, re-colourable |
+| photographic | **WebP, at the upload's own resolution** | the tracer plateaus around 3.5 mean on a photograph while every knob is flat; the image is a fraction of the size and looks like the original |
+
+The choice is made by measurement, not by guessing: `app/heroart.py` samples how
+much colour survives area-averaging the hero band to a fixed grid — flat art
+scores 29–91, photographs 245–358 — and is deliberately biased toward
+rasterising, because a misclassified flat design merely costs bytes while a
+misclassified photograph produces the smeared, posterised backdrop this exists
+to fix.
+
+Two things the raster gets right, and both are easy to get wrong:
+
+- it is cropped from the **original upload**, not the normalised 1024×768 working
+  reference, which discards real resolution (a real upload went 1672×941 →
+  1024×576, 61% of its linear detail); and
+- it is taken from the tracer's **text-removed** image, not a raw crop — the
+  mockup is a picture *of a page*, so a raw crop bakes its nav bar, headline and
+  buttons into the backdrop, where they ghost behind the real DOM copy.
+
+The **SVG art master is always produced** and always shipped in the project zip.
+For a photographic design the page does not use it, so it is a secondary
+artifact and is not tuned.
 
 ## What it does
 
 The reference is exposed, banded, and traced; the palette is sampled; the page
-is assembled as semantic HTML. Nothing of the original plate survives into the
-site as a bitmap.
+is assembled as semantic HTML. Where the artwork is photographic, the hero
+backdrop is instead exported at a fixed resolution from the **original upload**
+(never the normalised reference, which would bake in the ingest downscale) and
+from the tracer's **text-removed** image (never the raw reference, which would
+ghost the mockup's own type behind the copy).
 
 ```
 design.png
    │
+   ├─ app/heroart.py     is the hero flat art or a photograph?  (measured)
+   │                     photographic -> the tracer prepares a native-resolution
+   │                                    reference and inpaints the text out of it;
+   │                                    that image is cropped to the hero band,
+   │                                    encoded to WebP and inlined as a data URI
+   │
    ├─ qa/mkart.py        band the artwork by luminance, trace each band to SVG
    │                     paths with potrace, paint darkest-first         -> art.svg
+   │                     (the SVG art master: always produced, always shipped)
    │
    ├─ vision model       recover the page's sections, roles and copy
    │  content-<n>.json   the page markup (semantic sections, real DOM)
@@ -52,21 +93,22 @@ design.png
    └─ astro build        -> dist/index.html          ← the shipped artifact
 ```
 
-## Two measures, not one
+## Three measures, not one
 
 There used to be a single number — whole-page mean-abs-pixel-difference against
 the reference — and the text layer was tuned against it. That target is
 unwinnable by construction: the last measurable error was *font substitution*
 (the reference's typeface is not the vendored one), which no amount of sizing,
-weight or colour tuning removes. So the metric is now split:
+weight or colour tuning removes. So the metric is split:
 
 | layer | how it is judged |
 |---|---|
 | **the artwork** | pixel fidelity over the **art region** (the page-copy rects masked out). This is the moat — the tracer's job. |
+| **the shipped hero** | for a photographic backdrop, mean-abs-diff of the **exported raster** against the reference band (`hero_fidelity`). The art score above measures the SVG master, which such a page no longer shows. |
 | **the website** | structure: landmarks, sections, one `h1`, resolving links, flow layout, and reflow at phone/tablet/desktop widths. |
 
-`studio/backend/app/structure.py` reads the built page and reports the second;
-`verify.py` reports the first. Neither is collapsed into the other.
+`studio/backend/app/structure.py` reads the built page and reports the last;
+`verify.py` reports the first two. None is collapsed into another.
 
 For a `"page"` layout the art score is taken by **rendering the traced SVG by
 itself** at 1024×768 against the reference, not by screenshotting the reflowing
@@ -205,7 +247,8 @@ pipeline/
   designs/<n>.json     per-design config: ref, site, content, layout, target,
                        trace box, text rects, tracing params, optional regions
   qa/INDEX.md          what every tool does, and which ones matter
-  qa/mkart.py          the art tracer (the heart of this repo)
+  qa/mkart.py          the art tracer (the heart of this repo); `--prepared-out`
+                       also dumps its text-removed image for a photographic hero
   qa/newdesign.py      scaffold a whole new design (config + content + site)
   qa/_bootstrap.py     re-exec a QA tool under the venv python if numpy is absent
   qa/verify.sh         score each built dist/ against its reference; PASS/FAIL
@@ -224,6 +267,7 @@ sites/variant-{a,b,c}/ the three worked examples (the tracer's regression suite)
 preview/               one static server for all builds + a generated gallery
 studio/                the upload -> site web app (FastAPI + React)
   backend/app/         extract (structure), generate (semantic page), runner,
+                       heroart (flat-vs-photograph + the raster hero export),
                        verify (art fidelity) + structure (page structure)
 docs/HANDOFF.md        full engineering history: what was tried, what worked,
                        what is exhausted, and the landmines
@@ -240,7 +284,9 @@ docs/HANDOFF.md        full engineering history: what was tried, what worked,
   stylesheet, and an external `/_astro/*.css` cannot load over `file://` — the
   protocol the QA scripts screenshot with.
 - **A single-file deliverable.** Each page is one `index.html` with no external
-  assets, so it renders identically from a URL or straight off disk.
+  assets — a photographic hero is inlined as a data URI, so it renders
+  identically from a URL or straight off disk. (That image is also shipped as a
+  standalone file in the zip, for reuse elsewhere.)
 - **The artwork is decorative** (`aria-hidden`), because the copy and the CTA are
   real text and carry all the meaning.
 - **Only the vendored font weights are asked for.** The generated stylesheet uses

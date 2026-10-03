@@ -7,6 +7,8 @@ const SECTION_LABEL = {
   footer: 'Footer', other: 'Section',
 };
 
+const fmt = (n) => (n == null ? '—' : n.toFixed(2));
+
 export default function Result({ job, onReset }) {
   const [view, setView] = useState('preview'); // preview | reference
   const [width, setWidth] = useState('full');  // full | tablet | phone
@@ -14,6 +16,9 @@ export default function Result({ job, onReset }) {
     ? job.structure : {};
   const sections = info.sections || [];
   const issues = job.structure_issues || info.issues || [];
+  // "svg" (flat artwork, traced geometry) or "photographic" (a fixed-resolution
+  // image export).  The SVG art master is produced either way.
+  const heroKind = job.hero_kind;
 
   return (
     <div className="result">
@@ -24,8 +29,11 @@ export default function Result({ job, onReset }) {
             <p className="hint">
               A responsive, semantic page in normal flow —{' '}
               <code>header</code>, <code>nav</code>, <code>section</code>s and a{' '}
-              <code>footer</code> — plus the full Astro project. The traced
-              artwork is the hero backdrop; the copy is real DOM.
+              <code>footer</code> — plus the full Astro project.{' '}
+              {heroKind === 'photographic'
+                ? 'The photographic hero is exported as a fixed-resolution image;'
+                : 'The traced artwork is the hero backdrop;'}{' '}
+              the copy is real DOM.
             </p>
           </div>
           <div className="actions">
@@ -74,19 +82,36 @@ export default function Result({ job, onReset }) {
           </div>
           <div className="stat">
             <span className="label">Artwork</span>
-            <span className="value small">{info.has_art ? 'traced' : '—'}</span>
+            <span className="value small">
+              {info.has_svg ? 'traced SVG' : info.has_art ? 'image export' : '—'}
+            </span>
             <span className="unit">
-              {job.score == null
-                ? 'art fidelity —'
-                : `art fidelity ${job.score.toFixed(2)}`}
+              {heroKind === 'photographic'
+                ? `hero art ${fmt(job.hero_fidelity)}`
+                : job.score == null
+                  ? 'art fidelity —'
+                  : `art fidelity ${job.score.toFixed(2)}`}
             </span>
           </div>
         </div>
         <p className="hint">
-          <strong>Fidelity {job.score == null ? '—' : job.score.toFixed(2)}</strong>{' '}
-          measures the <em>traced artwork</em> (and the palette) against the
-          reference — not the type. The page is authored in its own type scale,
-          not a pixel copy of the mockup's typeface.
+          {heroKind === 'photographic' ? (
+            <>
+              <strong>{fmt(job.hero_fidelity)}</strong> measures the{' '}
+              <em>image the page ships</em> against the reference — a
+              photograph cannot be represented as flat vector regions at a web
+              payload, so it is exported at a fixed resolution instead.{' '}
+              <strong>{fmt(job.score)}</strong> is the traced SVG master, kept
+              as a separate deliverable.
+            </>
+          ) : (
+            <>
+              <strong>{fmt(job.score)}</strong> measures the{' '}
+              <em>traced artwork</em> (and the palette) against the reference —
+              not the type. The page is authored in its own type scale, not a
+              pixel copy of the mockup's typeface.
+            </>
+          )}
         </p>
       </div>
 

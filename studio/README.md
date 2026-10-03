@@ -5,9 +5,22 @@ the pipeline → download a real website** (a single self-contained `index.html`
 plus the full Astro project).
 
 The output is a **responsive, semantic page**, not a pixel copy of the mockup:
-the traced artwork is the hero backdrop, and the copy is real DOM text in the
-site's own type scale. No raster images: the artwork is traced SVG geometry and
-the page is one file with zero network requests.
+the artwork is the hero backdrop, and the copy is real DOM text in the site's own
+type scale. The page is one file with zero network requests.
+
+The backdrop takes one of two forms, chosen by measuring the hero:
+
+| hero content | what the page ships | why |
+|---|---|---|
+| flat / vector art | **traced SVG** | exact, tiny, code-native, re-colourable |
+| photographic | **WebP at the upload's own resolution** | the tracer plateaus around 3.5 mean on a photograph while every knob is flat; the image is a fraction of the size and looks like the original |
+
+A photographic export is built from your **original upload** (not the 1024×768
+working reference, which throws away real resolution) and from the tracer's
+**text-removed** image — otherwise the mockup's own nav bar, headline and buttons
+would sit behind the real DOM copy as ghosts. It is inlined into the page as a
+data URI and also shipped as a standalone file. The traced SVG master is produced
+either way and always included.
 
 ```
 studio/
@@ -380,8 +393,9 @@ studio/.venv/bin/python studio/backend/doctor.py job <id>   # full status + logs
   **whole** built page (captured tall, trimmed to the content, so the lower
   sections are reviewed too), sends it and the mockup to the vision model, and
   prints a ranked list of composition/readability defects. Typeface differences
-  and missing raster assets are explicitly out of scope (the page is authored in
-  its own type and carries no raster images). This is the loop that found the
+  are explicitly out of scope (the page is authored in its own type), but a
+  ghosted hero backdrop is not — the review prompt now expects the mockup's own
+  text to be absent from the artwork. This is the loop that found the
   hero ghosting and the composition defects; `--out report.json` keeps the raw
   report so two builds can be compared. A single verdict is noisy, so
   `--votes N` reports only the complaints that recur across N runs (with a

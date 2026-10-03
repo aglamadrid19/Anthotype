@@ -10,8 +10,10 @@ State at the end of the session that packaged this repo. Read this first, then
 ## What this is
 
 Turn a flat design PNG into a **real, code-native website** — a responsive,
-semantic page with traced SVG artwork, DOM text and CSS, and no raster images in
-the output. The reference PNG is input to the pipeline, not an embedded asset.
+semantic page with DOM text and CSS, whose decorative hero backdrop is either
+traced SVG artwork (flat designs) or a fixed-resolution photographic export
+(designs with a photo hero). The reference PNG is input to the pipeline, not a
+copy of the page.
 
 **The north star changed.** This used to be a pixel-parity project: whole-page
 mean-abs-pixel-difference against the reference, with a large text-measurement
@@ -22,8 +24,20 @@ metric is now split:
 
 - **the artwork** is scored on pixels, over the **art region** only (the page-copy
   rects masked out) — the tracer's job;
+- **the shipped hero** is scored separately when the backdrop is photographic:
+  the page ships a fixed-resolution image, not the traced SVG, so its own mean
+  against the reference band covers what a visitor actually sees;
 - **the website** is scored on **structure** — landmarks, sections, one `h1`,
   resolving links, flow layout, reflow — which is what makes it a website.
+
+**The no-raster rule was relaxed, deliberately.** A photograph cannot be
+represented as flat vector regions at a sane payload: the tracer plateaus around
+3.5 mean on a photo hero while every knob is flat, and coherent segmentation
+reaches 0.89 only at ~214k regions / ~60 MB of SVG. So a photographic hero ships
+a WebP built from the original upload (not the 1024×768 working reference) and
+from the tracer's **text-removed** image (not the raw reference, whose nav bar
+and headline would ghost behind the DOM copy). Flat designs keep the traced SVG
+unchanged, and the SVG art master is produced for every design regardless.
 
 The retired text-metrics machinery (`measure_lines`, `measure_weight`,
 `sample_line_colors`, per-line gradients, glow, `cap_top_offset` placement,
@@ -44,10 +58,10 @@ are fixed 1024×768 posters (`"layout": "poster"`) scored exactly as before.
 
 - `qa/verify.sh` → **2.71 / 2.76 / 2.99 PASS** (unchanged: the poster shell and
   the tracer are untouched).
-- `doctor polarity` → all checks pass (ink/box/two-tone/scope + the new
-  structure-inference checks).
-- `doctor fixtures` → **light / montiva / antho all PASS** (structure, not pixel
-  targets).
+- `doctor polarity` → all checks pass (ink/box/two-tone/scope, the new
+  structure-inference checks, and the hero-representation guards).
+- `doctor fixtures` → **light / montiva / antho all PASS**, each now also pinning
+  `hero_kind=photographic` and a shipped-hero-art bound (means 1.33 / 1.60 / 1.33).
 - `doctor regress` → **regression PASS**.
 - The studio builds a real page end to end on the montiva fixture (a real vision
   call): header + nav, hero, **3 content sections** (features / testimonials /
@@ -72,7 +86,9 @@ are fixed 1024×768 posters (`"layout": "poster"`) scored exactly as before.
 
 - **`"page"`** (default for scaffolded designs, and what the studio emits) — a
   responsive website: semantic sections in normal flow, a role-based type scale,
-  the traced art as the hero backdrop (`<!--ART-->` placeholder).
+  the artwork as the hero backdrop (`<!--ART-->` placeholder). The backdrop is
+  the traced SVG for flat art, or an inlined fixed-resolution WebP for a
+  photographic hero (chosen by `studio/backend/app/heroart.py`).
 - **`"poster"`** (A/B/C) — the historical fixed 1024×768 stage scaled to the
   viewport, so `qa/verify.sh` keeps scoring the traced art as it always did.
 
@@ -96,7 +112,7 @@ node gen-page.mjs <name> && node to-astro.mjs <name>
 `layout`, `target` (the score `verify.sh` enforces), `box`, `text` rects, tracing
 `params`, and optional `regions`.
 
-## The two things future work must not break
+## The three things future work must not break
 
 1. **potrace fills the BLACK (bit-0) region.** Pass `(~mask)*255`. Get it wrong
    and every band becomes an opaque plate while the page still *looks* fine.
@@ -104,6 +120,12 @@ node gen-page.mjs <name> && node to-astro.mjs <name>
 2. **Trace the CUMULATIVE mask `{lum >= e_i}`, painted darkest-first** — not
    disjoint bands. Mathematically identical, but potrace gets one solid nested
    region per band instead of 1px slivers: ~0.8 better mean, ~half the file size.
+3. **A photographic hero's raster comes from the tracer's prepared image, at the
+   upload's own resolution.** Cropping the raw reference ghosts the mockup's own
+   text behind the DOM copy; cropping the normalised 1024×768 reference inherits
+   the ingest downscale. `app/heroart.py::native_reference` + `mkart
+   --prepared-out`, guarded by `doctor polarity` and each fixture's `hero_kind` /
+   `hero_max`.
 
 `qa/verify.sh` guards the rest: it fails on a score regression, on remote
 assets, on an external stylesheet, and on any page-originated network request

@@ -268,10 +268,42 @@ def blank_seams(render: np.ndarray, mask: np.ndarray | None) -> float | None:
     return float(step.mean())
 
 
+def hero_fidelity(ref: np.ndarray, band: list[int], raster: Path,
+                  mask: np.ndarray | None = None) -> float | None:
+    """How faithfully the SHIPPED hero art matches the reference band.
+
+    `art_score` measures the traced SVG, which for a photographic design is a
+    secondary artifact the page no longer shows.  This measures the thing the
+    page actually ships -- the raster export -- against the reference, at the
+    band's own stage size.  Chrome-free: the asset is a file.
+
+    `mask` (the tracer's removed rects) is excluded for the same reason the art
+    score excludes it: the export deliberately inpaints the mockup's own text
+    out, so scoring those pixels would penalise exactly the removal that makes
+    the backdrop usable.  What remains is the artwork.
+    """
+    y0, y1 = (int(round(v)) for v in band)
+    y0, y1 = max(0, min(ref.shape[0] - 1, y0)), min(ref.shape[0], y1)
+    if y1 <= y0:
+        return None
+    target = ref[y0:y1]
+    img = Image.open(raster).convert("RGB")
+    if img.size != (target.shape[1], target.shape[0]):
+        img = img.resize((target.shape[1], target.shape[0]), Image.LANCZOS)
+    per_px = np.abs(np.asarray(img, np.float32) - target).mean(axis=2)
+    if mask is not None:
+        m = mask[y0:y1]
+        if (~m).any():
+            per_px = per_px[~m]
+    return float(per_px.mean())
+
+
 def assess(job_id: str, page: Path, ref_png: Path, *,
            pipeline: Path | None = None, art_svg: Path | None = None,
            layout: str = "poster",
-           background: tuple[int, int, int] | None = None) -> dict:
+           background: tuple[int, int, int] | None = None,
+           hero_image: Path | None = None,
+           hero_band: list[int] | None = None) -> dict:
     """Return {art_score, art_pct, whole_score, whole_pct, structure, issues}."""
     chrome = find_chrome()
     if not chrome:
@@ -324,6 +356,16 @@ def assess(job_id: str, page: Path, ref_png: Path, *,
         per_px = per_px[~mask]
     out["art_score"] = float(per_px.mean())
     out["art_pct"] = float(100.0 * (per_px > 30).mean())
+
+    # What the page actually ships for the hero, when that is a raster rather
+    # than the traced SVG.  Reported alongside `art_score` (the tracer's own
+    # number on the master) so neither hides the other.
+    if hero_image is not None and hero_band and Path(hero_image).is_file():
+        val = hero_fidelity(ref, hero_band, Path(hero_image),
+                            _removed_mask(pipeline, job_id) if pipeline else None)
+        if val is not None:
+            out["hero_score"] = round(val, 2)
+            out["hero_source"] = "raster"
 
     # Surfaced as an advisory, not folded into the score: the two measures answer
     # different questions, and a high seam is a *readability* problem (a pasted-on

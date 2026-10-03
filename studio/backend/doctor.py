@@ -548,6 +548,61 @@ def cmd_polarity(_args: list[str]) -> int:
           "blank-seam check separates a plate from a clean fill",
           f"clean {seam_clean:.0f}/255, pasted plate {seam_plate:.0f}/255")
 
+    # The hero backdrop is a traced SVG for flat artwork and a fixed-resolution
+    # raster for a photograph.  If this classifier drifts, a photographic hero
+    # silently goes back to the smeared, posterised vector backdrop the raster
+    # path exists to fix -- and, because `art_score` masks the text rects and
+    # measures the SVG, nothing else in the gate would notice.
+    #
+    # The signal is how many distinct colours survive area-averaging, so the
+    # synthetic photograph has to be *busy* (many objects/tones) rather than a
+    # smooth gradient: a gradient averages down to a handful of colours and would
+    # not represent the real thing this must accept.
+    from app import heroart
+    from PIL import Image
+    rng = np.random.RandomState(0)
+    flat = np.zeros((192, 256, 3), np.uint8)
+    flat[:, :] = (245, 246, 244)
+    flat[40:150, 24:120] = (27, 188, 99)              # a few solid fills
+    flat[60:130, 150:230] = (17, 24, 32)
+    # Low-frequency colour noise upsampled: what a photograph looks like once the
+    # high-frequency detail is averaged away -- many neighbouring tones.
+    coarse = rng.randint(0, 256, (12, 16, 3)).astype(np.uint8)
+    photo = np.asarray(Image.fromarray(coarse).resize((256, 192), Image.BICUBIC))
+    photo = np.clip(photo.astype(np.float32) * 0.75 + 40, 0, 255).astype(np.uint8)
+    flat_photo, flat_score = heroart.is_photographic(flat, None)
+    real_photo, photo_score = heroart.is_photographic(photo, None)
+    _line(OK if (not flat_photo and real_photo) else BAD,
+          "hero backdrop picks raster only for a photograph",
+          f"flat {flat_score} < {heroart.PHOTO_DISTINCT} <= photo {photo_score}")
+
+    # The raster must be exported at the UPLOAD's own resolution, not the
+    # normalised 1024x768 reference: the ingest fit downscales a real upload
+    # (1672x941 -> 1024x576), and cropping the reference would bake that loss
+    # into the shipped hero.
+    with tempfile.TemporaryDirectory() as td:
+        # 1600x800 source, aspect-fit at 0.64 -> 1024x512 in the stage, pad top
+        # 128.  The native canvas is therefore 1600x1200 (m = 1/0.64), the source
+        # lands at (0, 200) at its own 1:1 size, and the band [128, 528] is the
+        # full 1600 px of source.  Exporting from the normalised reference instead
+        # would yield 1024 px -- exactly the loss this guard exists to catch.
+        src = np.full((800, 1600, 3), 180, np.uint8)
+        src[:, :, 0] = 200
+        src_path = Path(td) / "upload.png"
+        Image.fromarray(src).save(src_path)
+        hi_path = Path(td) / "ref-hi.png"
+        native = heroart.native_reference(src_path, hi_path, 1024, 768, 0.64,
+                                          (0, 128), (0, 0, 0))
+        written = heroart.export_from_prepared(
+            hi_path, [128, 528], native["m"], Path(td) / "out", "probe")
+        m = written.get("webp")
+        ok = (bool(m) and m["w"] == 1600 and native["scale"] == 1.0
+              and native["size"] == (1600, 1200))
+        _line(OK if ok else BAD,
+              "hero raster is built from the upload at its own resolution",
+              f"{m['w']}x{m['h']} from a 1600x800 source (reference crop would be "
+              f"1024), native canvas {native['size']}" if m else "no raster written")
+
     # A light ground must produce a light palette (and a dark one a dark palette).
     light_pal = generate.palette(synthetic, (248, 249, 247))
     dark_pal = generate.palette(synthetic, (10, 12, 14))
@@ -677,11 +732,19 @@ def cmd_polarity(_args: list[str]) -> int:
 # `seam_max` bounds `blank_seam`, the tonal step the trace leaves at the rects the
 # tracer had to fill.  `score_max` masks those rects out, so on its own it cannot
 # see a fill that went wrong -- this bound is what covers them.
+#
+# `hero_kind` / `hero_max` guard the OTHER representation: a photographic hero
+# ships a fixed-resolution raster, and `hero_max` bounds its mean against the
+# reference band (removed rects masked out, so it measures the artwork and not
+# the deliberate text removal).  `score_max` still bounds the SVG master, which
+# such a page no longer shows -- so without these two the raster path would be
+# entirely unguarded.
 FIXTURES: dict[str, dict] = {
     "light": dict(
         ref="light-ref.png", blocks="light-blocks.json",
         note="synthetic light ground: a hero-only page (structure + art)",
         expect=["hero"], page=8, artwork=0, score_max=3.0, seam_max=8.0,
+        hero_kind="photographic", hero_max=2.5,
     ),
     "montiva": dict(
         ref="montiva-ref.png", blocks="montiva-blocks.json",
@@ -692,11 +755,13 @@ FIXTURES: dict[str, dict] = {
         # turdsize 12: this fixture's art mean fell 4.21 -> 3.44.  The bound is the
         # guard that stops the gain silently evaporating.
         score_max=4.0, seam_max=8.0,
+        hero_kind="photographic", hero_max=2.5,
     ),
     "antho": dict(
         ref="antho-ref.png", blocks="antho-blocks.json",
         note="real photorealistic hero: a hero-only page",
         expect=["header", "hero"], page=8, score_max=3.0, seam_max=8.0,
+        hero_kind="photographic", hero_max=2.5,
     ),
 }
 LIGHT_FIXTURE = STUDIO_DIR / "fixtures"
@@ -788,13 +853,22 @@ def _run_fixture(name: str, keep: bool = False) -> int:
     print(f"structure: {', '.join(info.get('sections') or []) or '(none)'}")
     print(f"landmarks: {', '.join(info.get('landmarks') or []) or '(none)'}")
     print(f"headings : {info.get('headings')}")
-    print(f"art      : {'traced SVG present' if info.get('has_art') else 'MISSING'}")
+    if info.get("has_art") and not info.get("has_svg"):
+        print("art      : hero backdrop is a photographic raster (no SVG in the page)")
+    else:
+        print(f"art      : {'traced SVG present' if info.get('has_art') else 'MISSING'}")
     bound = spec.get("score_max")
     if j.score is None:
         print("fidelity : n/a")
     else:
         print(f"fidelity : art region mean {j.score:.2f}"
               + (f"  (max {bound:g})" if bound is not None else ""))
+    if spec.get("hero_kind") or spec.get("hero_max") is not None:
+        hb = spec.get("hero_max")
+        print(f"hero     : {j.hero_kind or 'unknown'}"
+              + (f"  score {j.hero_distinct}" if j.hero_distinct is not None else "")
+              + (f", shipped art mean {j.hero_fidelity:.2f}" if j.hero_fidelity is not None else "")
+              + (f"  (max {hb:g})" if hb is not None else ""))
     print(f"blocks   : {len(page)} page, {len(art)} artwork left to the tracer")
     seam = j.blank_seam
     if seam is not None:
@@ -817,6 +891,19 @@ def _run_fixture(name: str, keep: bool = False) -> int:
             failed.append("blank seam not measured")
         elif j.blank_seam > seam_bound:
             failed.append(f"blank seam {j.blank_seam:.0f}/255 > max {seam_bound:g}")
+    # The raster path is a separate product from the SVG master, so bound it
+    # separately too: a page whose hero stopped rasterising, or whose export
+    # drifted (raw reference instead of the text-removed one, stage resolution
+    # instead of the upload's), must fail here rather than pass on `score_max`.
+    want_kind = spec.get("hero_kind")
+    if want_kind is not None and j.hero_kind != want_kind:
+        failed.append(f"hero kind {j.hero_kind!r} != {want_kind!r}")
+    hero_bound = spec.get("hero_max")
+    if hero_bound is not None:
+        if j.hero_fidelity is None:
+            failed.append("shipped hero art not measured")
+        elif j.hero_fidelity >= hero_bound:
+            failed.append(f"shipped hero art mean {j.hero_fidelity:.2f} >= max {hero_bound:g}")
     ok = j.status == "done" and not failed
 
     if not keep:
@@ -900,10 +987,12 @@ def _state_consistency(measured: dict[str, float]) -> list[str]:
     recorded = (state.get("verification") or {}).get("fixture_bounds")
     if not isinstance(recorded, dict):
         bad.append("STATE.json verification.fixture_bounds is missing -- record each "
-                   "fixture's score_max/seam_max there (this check compares them to FIXTURES)")
+                   "fixture's score_max/seam_max/hero_kind/hero_max there (this check "
+                   "compares them to FIXTURES)")
     else:
         for name, spec in FIXTURES.items():
-            want = {k: spec[k] for k in ("score_max", "seam_max") if k in spec}
+            want = {k: spec[k] for k in
+                    ("score_max", "seam_max", "hero_kind", "hero_max") if k in spec}
             got = recorded.get(name)
             if not isinstance(got, dict):
                 bad.append(f"STATE.json fixture_bounds has no entry for '{name}'")
@@ -911,7 +1000,11 @@ def _state_consistency(measured: dict[str, float]) -> list[str]:
             for k, w in want.items():
                 if k not in got:
                     bad.append(f"STATE.json fixture_bounds.{name} is missing '{k}' "
-                               f"(the code enforces {w})")
+                               f"(the code enforces {w!r})")
+                elif isinstance(w, str):
+                    if got[k] != w:
+                        bad.append(f"STATE.json fixture_bounds.{name}.{k} = {got[k]!r} "
+                                   f"but doctor.py FIXTURES enforces {w!r}")
                 elif float(got[k]) != float(w):
                     bad.append(f"STATE.json fixture_bounds.{name}.{k} = {got[k]} but "
                                f"doctor.py FIXTURES enforces {w}")
@@ -1086,14 +1179,19 @@ CRITIQUE_PROMPT = (
     "You are a senior web designer reviewing a GENERATED website against the "
     "flat design mockup it was built from.\n"
     "Image 1 is the original mockup. Image 2 is a screenshot of the generated "
-    "website: a real responsive page whose artwork is traced to SVG as the hero "
-    "backdrop and whose copy is authored DOM text in the site's own type scale.\n"
+    "website: a real responsive page whose copy is authored DOM text in the "
+    "site's own type scale, and whose hero backdrop is either the artwork traced "
+    "to SVG (flat designs) or a fixed-resolution photographic export (designs "
+    "with a photo hero).\n"
     "The target is a REAL website, not a pixel copy. The reference's typeface is "
     "deliberately NOT reproduced, so do NOT report typeface/font differences, "
-    "sub-pixel spacing, or missing fine detail. The output is deliberately "
-    "code-native: the artwork is traced to SVG and the copy is DOM text, so "
-    "photos, icons, avatars and star images from the mockup are intentionally "
-    "absent -- do NOT report them as missing. Judge COMPOSITION and "
+    "sub-pixel spacing, or missing fine detail. The copy is DOM text, so the "
+    "mockup's own type must NOT appear in the backdrop -- a ghost of the "
+    "mockup's headline, nav bar or buttons showing through the hero IS a defect "
+    "(report it as ghosted/duplicated text). Icons, avatars and small images "
+    "that the mockup composited as flat art are intentionally absent -- do NOT "
+    "report those as missing, but DO report a photographic hero that is missing, "
+    "smeared or posterised. Judge COMPOSITION and "
     "READABILITY: hierarchy, grouping, balance, contrast, and anything that "
     "reads as a defect (ghosted/duplicated text, stray or orphaned elements, "
     "broken rows, unreadable copy, misplaced sections).\n"

@@ -2,9 +2,9 @@
 
 Agent entry point for **Anthotype**: a pipeline that turns a flat design PNG into
 a **real, code-native website** — a responsive, semantic page in normal document
-flow, with the artwork traced to SVG geometry as a decorative backdrop and the
-copy authored as DOM text. No raster image survives into the output; the
-reference PNG is pipeline **input**, never an embedded asset.
+flow, with the artwork as a decorative backdrop (traced SVG geometry for flat
+art, a fixed-resolution image export for a photograph) and the copy authored as
+DOM text. The reference PNG is pipeline **input**, never a copy of the page.
 
 This file is the map. It is deliberately concise and points at depth. Read it
 first, then follow the pointers — do not try to hold `docs/HANDOFF.md` (762
@@ -18,17 +18,20 @@ lines) in your head.
 
 ## The north star (read this before proposing changes)
 
-The output is **a website, not a pixel copy of the mockup**. Two things follow:
+The output is **a website, not a pixel copy of the mockup**. Three things follow:
 
 - The **artwork** is judged on pixels — mean-abs-pixel-difference over the **art
   region** (page-copy rects masked out). This is the tracer's job and the moat.
+- The **shipped hero** is judged separately when the backdrop is photographic:
+  the page ships a fixed-resolution image, not the traced SVG, so its own mean
+  against the reference band is what covers the thing a visitor actually sees.
 - The **website** is judged on **structure** — landmarks, sections, one `h1`,
   resolving links, flow layout, reflow.
 
 Pixel parity with the reference's **typeface** is deliberately **not** a target.
 Its residual is font substitution, which no amount of sizing, weight or colour
 tuning removes. The old text-metrics machinery is retired — do not resurrect it.
-See `README.md` §"Two measures, not one".
+See `README.md` §"Three measures, not one".
 
 ---
 
@@ -61,7 +64,7 @@ byte-identically (`python qa/mkart.py a` is deterministic).
 
 ## Hard rules — DO NOT BREAK
 
-These four are load-bearing. Each cost real time to discover. Full list of
+These five are load-bearing. Each cost real time to discover. Full list of
 landmines in `docs/HANDOFF.md` §5 (15 of them).
 
 1. **potrace polarity.** potrace fills the **BLACK (bit-0)** region of a bitmap,
@@ -85,6 +88,21 @@ landmines in `docs/HANDOFF.md` §5 (15 of them).
    `qa/netcheck.py` proves it via Chrome's net log and `qa/verify.sh` fails on
    any page-originated request or remote asset. (It once silently depended on the
    Google Fonts CDN — offline, scores went 2.71 → 4.22.)
+
+5. **A photographic hero's raster must come from the tracer's *prepared* image,
+   at the upload's own resolution.** Two failure modes, both invisible to
+   `art_score` (which masks text rects and measures the SVG):
+   - **Cropping the raw reference** bakes the mockup's own nav bar, headline and
+     buttons into the backdrop, where they sit behind the real DOM copy as
+     ghosts of themselves. The glyphs are inpainted out by `mkart.py`, so the
+     export is taken from its `--prepared-out` image.
+   - **Cropping the normalised 1024×768 reference** inherits the ingest
+     downscale (a real upload went 1672×941 → 1024×576, 61% of its linear
+     detail). So `mkart` is fed a native-resolution reference built from the
+     upload by `app/heroart.py::native_reference`, and the stage→native mapping
+     is a single factor `m`.
+
+   `doctor polarity` guards both, and each fixture pins `hero_kind`/`hero_max`.
 
 Also: the artwork SVG is `aria-hidden` **decoration** (the copy carries the
 meaning), and only the vendored font weights 400/500/600 are ever requested.
@@ -115,6 +133,12 @@ meaning), and only the vendored font weights 400/500/600 are ever requested.
 - **`doctor fixtures` guards structure and a per-fixture art bound, not pixel
   parity.** Comparing studio fixture scores to A/B/C's is meaningless — a studio
   page reflows and is authored in its own type.
+- **`mkart --prepared-out` is a separate mode: it saves the text-removed image
+  and returns before tracing.** It reads whatever config it is given, so the
+  studio points it at a generated `designs/<id>-hi.json` whose box and rects are
+  the stage geometry scaled by the native factor `m`. It also needs `--up 1`
+  (the native reference is already at full scale; the default `up=2` would
+  upscale it for nothing).
 
 Prefer dedicated tools over shell; this shell rejects `rm -f` in some contexts
 (use `python3 -c "import os;os.remove(...)"`). See `docs/HANDOFF.md` §5 for the
@@ -137,6 +161,18 @@ Measured and settled (full reasoning in `docs/HANDOFF.md` §4):
 - **The text residual on A/B/C is a local optimum** for the Inter stack; only a
   different font or a higher-resolution reference could move it. This is exactly
   why the studio *authors* pages instead of imitating them.
+- **The tracer cannot represent a photograph at a sane payload.** Every knob is
+  flat (bands 96→192 = 3.50→3.43; chroma_gate 16→0 = 3.50→3.45) and `up` 2→4
+  buys 0.07 for 10× the time, because the error lives in the hero photo (mean
+  10.62) while the rest of the page is 0.2–3.1. Hence the raster export.
+- **Coherent segmentation is a dead end.** k-means in Lab + connected components
+  reaches mean 0.89 vs banding's 2.20 in a like-for-like paint sim — but it needs
+  ~214k regions (~60 MB SVG). Grid quantise+merge = 8.69; transitive union-find
+  merge collapses 214k → 18 regions (the cascade is inherent, not a bug).
+- **SVG `linearGradient` fills and harmonic/diffusion inpainting are dead ends**
+  for the same job (montiva 2.20 → 4.45 and 4.19 → 4.54 respectively).
+- **Native-resolution SVG tracing is pointless** while the page ships a raster
+  for photos; the SVG master stays at stage resolution.
 
 > **The caveat worth remembering:** anything in that list judged only by the
 > aggregate mean was measured through a scorer that was later found to be
@@ -145,9 +181,9 @@ Measured and settled (full reasoning in `docs/HANDOFF.md` §4):
 > So a single re-check with the honest scorer (`qa/downsample.py`) is fair game.
 > Record what you find in `docs/AGENT-NOTES.md`.
 
-The one remaining dial is **payload vs parity**: `bands` is the lever, ~1 KB
-gzip per 0.001 mean. Choosing a different operating point is a one-parameter
-change — see `qa/sweep_up.py`.
+The one remaining dial for the SVG master is **payload vs parity**: `bands` is
+the lever, ~1 KB gzip per 0.001 mean. Choosing a different operating point is a
+one-parameter change — see `qa/sweep_up.py`.
 
 ---
 
@@ -161,7 +197,8 @@ pipeline/
   designs/<n>.json     per-design config: ref, site, content, layout, target,
                        box, text rects, params, optional regions/blank
   qa/INDEX.md          what every QA tool does, and which ones matter
-  qa/mkart.py          the art tracer (the heart of the repo)
+  qa/mkart.py          the art tracer (the heart of the repo); `--prepared-out`
+                       also dumps its text-removed image for the raster hero
   qa/verify.sh         score each built dist/ vs its reference; PASS/FAIL
   qa/newdesign.py      scaffold a whole new design in one command
   qa/tune.py           coordinate descent over any CSS property, real pipeline
@@ -172,6 +209,8 @@ pipeline/
 sites/variant-{a,b,c}/ the three worked examples (the tracer's regression suite)
 preview/               one static server for all builds + a generated gallery
 studio/                the upload -> site web app (FastAPI + React)
+  backend/app/heroart.py   flat-vs-photograph decision + the raster hero export
+  backend/app/runner.py    the orchestrator (stages, verify, package)
 docs/                  HANDOFF.md, CHECKPOINT.md, STATE.json, HOME.md, ...
 ```
 
@@ -203,6 +242,11 @@ New designs scaffold as `layout: "page"` (a responsive website). Two things in
 **`text`** (rects the art must not bake in). `qa/textrects.py` derives `text`
 automatically once the page CSS exists.
 
+A design whose hero is a photograph needs no extra config: the studio measures
+the hero band (`app/heroart.py`), and on a photographic result builds the raster
+from a native-resolution reference and the tracer's own text-removed image. A
+flat design is unaffected and keeps the traced SVG.
+
 Useful entry points for investigation: `python qa/<tool>.py --help`, and the
 "ones that matter" list in `pipeline/qa/INDEX.md`. `qa/artfloor.py` answers "is
 the tracer still the bottleneck?"; `qa/tune.py` and `qa/sweep_up.py` are the real
@@ -211,7 +255,9 @@ optimisers; `qa/compare.py --regions` gives per-region diagnostics.
 **Experiment freely — then prove you didn't break the moat.** The A/B/C posters
 are the tracer's regression suite, not a website. `qa/verify.sh` (and
 `studio/backend/doctor.py regress`, which runs it) is the gate. A change that
-helps the studio but regresses A/B/C is not a win.
+helps the studio but regresses A/B/C is not a win. The studio's own gate is
+`doctor.py gate` (`env → polarity → fixtures → regress`), and the fixtures pin
+both the traced-SVG master and the shipped raster hero.
 
 ---
 
