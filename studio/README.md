@@ -8,24 +8,32 @@ The output is a **responsive, semantic page**, not a pixel copy of the mockup:
 the artwork is the hero backdrop, and the copy is real DOM text in the site's own
 type scale. The page is one file with zero network requests.
 
-The backdrop takes one of two forms, chosen by measuring the hero:
+The backdrop takes one of three shapes, chosen by measuring the hero and the text
+the model recovered inside it:
 
 | hero content | what the page ships | why |
 |---|---|---|
-| flat art, uploaded at the stage's own width | **traced SVG** | exact, tiny, code-native, re-colourable |
-| photographic | **WebP at the upload's own resolution** | the tracer plateaus around 3.5 mean on a photograph while every knob is flat; the image is a fraction of the size and looks like the original |
+| flat art, uploaded at the stage's own width, no illustration labels | **traced SVG**, full-bleed | exact, tiny, code-native, re-colourable |
+| flat art **with its own labels** (a dashboard, a device, a diagram) | **the whole copy-removed scene**, shown at its own aspect with the copy over its dark side | the scene IS the hero: no `cover` crop, no boxed column, no scrim; the reference's own copy, buttons and benefit row are removed and rebuilt as HTML (LaMa-reconstructed when the optional cleanup environment exists), then Lanczos-upscaled for display with the source resolution still reported honestly |
+| photographic | **WebP at the upload's own resolution**, full-bleed | the tracer plateaus around 3.5 mean on a photograph while every knob is flat; the image is a fraction of the size and looks like the original |
 | flat art, but a *wider* upload | **WebP at the upload's own resolution** | the trace is bounded by the 1024 px stage and the hero is full-bleed, so on any wider screen the traced art is magnified (1.37× at 1400 px, 1.88× at 1920 px) and soft, while the raster is ~1:1 |
 
-Either of two independent reasons is enough (`app/heroart.py::wants_raster`): the
-artwork is continuous-tone, **or** the upload carries ≥1.2× the stage's linear
-resolution. The reason is reported per job as `hero_reason`.
+Either of two independent reasons is enough to ship a raster
+(`app/heroart.py::wants_raster`): the artwork is continuous-tone, **or** the
+upload carries ≥1.2× the stage's linear resolution.  The reason is reported per
+job as `hero_reason`.  The illustration `scene` is taken only for **flat**
+artwork: a photograph is backdrop texture and stays full-bleed even when the
+model found labels in it.
 
 The export is built from your **original upload** (not the 1024×768 working
 reference, which throws away real resolution) and from the tracer's
-**text-removed** image — otherwise the mockup's own nav bar, headline and buttons
-would sit behind the real DOM copy as ghosts. It is inlined into the page as a
-data URI and also shipped as a standalone file. The traced SVG master is produced
-either way and always included.
+**text-removed** image — but only the copy the page actually **replaces** is
+inpainted out; an illustration's own labels are content and are kept.  The export
+target is 2× a 1920 px desktop (3840 px, never upscaled past the source), and when
+the upload cannot reach it the job records the shortfall (`hero_scale`) instead of
+hiding it.  The image is inlined into the page as a data URI and also shipped as a
+standalone file.  The traced SVG master is produced either way and always
+included.
 
 ```
 studio/
@@ -48,6 +56,86 @@ The backend shells out to the **repo's** Python venv (`.venv`, created by
 `./bootstrap.sh`) for the tracer, and to `node` for the page build, so run
 `./bootstrap.sh` first if you have not. `potrace` must be installed
 (`brew install potrace`).
+
+### Optional: the artwork cleanup environment (LaMa)
+
+A raster hero's removed copy (the scene, or a full-bleed photographic hero) is
+reconstructed by an **optional external** LaMa environment; without it the hero
+keeps the tracer's nearest fill and the job says so. Torch is gigabytes, so it
+never enters the studio venv:
+
+```sh
+./studio/setup-cleanup.sh          # creates studio/.cleanup-venv + big-lama.pt
+# or point at another interpreter with torch + simple-lama-inpainting:
+export STUDIO_CLEANUP_PYTHON=/path/to/python
+```
+
+The runner cleans the **original upload** with masks that cover the complete
+interface elements — the copy rects, the CTA plates and eyebrow grown to the
+element they belong to, and the row drawn inside the band whose copy a later
+DOM section replaces (its icons included), hard-capped so artwork content is
+never swallowed — and composites the result so every pixel outside the masks
+is the original.  A scene rendition is then Lanczos-upscaled for display
+sharpness and encoded at `SCENE_QUALITY` (90); a full-bleed hero ships the
+cleaned upload at its native scale.  Either way the upscale is a *rendering*
+enhancement, so the resolution warning keeps reporting the **source** width
+(`hero_image.source_w`).
+
+### Optional: the Google enhancement (opt-in, preview before accepting)
+
+With `STUDIO_ART_ENHANCE` set (and `GEMINI_API_KEY` in `studio/backend/.env`),
+a job that ships a raster hero additionally asks Google's image model for a
+high-resolution rendition and offers it as a **candidate**.  The input is the
+**LaMa-cleaned artwork** for both raster layouts (scene and full-bleed); a
+missing cleaner **skips** the enhancement, because the tracer's prepared fill
+is text-removed but not clean (rectangular patches and component remnants
+would be re-rendered by the model).  The raw model output then goes through the
+**source-preserving repair**: the artwork's protected content — labels, values
+and icons, detected from the native pixels *including content the extraction
+boxes missed* — is restored from the native artwork (exact mapping,
+context-checked alignment, feathered edges), so a candidate cannot silently
+carry a corrupted label.  Only a **complete** repair becomes a normally
+acceptable candidate; if any region cannot be verified the candidate is
+**diagnostic only** — it cannot be accepted, the cleaned-native artwork keeps
+shipping, and the preview is shown for inspection.  The
+shipped page keeps the LaMa/Lanczos asset until you press *Accept enhanced
+artwork* in the result view (`POST /api/jobs/<id>/enhance/accept`), which swaps
+the asset in and rebuilds the page. LaMa/Lanczos remains the fallback, and
+results are cached by the cleaned image's hash + model + size, so retries and
+acceptance never pay twice.
+
+```sh
+# in studio/backend/.env, or the environment:
+STUDIO_ART_ENHANCE=google-flash   # gemini-3.1-flash-image at 4K (the default mode)
+# STUDIO_ART_ENHANCE=google-pro   # gemini-3-pro-image at 4K
+# STUDIO_ART_ENHANCE=auto         # -> google-flash
+GEMINI_API_KEY=...
+```
+
+The candidate is a **generative re-render**: it is visibly sharper, but it can
+alter small labels (a measured Pro run changed `28ms`→`26ms`, `36ms`→`26ms`,
+`Staging`→`Slaping` and `End-to-end encrypted`→`Eod-to-end-encrypted`; Flash
+preserved all four in that run). Acceptance therefore requires an **explicit
+per-candidate review** — the result view's checkbox, or `reviewed: true` in the
+API body — and records it against the candidate's own hash
+(`hero_enhance_audit`), so a candidate is never shipped, and never *claimed* to
+have been audited, without the review happening. Acceptance also requires the
+original job to be **finished** (a running job gets 409), and is serialized and
+failure-safe: it snapshots the content, the packaged files, the generated
+workspace pages and its record, rolls everything back on any failure, and only
+marks the job accepted after packaging succeeds. The accepted asset records both provenances
+separately: `hero_image.source_w` stays the *upload's* width (the resolution
+warning is unchanged) and `hero_image.enhance` records the model, size and
+generated dimensions. The pixel metric is a measure of **pixel drift**, not
+sharpness: a generative re-render is sharper but not pixel-identical, so its
+`hero_fidelity` reads higher, and the acceptance logs that note. The runtime
+page is unchanged — the asset is inlined and the page makes zero network
+requests.
+
+For tests, `STUDIO_ART_ENHANCE_NETWORK=forbidden` is a hard kill switch (no
+provider call whatever else is set); `doctor gate` and `doctor fixtures` set it
+for their run, so a configured environment can never make the gate spend money
+or depend on the network.
 
 ## Configure the vision model
 
@@ -183,14 +271,14 @@ copy (a fine-print line drawn under them in the reference would become a caption
 above them), and buttons sharing a row are ordered left-to-right rather than by
 top edge, which swaps a pair drawn two pixels apart.
 
-The traced artwork is the hero's full-bleed decorative backdrop
-(`aria-hidden`, `preserveAspectRatio="xMidYMid slice"`), and it is **cropped to
-the hero's own band**: the traced SVG is the whole mockup, so splicing it whole
-put the next section's cards and icons behind the hero copy, where they read as
-clutter.  `generate.hero_band()` computes the mockup's hero slice and
-`gen-page.mjs` narrows the *spliced* SVG's `viewBox` to it — the SVG file itself
-is untouched, so the art metric still renders the full artwork.  Content flows
-over it.
+The traced artwork is the hero's decorative layer (`aria-hidden`). A hero
+**without** a clear illustration column uses it as the full-bleed backdrop
+(`preserveAspectRatio="xMidYMid slice"`), **cropped to the hero's own band**: the
+traced SVG is the whole mockup, so splicing it whole put the next section's cards
+and icons behind the hero copy, where they read as clutter.
+`generate.hero_band()` computes the mockup's hero slice and `gen-page.mjs`
+narrows the *spliced* SVG's `viewBox` to it — the SVG file itself is untouched,
+so the art metric still renders the full artwork.  Content flows over it.
 
 The band starts **below the mockup's own header** (the page renders its own
 header, so the mockup's nav bar would otherwise show as a second nav inside the
@@ -201,16 +289,47 @@ of the stage (letterbox padding, nav bar and an empty strip) at aspect 1.33, and
 `cover` magnified the art 1.37× at 1400 px and 1.88× at 1920 px, cropping a quarter
 of it away.
 
-### The artwork must not contain a ghost of the copy
+An illustration hero (below) instead gets its own region beside the copy and is
+shown whole, so neither `cover` nor the scrim touches it.
 
-**Every text block is excluded from the trace**, not just the page copy.  The
-extraction distinguishes page copy from text *inside* the artwork (a step
-callout, a device mockup's own wordmark), and only page copy becomes DOM — but
-the tracer is given the rects for **both**.  Artwork-internal text is not
-decoration: leaving it unblanked bakes a ghost of the word into the hero
-backdrop, where the real copy sits, and the two double up.  This was the single
-ugliest defect the page could have, and it survived until a design review called
-it out.
+### Only the copy the page replaces is removed from the artwork
+
+The extraction distinguishes page copy from text *inside* the artwork (a
+dashboard's region names, a device mockup's captions, a diagram's step labels).
+Page copy becomes DOM; illustration text does not.  The tracer's exclusion rects
+therefore cover **exactly the blocks the page renders as DOM**
+(`generate.page_blocks`, minus the hero labels `_drop_artwork_labels` keeps out
+of the copy column): those are what would double with a ghost of themselves.
+Illustration labels are **not** blanked — they are content of the artwork, and
+blanking them stripped a real dashboard of its 33 labels (region names, table
+values, the "Secure private tunnel" caption) and left fill smears where they had
+been.  `doctor polarity` guards the contract: replaced copy in the rects, artwork
+text never.
+
+A hero whose artwork is an illustration — enough labels, clear of the copy
+column — is composed as an **integrated scene**: the whole copy-removed band is
+the hero, an in-flow image at its own aspect, with the live copy over its dark
+side (`generate.build_page_css`, `.hero.hero-scene`, `gen-page.mjs`).  There is
+no `object-fit: cover` to crop the sides the labels sit on, no boxed image
+column and no copy scrim; below 900 px the scene and the copy stack.  The
+reference's own benefit row is lifted out of `features` into the hero (and its
+icons blanked out of the artwork, so they cannot duplicate the live row), and a
+two-tone headline's accent word is recovered from its share of the ink so only
+"AntSeed" is coloured.  The earlier `split` mode (the illustration in its own
+capped column) remains available; a photograph is backdrop texture and stays
+full-bleed even when the model found labels in it.  `verify.label_fidelity`
+reports the worst label's difference so a label the asset lost is visible in the
+job record, not only in the pixels.
+The scene's removed copy is reconstructed from the **original upload** by the
+optional external LaMa cleanup (complete-element masks, original pixels kept
+outside them) and falls back to the tracer's fill -- with a logged warning --
+when `studio/.cleanup-venv` / `STUDIO_CLEANUP_PYTHON` is absent.  The rendition
+is Lanczos-upscaled for display sharpness and encoded lossy at `SCENE_QUALITY`;
+`hero_image.source_w` and the job's resolution warning keep reporting the
+upload's own width, because an upscale creates no detail.  With the opt-in
+Google enhancement enabled the scene asset is instead the **accepted
+candidate** (see above); `hero_image.enhance` records the model, size and
+generated dimensions, and the source-width provenance is unchanged.
 
 On a light design the tracer's legacy text-exclusion rule is also backwards.  It
 keeps the bands *near* the page background so the type's glow survives — but on a
@@ -218,9 +337,9 @@ light page the glyph ink and its anti-aliased halo sit just *below* the
 background, so they are kept and the tracer bakes a full pale ghost of every word
 into the SVG, underneath the DOM text that is supposed to replace it.
 
-`mkart.py` **inpaints the glyph ink out of the reference** before tracing (gated
-on `text_bg_lum`, so the three shipped dark designs keep the legacy path
-byte-for-byte).  Two details matter:
+`mkart.py` **inpaints the replaced glyph ink out of the reference** before
+tracing (gated on `text_bg_lum`, so the three shipped dark designs keep the
+legacy path byte-for-byte).  Two details matter:
 
 - the background is measured **locally** (a median filter wider than the glyphs),
   not from the page border — a real landing page has type on a dark footer panel
@@ -241,9 +360,8 @@ chrome, never artwork.  This is exclusion policy, not tracing math, and
 Text inside the illustration (step callouts, a device mockup's own wordmark) must
 not become DOM: its box is unreliable and the element lands in the wrong place.
 The extractor tags each block `part: page | artwork`, and the generator drops
-`artwork` blocks from the markup.  They are still **excluded from the trace**,
-though: a block of text is never art, and leaving one unblanked ghosts it into
-the backdrop under the real copy.
+`artwork` blocks from the markup — while keeping them in the artwork asset, where
+they belong.
 
 For a *website* the size backstop is deliberately lax — dropping a real nav link
 ("Home", "Services") breaks the page, while emitting a stray caption is cosmetic.
@@ -343,7 +461,7 @@ under the studio venv, so `python3` works too.
 studio/.venv/bin/python studio/backend/doctor.py gate       # the whole safety net, in order
 studio/.venv/bin/python studio/backend/doctor.py env        # every dependency + the vision endpoint
 studio/.venv/bin/python studio/backend/doctor.py polarity   # light/dark + structure logic (no model)
-studio/.venv/bin/python studio/backend/doctor.py fixtures   # the light + montiva + antho fixtures, end to end (no model)
+studio/.venv/bin/python studio/backend/doctor.py fixtures   # the light/montiva/antho/dashboard fixtures, end to end (no model)
 studio/.venv/bin/python studio/backend/doctor.py light      # the light fixture alone
 studio/.venv/bin/python studio/backend/doctor.py regress    # run the repo's qa/verify.sh (A/B/C PASS)
 studio/.venv/bin/python studio/backend/doctor.py run x.png  # one design end to end, per-stage timings
@@ -393,6 +511,12 @@ studio/.venv/bin/python studio/backend/doctor.py job <id>   # full status + logs
   - `montiva` — a real multi-section landing page: asserts a header, nav, main,
     sections, testimonials, contact and a footer.
   - `antho` — a real photorealistic hero: a hero-only page.
+  - `dashboard` — the flat dashboard illustration that drove the scene
+    prototype: the integrated `scene` with all 33 of its own labels present in
+    the shipped artwork (`hero_layout`, the 3840 px full-bleed budget,
+    `min_assets`/`asset_dest`, and the worst-label mean/p95 are pinned).  The
+    other three exercise the full-bleed path; this is the one that fails if the
+    scene path regresses.
 
   `--keep` leaves a job directory behind for `doctor job <id>`.  The fixtures are
   the regression suite for the whole studio page builder — extend them when a new
@@ -412,8 +536,9 @@ studio/.venv/bin/python studio/backend/doctor.py job <id>   # full status + logs
   sections are reviewed too), sends it and the mockup to the vision model, and
   prints a ranked list of composition/readability defects. Typeface differences
   are explicitly out of scope (the page is authored in its own type), but a
-  ghosted hero backdrop is not — the review prompt now expects the mockup's own
-  text to be absent from the artwork. This is the loop that found the
+  ghosted hero backdrop is not, and neither is a damaged or missing illustration:
+  the review prompt expects the mockup's own copy to be absent from the artwork
+  and the illustration's own labels to be present. This is the loop that found the
   hero ghosting and the composition defects; `--out report.json` keeps the raw
   report so two builds can be compared. A single verdict is noisy, so
   `--votes N` reports only the complaints that recur across N runs (with a
@@ -439,9 +564,12 @@ Every job also keeps its whole working tree at `studio/data/jobs/<id>/workspace/
   The build *reports* structural problems (`structure_issues`, and the warnings
   in the UI) instead of hiding them behind a score — review them, then edit
   `content-<id>.json` / `<id>.page.css` in the download.
-- **The artwork is one backdrop.** It is the hero's decorative layer; lower
-  sections sit on solid tones derived from the reference palette. Per-section art
-  crops are out of scope.
+- **The artwork is the hero's.** It is a decorative layer — a full-bleed backdrop,
+  or, when the hero carries an illustration with its own labels, that
+  illustration shown whole in its own region beside the copy. Lower sections sit
+  on solid tones derived from the reference palette. Per-section art crops and a
+  general asset pipeline for lower-section logos and icons are future work; the
+  job's `assets` record says where every recovered artwork label ended up.
 - **Runs are not bit-identical.** The model's boxes move a little between calls,
   so the inferred grouping can vary slightly.
 - **A CTA icon is not reproduced.** The button becomes a DOM element; its

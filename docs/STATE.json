@@ -1,454 +1,478 @@
 {
- "task": "Design-to-site pipeline: turn a flat design PNG into a REAL website -- a responsive, semantic page in normal flow, with the artwork as the hero backdrop (traced SVG for flat art, a fixed-resolution raster export for a photograph) and the copy as authored DOM. Design-agnostic -- three worked examples (A/B/C) remain as the TRACER's regression suite.",
- "deliverable": "a reusable PNG -> website pipeline packaged as a repo, plus a local studio (upload -> site). TWO deliverables per job: the traced SVG art master, and the site (which inlines a raster hero when the artwork is photographic). A/B/C are the tracer's regression suite: fixed 1024x768 POSTERS (layout: poster) scored on pixels exactly as before.",
- "status": "DONE and verified. A/B/C posters build clean and qa/verify.sh scores each real Astro dist/index.html (2.71 / 2.76 / 2.99 PASS). The studio builds a real responsive page end to end (doctor fixtures: light/montiva/antho PASS; doctor polarity PASS; doctor regress PASS). The generated page has a real visual design layer (type scale, sticky header with brand/nav/actions groups, hero scrim over a hero-band-cropped backdrop, section title rows, card grids, columns, alternating surfaces) and groups a name into one section however the reading order interleaves. A design review with gemini-3.1-pro was run twice against two real uploads; the ghosting it found first is fixed, and the composition defects it found second (hero crop, ghost CTA plate, header layout, flat cards, hero row order, stray badge section, contact panel hoisting, badge/button shape variance) are all fixed and guarded. Re-running qa/mkart.py from the committed PARAMS reproduces the shipped SVGs byte-for-byte (deterministic pipeline; the new blank_rects path is opt-in via the design config, so A/B/C are untouched).",
- "north_star": {
-  "what": "image in -> real website out. The reference PNG is INPUT; the shipped page never contains a copy of the reference PAGE. The hero backdrop is traced SVG geometry for flat artwork at the stage's own resolution, or a fixed-resolution WebP export otherwise -- a photograph, OR a flat design whose upload carries more resolution than the 1024 px stage (chosen by measurement -- app/heroart.py::wants_raster). The SVG art master is produced and shipped for every design either way.",
-  "not": "a pixel copy of the mockup. Pixel parity with the reference's TYPEFACE is deliberately not the target -- its residual was font substitution, which no sizing/weight/colour tuning removes.",
-  "three_measures": {
-   "artwork": "mean abs pixel diff over the ART REGION only (page-copy rects masked out) -- the tracer's job (studio/backend/app/verify.py). For a 'page' layout the art is scored by rendering the TRACED SVG alone at 1024x768, not by screenshotting the reflowing page (a page screenshot would measure layout, not tracing). A 'poster' (A/B/C) keeps scoring the page screenshot, which IS the artwork's frame. Its tail is reported as `art_p95`: the 95th percentile of the same diff over the pixels the eye reads as artwork (not the design's own flat ground), because the mean is dominated by whatever is flat and large -- a real dark design scored 1.37 while its artwork p95 was 17.3 against 4.7 for a raster of the same hero. Pinned per fixture by art_p95_max.",
-   "shipped_hero": "for a non-vector backdrop the page ships a raster, not the SVG, so `hero_fidelity` measures that raster against the reference band (removed rects masked out, so it measures the artwork and not the deliberate text removal). Reported per job as `hero_fidelity`; pinned per fixture by hero_max. Without it the raster path -- the thing a visitor actually sees -- would be unguarded, because art_score measures the SVG master the page no longer shows.",
-   "website": "structure: landmarks, sections, one h1, resolving links, flow layout, reflow -- studio/backend/app/structure.py."
+  "task": "Design-to-site pipeline: turn a flat design PNG into a REAL website -- a responsive, semantic page in normal flow, with the artwork as the hero backdrop (traced SVG for flat art, a fixed-resolution raster export for a photograph) and the copy as authored DOM. Design-agnostic -- three worked examples (A/B/C) remain as the TRACER's regression suite.",
+  "deliverable": "a reusable PNG -> website pipeline packaged as a repo, plus a local studio (upload -> site). TWO deliverables per job: the traced SVG art master, and the site (which inlines a raster hero when the artwork is photographic). A/B/C are the tracer's regression suite: fixed 1024x768 POSTERS (layout: poster) scored on pixels exactly as before.",
+  "status": "DONE and verified. A/B/C posters build clean and qa/verify.sh scores each real Astro dist/index.html (2.71 / 2.76 / 2.99 PASS). The studio builds a real responsive page end to end (doctor fixtures: light/montiva/antho PASS; doctor polarity PASS; doctor regress PASS). The generated page has a real visual design layer (type scale, sticky header with brand/nav/actions groups, hero scrim over a hero-band-cropped backdrop, section title rows, card grids, columns, alternating surfaces) and groups a name into one section however the reading order interleaves. A design review with gemini-3.1-pro was run twice against two real uploads; the ghosting it found first is fixed, and the composition defects it found second (hero crop, ghost CTA plate, header layout, flat cards, hero row order, stray badge section, contact panel hoisting, badge/button shape variance) are all fixed and guarded. Re-running qa/mkart.py from the committed PARAMS reproduces the shipped SVGs byte-for-byte (deterministic pipeline; the new blank_rects path is opt-in via the design config, so A/B/C are untouched).",
+  "north_star": {
+    "what": "image in -> real website out. The reference PNG is INPUT; the shipped page never contains a copy of the reference PAGE. The hero backdrop is traced SVG geometry for flat artwork at the stage's own resolution, or a fixed-resolution WebP export otherwise -- a photograph, OR a flat design whose upload carries more resolution than the 1024 px stage (chosen by measurement -- app/heroart.py::wants_raster). The SVG art master is produced and shipped for every design either way.",
+    "not": "a pixel copy of the mockup. Pixel parity with the reference's TYPEFACE is deliberately not the target -- its residual was font substitution, which no sizing/weight/colour tuning removes.",
+    "three_measures": {
+      "artwork": "mean abs pixel diff over the ART REGION only (page-copy rects masked out) -- the tracer's job (studio/backend/app/verify.py). For a 'page' layout the art is scored by rendering the TRACED SVG alone at 1024x768, not by screenshotting the reflowing page (a page screenshot would measure layout, not tracing). A 'poster' (A/B/C) keeps scoring the page screenshot, which IS the artwork's frame. Its tail is reported as `art_p95`: the 95th percentile of the same diff over the pixels the eye reads as artwork (not the design's own flat ground), because the mean is dominated by whatever is flat and large -- a real dark design scored 1.37 while its artwork p95 was 17.3 against 4.7 for a raster of the same hero. Pinned per fixture by art_p95_max.",
+      "shipped_hero": "for a non-vector backdrop the page ships a raster, not the SVG, so `hero_fidelity` measures that raster against the reference band (removed rects masked out, so it measures the artwork and not the deliberate text removal). Reported per job as `hero_fidelity`; pinned per fixture by hero_max. Without it the raster path -- the thing a visitor actually sees -- would be unguarded, because art_score measures the SVG master the page no longer shows.",
+      "website": "structure: landmarks, sections, one h1, resolving links, flow layout, reflow -- studio/backend/app/structure.py."
+    },
+    "retired": "the text-metrics layer: measure_lines, measure_weight, sample_line_colors, ink_coverage, per-line hard-stop gradients, glow tuning, cap_top_offset placement, width-solved font sizes.",
+    "kept": "art colour sampling (sample_ink/sample_runs/sample_fill/sample_plate_fill/sample_contrast), refine_button_bbox/measure_button_bbox/snap_to_ink -- now only for the palette and the tracer's exclusion rects.",
+    "page_shapes": {
+      "page": "responsive semantic website, art as the hero backdrop via the <!--ART--> splice. Default for scaffolded designs and what the studio emits.",
+      "poster": "the historical fixed 1024x768 stage. A/B/C use it, which is why qa/verify.sh still scores the traced art unchanged."
+    },
+    "structure_merge": "The vision model tags a section on EVERY block, so group_sections groups all blocks of a name into one section (a name is one section), ordered by position. Merging only ADJACENT runs was not enough: at a given y the reading order can interleave two sections (a testimonial's author line beside the contact band), which fragmented one section into several. A landing page with two feature bands keeps both bands inside one section and renders each as its own title+grid band. Without it a 75-block landing page shipped 75 <section> elements; with it, 3 (features/testimonials/contact) plus header/hero/footer. Guarded by `doctor polarity`.",
+    "design_layer": "The generated page is more than extracted content: build_page_css emits a role-based type scale, a sticky header (brand left, nav centred, phone+button right -- three grid groups, not one flex row), a hero with the traced art under a directional scrim, section title rows with action links, card grids with hover, plain column bands, and alternating section surfaces (--card near-white with --shadow over a --tint band). palette() samples the reference's colours but enforces contrast (a design's headline can be a dark navy because it sat over a light hero panel; using it as body ink on a dark page made the whole page unreadable) and prefers the CTA's fill as the accent so buttons and highlights agree. Testimonials render as blockquote cards. Rows are emitted where they actually sit (a fine-print line drawn under the buttons stays under them); side-by-side buttons are ordered left-to-right (_row_order -- reading order sorts by top edge, which swaps a pair drawn two pixels apart). A one-line-item band renders as rules, not card chrome.",
+    "hero_band": "The traced SVG is the WHOLE mockup, so splicing it whole puts the section below the hero into the backdrop -- the next section's cards and icons read as clutter behind the copy. generate.hero_band() computes the mockup's hero slice (just below the mockup's own header -- the page renders its own header, so the mockup's nav bar must not appear in the backdrop -- down to where the next section starts) and writes it to content.hero_band; gen-page.mjs narrows the spliced SVG's viewBox to it and uses preserveAspectRatio='xMidYMid slice'. The SVG FILE is untouched, so the art metric still renders the full artwork. TWO things are critical. (a) It deliberately OVERSHOOTS that boundary by HERO_BAND_OVERSHOW (0.6) and dissolves the extra with a bottom gradient on .hero-art::after: cutting exactly at the boundary is what made photographs look soft, because the hero box is far taller than the band and 'slice' scales the art to COVER it (a 311px band in a 785px hero is magnified 2.52x and shows only 40% of the traced width -- 5x on a 2x display; at band 498 it is 1.58x). (b) It is TRIMMED to HERO_BAND_ASPECT (1.75), symmetrically about the hero copy. A hero-only page has no section below it, so (a) never fires and the band ran to the bottom of the stage -- 128px of ingest letterbox, the mockup's nav bar and an empty strip -- inside a 1.33-aspect band when the hero box's aspect is 1.75. `cover` then magnified the art 1.37x at 1400px and 1.88x at 1920px, cropping a quarter of it away and showing an oversized, off-centre composition (a real complaint). Only shrinking is done: a band already wider than the target is left alone, because reaching the target from below would pull in the next section. The header offset is capped (HERO_BAND_HEADER_GAP_MAX 12px) because a loose model header box would otherwise crop hero art. Guarded by doctor polarity: 'hero backdrop band avoids magnifying the art' and 'hero-only page: band trimmed to the box's aspect'.",
+    "exclusion_rects": "The tracer's exclusion rects are EVERY text block the model found -- the page copy that becomes DOM and the text inside the artwork (step callouts, a device mockup's own wordmark). Artwork-internal text is not emitted as DOM, but leaving it unblanked bakes a ghost of the word into the hero backdrop where the real copy sits, which is the ugliest defect the page can have. A text block is not art: it is blanked either way and mkart.py inpaints it from the surrounding pixels, so no hard hole appears. Guarded by doctor polarity ('exclusion rects cover artwork text').",
+    "blank_rects": "A CTA button is a solid PLATE, and on a light ground the exclusion INPAINTS glyph ink rather than dropping luminance bands -- so blanking the label left the plate, ghosting under the DOM button ('an empty ghost button'). generate.button_rects() feeds mkart.build(blank_rects=...), rectangles removed wholesale. A button is chrome, never artwork. This is exclusion policy, not tracing math -- doctor regress confirms A/B/C are byte-identical.",
+    "studio_trace_point": "generate.write_all pins the studio's trace params in the per-job designs/<id>.json. bands=96, up=2 (the newdesign.py scaffold defaults to 48, so the studio had been tracing at HALF the resolution of the tuned A/B/C designs; 96 is a measured knee -- 48->96 improves the masked art mean 4.244 -> 4.144 and 192/384 are WORSE, so do not 'max out' bands). turdsize=12, not A/B/C's 2: 2 is tuned for flat art that wants every speck, and on photographs it is pure waste (-28% to -42% payload at an unchanged score). 30 is too far -- it eats fine line art (1.72 -> 1.91). chroma_cells=2 / chroma_gate=16 / chroma_smooth=4 -- see chroma_subbanding. The trace BOX stays the full frame: cropping it to the hero band measures worse (5.37 vs 4.14 at 96 bands) because mkart's band edges are percentiles of the box's own histogram, so a hero-only box re-bins the image against the hero's tonal range. hero_band crops what is SHOWN (the viewBox), not what is traced. Studio-only: A/B/C's designs/*.json and params are untouched and their SVGs regenerate byte-identically.",
+    "studio_nav_links": "The vision model tags EVERY header/footer link `cta`, so a nav row (Home/Services/About) was indistinguishable from a real button (Book Service) and rendered as a stack of boxed buttons. generate._nav_cta_ids classifies a short cta in a row of >=3 short ctas as a nav link UNLESS it has a solid fill (the real button keeps its fill; nav links on a busy row come back outline=True with a contaminated fill). _cta_html emits class='navlink' for them; a run of them in a column is wrapped in .navlink-row so it flows horizontally. Nav-vs-button is a ROW-level decision needing BOTH shape and fill.",
+    "dark_ghosting_fixed": "RESOLVED. On a DARK design with glowing COLORED type (AntHosting: green on near-black) the mockup's own headline was traced into the backdrop as a ghost behind the DOM copy -- the dark-path exclusion drops a band only when its median colour inside the rect exceeds text_lum_max (200), which assumes near-white type; a colored/dim fringe (lum ~105) never clears it. Fixed by reusing the LIGHT path's inpainting for dark designs too: generate.write_all now sends the text rects through blank_rects AND sets text_bg_lum to the design's ground for a dark background, so mkart finds ink by local contrast (polarity-agnostic) and fills it from the surroundings. The traced ghost disappears (u1 art 0.89->0.88, page whole 9.19->9.05). Ruled out by measurement: bigger exclusion rects and a per-rect local-background band-drop both made it worse. A/B/C never set text_bg_lum, so they stay byte-identical.",
+    "colour_blind_inpaint_fixed": "RESOLVED. The light-path inpaint marked ink with |lum - bg_local| > 15, where lum is the MEAN of RGB, so a saturated colour near the ground was invisible: the anthotype wordmark's green 'type' (mean lum ~119 on a ~220 ground) was traced in full and its glow is the same green, so the stroke core read as background. mkart.build now marks ink by MAX-CHANNEL RGB distance against a PER-CHANNEL local background, and dilates 3*up instead of 2*up so the fill's nearest non-ink source is true background, not the glyph's own anti-aliased ring. The anthotype wordmark region goes to 0 green ghost pixels; the page whole mean drops 24.13 -> 19.16. Opt-in (text_bg_lum) so A/B/C are byte-identical.",
+    "hero_labels_not_copy": "generate._drop_artwork_labels removes a hero illustration's own captions from the hero DOM. On the anthotype upload the model tagged EVERY block part:page, so the diagram's captions ('Generate', 'Time', 'Refine and grow meaning', a device-screen logo, the '1/2/3 Image/Sunlight/Plant Pigment' legend) became DOM paragraphs in the hero copy column. A short other/brand line that overlaps the headline/subhead band, or sits clear of the lede's right edge, is a caption, not copy. Drops 12 labels on anthotype, 0 on Montiva. The exclusion rects still use ALL blocks, so the labels are still blanked out of the traced art.",
+    "footer_nav_composition": "generate._lift_bottom_nav moves a bottom-of-page nav-link run (tagged contact by the model because it sits under the contact band) into the footer. generate._footer_html renders the footer as a bar -- brand / footer-nav / footer-meta -- instead of a wall of equal-weight links.",
+    "known_limits": "A PHOTOGRAPH cannot be reproduced sharply by flat-filled vector regions, and this is a limit of the REPRESENTATION, not of the parameters. Measured on the worst photographic upload, every knob is flat: bands 96->192 gives 3.50->3.43, chroma_gate 16->0 gives 3.50->3.45, up 2->4 gives 3.50->3.43 while taking 888s instead of 84s; p95 sits at 12.67 across nearly every configuration. The residual is concentrated entirely in the hero photograph (mean 10.62, p95 27.07) while the rest of the page is 0.2-3.1. A photo has effectively continuous tone; ~200 flat regions cannot represent it. RESOLVED by changing the representation: a photographic hero ships a fixed-resolution WebP (app/heroart.py) instead of the traced SVG, at hero_fidelity 1.3-1.6 against 3.4-3.5 for the SVG master. Ruled out along the way, all measured: SVG gradient fills (montiva 2.20 -> 4.45), per-component flat colour (2.20 -> 2.21), harmonic/diffusion inpainting (4.19 -> 4.54), and coherent segmentation (k-means in Lab + connected components reaches 0.89 vs banding's 2.20 in a like-for-like paint sim, but needs ~214k regions / ~60MB SVG; grid quantise+merge = 8.69; transitive union-find merge collapses 214k -> 18 regions). Do NOT re-litigate the tracer's knobs against a photograph. Line art and flat vector designs are essentially exact and keep the traced SVG. Also: icons (card icons, star rows, map pins) are artwork pixels, not DOM, and a card's icon has no fixed position once the layout reflows, so recovering them as real assets is a separate feature. Artwork-internal labels are blanked along with the page copy (right for the page, but it removes the illustration's own captions); keeping them re-introduces ghosting wherever a traced label lands behind DOM text.",
+    "raster_hero": "The raster hero is built in three steps, and each has a failure mode that the art metric cannot see (art_score masks the text rects and measures the SVG). (1) app/heroart.py::wants_raster decides between the traced SVG and a raster export. TWO independent arms, either sufficient: (a) is_photographic samples how much colour survives area-averaging the hero band to a fixed 64x32 grid with 5-bit channels -- flat art scores 29-91, photographs 245-358, cut at 150, biased toward rasterising because misclassifying flat art only costs bytes while the reverse produces the smeared backdrop this exists to fix; (b) native_factor (== 1/stage_scale, capped at 3) is >= MIN_NATIVE_GAIN (1.2), i.e. the upload carries meaningfully more resolution than the 1024 px stage, so the traced SVG (bounded by the stage) would be magnified full-bleed on any desktop wider than 1024 while the raster is ~1:1. Arm (b) is what caught a real dark dashboard: colour score 113 (under the cut, so the old rule kept the SVG) while its artwork-region p95 was 17.3 against 4.7 for a raster of the same hero, with 1.55x of its linear detail unused. The reason string is recorded on the job (hero_reason). (2) The image is cropped from the ORIGINAL UPLOAD, not the normalised 1024x768 reference: normalize() aspect-fits every upload onto the stage and throws away real resolution (a real upload went 1672x941 -> 1024x576, 61% of its linear detail). native_reference writes a stage-sized reference at the upload's own scale and returns a single factor `m`; mkart is run against a generated designs/<id>-hi.json whose box and rects are the stage geometry times `m`. (3) The image is taken from the tracer's PREPARED (text-inpainted) image via `mkart --prepared-out`, never a raw crop: a raw crop bakes the mockup's own nav bar, headline and buttons into the backdrop, where they sit behind the real DOM copy as ghosts of themselves. This was caught by looking at the rendered page, not by any score. The export is inlined into the page as a data URI (so the page stays one file that renders over file://, which is how QA screenshots and the studio preview load it) and also shipped standalone in the zip. object-fit: cover on the <img> is the exact equivalent of the SVG's preserveAspectRatio='... slice'. Guarded by doctor polarity (the classifier, the resolution arm, and the native-resolution crop) and each fixture's hero_kind/hero_max.",
+    "chroma_subbanding": "mkart cut bands on LUMINANCE only and painted each with ONE median RGB, so a band spanning blue sky, green foliage and brown wood got their average -- that single decision is both the lost colour and the posterisation a design review reported on real uploads. chroma_cells=2 splits a chromatically MIXED band (spread > chroma_gate) along the two opponent chroma axes (CIELAB a*/b*-like). Splitting PER BAND, not one global partition, is what keeps it correct: every emitted mask is still {lum >= e_i} AND {chroma in cell}, a solid nested region, so the cumulative-mask trick and potrace's despeckling both survive; painted in ascending i, the last mask containing a pixel is (its band, its cell). chroma_smooth is what makes it AFFORDABLE: the cell boundaries become the traced contours, so thresholding raw per-pixel chroma gives a ragged edge and potrace spends thousands of points on it -- unsmoothed, montiva went 3.8 -> 16.9 MB. Smoothing takes it to 5.5 MB for most of the quality. Measured (art mean / p95 / SVG), turdsize 12 throughout: montiva 4.18/17.67/2.7MB -> 3.47/12.67/5.5MB, anthotype 2.45/13.00/3.7MB -> 2.04/8.67/6.0MB, anthosting 1.74/5.00/3.9MB -> 1.65/4.67/4.5MB. Two of three are SMALLER and better than what shipped. p95 is the number that matters -- it is the blotchiness the eye reads as posterisation, and the mean alone hides it. Guarded: chroma is off by default and A/B/C regenerate byte-identically.",
+    "blank_seam": "art_score is measured OUTSIDE the text rects, so it cannot see a fill that went wrong inside them. verify.blank_seams measures the absolute tonal step (0-255 intensity units) the trace leaves at the edge of every rect it had to fill -- text AND blank (a CTA's plate), via _removed_mask. Absolute, not a ratio, so it stays meaningful on a nearly flat design. Measured on the RENDER, not the diff: on the diff it would merely re-report that the reference has text there, which is true of every design. Reported per job as `blank_seam`, warned above 12, pinned per fixture by seam_max (negative-tested: forcing 0 fails montiva with 'blank seam 4/255 > max 0'). Numpy-only -- the studio venv runs the scorer and pins no scipy. Reads 3.3-3.7 on montiva and 0.7 on the clean designs.",
+    "corrections_this_session": [
+      "A blanked button rect is NOT a visible artefact. Reviewing the STANDALONE traced SVG shows a white plate where each CTA was; the BUILT PAGE draws the DOM button over it. Judging blanking on the bare SVG produces a false defect -- this caused a rejected fix (a harmonic inpaint 'fix' that measured worse).",
+      "whole_score being ~14x art_score is EXPECTED, not a blind metric: the text rects are ~28% of the stage and hold crisp type in the reference and nothing in the trace, so the unmasked mean is dominated by copy the page deliberately replaces. montiva's biggest single diff blob (1416px) lies 0% inside the mask.",
+      "Harmonic (diffusion) inpainting of the text rects is a REGRESSION, measured: montiva 4.19 -> 4.54 and 3.8 -> 9.3 MB. The tracer has to BAND whatever the fill produces, so a smooth gradient across a big rect means every band edge crosses it and the rect shatters into slivers. A flat plate is dull but traces cleanly. mkart._hole_fill is kept but NOT the default (inpaint='nearest'), with the numbers recorded."
+    ]
   },
-  "retired": "the text-metrics layer: measure_lines, measure_weight, sample_line_colors, ink_coverage, per-line hard-stop gradients, glow tuning, cap_top_offset placement, width-solved font sizes.",
-  "kept": "art colour sampling (sample_ink/sample_runs/sample_fill/sample_plate_fill/sample_contrast), refine_button_bbox/measure_button_bbox/snap_to_ink -- now only for the palette and the tracer's exclusion rects.",
-  "page_shapes": {
-   "page": "responsive semantic website, art as the hero backdrop via the <!--ART--> splice. Default for scaffolded designs and what the studio emits.",
-   "poster": "the historical fixed 1024x768 stage. A/B/C use it, which is why qa/verify.sh still scores the traced art unchanged."
+  "scores": {
+    "a": 2.71,
+    "b": 2.76,
+    "c": 2.99
   },
-  "structure_merge": "The vision model tags a section on EVERY block, so group_sections groups all blocks of a name into one section (a name is one section), ordered by position. Merging only ADJACENT runs was not enough: at a given y the reading order can interleave two sections (a testimonial's author line beside the contact band), which fragmented one section into several. A landing page with two feature bands keeps both bands inside one section and renders each as its own title+grid band. Without it a 75-block landing page shipped 75 <section> elements; with it, 3 (features/testimonials/contact) plus header/hero/footer. Guarded by `doctor polarity`.",
-  "design_layer": "The generated page is more than extracted content: build_page_css emits a role-based type scale, a sticky header (brand left, nav centred, phone+button right -- three grid groups, not one flex row), a hero with the traced art under a directional scrim, section title rows with action links, card grids with hover, plain column bands, and alternating section surfaces (--card near-white with --shadow over a --tint band). palette() samples the reference's colours but enforces contrast (a design's headline can be a dark navy because it sat over a light hero panel; using it as body ink on a dark page made the whole page unreadable) and prefers the CTA's fill as the accent so buttons and highlights agree. Testimonials render as blockquote cards. Rows are emitted where they actually sit (a fine-print line drawn under the buttons stays under them); side-by-side buttons are ordered left-to-right (_row_order -- reading order sorts by top edge, which swaps a pair drawn two pixels apart). A one-line-item band renders as rules, not card chrome.",
-  "hero_band": "The traced SVG is the WHOLE mockup, so splicing it whole puts the section below the hero into the backdrop -- the next section's cards and icons read as clutter behind the copy. generate.hero_band() computes the mockup's hero slice (just below the mockup's own header -- the page renders its own header, so the mockup's nav bar must not appear in the backdrop -- down to where the next section starts) and writes it to content.hero_band; gen-page.mjs narrows the spliced SVG's viewBox to it and uses preserveAspectRatio='xMidYMid slice'. The SVG FILE is untouched, so the art metric still renders the full artwork. TWO things are critical. (a) It deliberately OVERSHOOTS that boundary by HERO_BAND_OVERSHOW (0.6) and dissolves the extra with a bottom gradient on .hero-art::after: cutting exactly at the boundary is what made photographs look soft, because the hero box is far taller than the band and 'slice' scales the art to COVER it (a 311px band in a 785px hero is magnified 2.52x and shows only 40% of the traced width -- 5x on a 2x display; at band 498 it is 1.58x). (b) It is TRIMMED to HERO_BAND_ASPECT (1.75), symmetrically about the hero copy. A hero-only page has no section below it, so (a) never fires and the band ran to the bottom of the stage -- 128px of ingest letterbox, the mockup's nav bar and an empty strip -- inside a 1.33-aspect band when the hero box's aspect is 1.75. `cover` then magnified the art 1.37x at 1400px and 1.88x at 1920px, cropping a quarter of it away and showing an oversized, off-centre composition (a real complaint). Only shrinking is done: a band already wider than the target is left alone, because reaching the target from below would pull in the next section. The header offset is capped (HERO_BAND_HEADER_GAP_MAX 12px) because a loose model header box would otherwise crop hero art. Guarded by doctor polarity: 'hero backdrop band avoids magnifying the art' and 'hero-only page: band trimmed to the box's aspect'.",
-  "exclusion_rects": "The tracer's exclusion rects are EVERY text block the model found -- the page copy that becomes DOM and the text inside the artwork (step callouts, a device mockup's own wordmark). Artwork-internal text is not emitted as DOM, but leaving it unblanked bakes a ghost of the word into the hero backdrop where the real copy sits, which is the ugliest defect the page can have. A text block is not art: it is blanked either way and mkart.py inpaints it from the surrounding pixels, so no hard hole appears. Guarded by doctor polarity ('exclusion rects cover artwork text').",
-  "blank_rects": "A CTA button is a solid PLATE, and on a light ground the exclusion INPAINTS glyph ink rather than dropping luminance bands -- so blanking the label left the plate, ghosting under the DOM button ('an empty ghost button'). generate.button_rects() feeds mkart.build(blank_rects=...), rectangles removed wholesale. A button is chrome, never artwork. This is exclusion policy, not tracing math -- doctor regress confirms A/B/C are byte-identical.",
-  "studio_trace_point": "generate.write_all pins the studio's trace params in the per-job designs/<id>.json. bands=96, up=2 (the newdesign.py scaffold defaults to 48, so the studio had been tracing at HALF the resolution of the tuned A/B/C designs; 96 is a measured knee -- 48->96 improves the masked art mean 4.244 -> 4.144 and 192/384 are WORSE, so do not 'max out' bands). turdsize=12, not A/B/C's 2: 2 is tuned for flat art that wants every speck, and on photographs it is pure waste (-28% to -42% payload at an unchanged score). 30 is too far -- it eats fine line art (1.72 -> 1.91). chroma_cells=2 / chroma_gate=16 / chroma_smooth=4 -- see chroma_subbanding. The trace BOX stays the full frame: cropping it to the hero band measures worse (5.37 vs 4.14 at 96 bands) because mkart's band edges are percentiles of the box's own histogram, so a hero-only box re-bins the image against the hero's tonal range. hero_band crops what is SHOWN (the viewBox), not what is traced. Studio-only: A/B/C's designs/*.json and params are untouched and their SVGs regenerate byte-identically.",
-  "studio_nav_links": "The vision model tags EVERY header/footer link `cta`, so a nav row (Home/Services/About) was indistinguishable from a real button (Book Service) and rendered as a stack of boxed buttons. generate._nav_cta_ids classifies a short cta in a row of >=3 short ctas as a nav link UNLESS it has a solid fill (the real button keeps its fill; nav links on a busy row come back outline=True with a contaminated fill). _cta_html emits class='navlink' for them; a run of them in a column is wrapped in .navlink-row so it flows horizontally. Nav-vs-button is a ROW-level decision needing BOTH shape and fill.",
-  "dark_ghosting_fixed": "RESOLVED. On a DARK design with glowing COLORED type (AntHosting: green on near-black) the mockup's own headline was traced into the backdrop as a ghost behind the DOM copy -- the dark-path exclusion drops a band only when its median colour inside the rect exceeds text_lum_max (200), which assumes near-white type; a colored/dim fringe (lum ~105) never clears it. Fixed by reusing the LIGHT path's inpainting for dark designs too: generate.write_all now sends the text rects through blank_rects AND sets text_bg_lum to the design's ground for a dark background, so mkart finds ink by local contrast (polarity-agnostic) and fills it from the surroundings. The traced ghost disappears (u1 art 0.89->0.88, page whole 9.19->9.05). Ruled out by measurement: bigger exclusion rects and a per-rect local-background band-drop both made it worse. A/B/C never set text_bg_lum, so they stay byte-identical.",
-  "colour_blind_inpaint_fixed": "RESOLVED. The light-path inpaint marked ink with |lum - bg_local| > 15, where lum is the MEAN of RGB, so a saturated colour near the ground was invisible: the anthotype wordmark's green 'type' (mean lum ~119 on a ~220 ground) was traced in full and its glow is the same green, so the stroke core read as background. mkart.build now marks ink by MAX-CHANNEL RGB distance against a PER-CHANNEL local background, and dilates 3*up instead of 2*up so the fill's nearest non-ink source is true background, not the glyph's own anti-aliased ring. The anthotype wordmark region goes to 0 green ghost pixels; the page whole mean drops 24.13 -> 19.16. Opt-in (text_bg_lum) so A/B/C are byte-identical.",
-  "hero_labels_not_copy": "generate._drop_artwork_labels removes a hero illustration's own captions from the hero DOM. On the anthotype upload the model tagged EVERY block part:page, so the diagram's captions ('Generate', 'Time', 'Refine and grow meaning', a device-screen logo, the '1/2/3 Image/Sunlight/Plant Pigment' legend) became DOM paragraphs in the hero copy column. A short other/brand line that overlaps the headline/subhead band, or sits clear of the lede's right edge, is a caption, not copy. Drops 12 labels on anthotype, 0 on Montiva. The exclusion rects still use ALL blocks, so the labels are still blanked out of the traced art.",
-  "footer_nav_composition": "generate._lift_bottom_nav moves a bottom-of-page nav-link run (tagged contact by the model because it sits under the contact band) into the footer. generate._footer_html renders the footer as a bar -- brand / footer-nav / footer-meta -- instead of a wall of equal-weight links.",
-  "known_limits": "A PHOTOGRAPH cannot be reproduced sharply by flat-filled vector regions, and this is a limit of the REPRESENTATION, not of the parameters. Measured on the worst photographic upload, every knob is flat: bands 96->192 gives 3.50->3.43, chroma_gate 16->0 gives 3.50->3.45, up 2->4 gives 3.50->3.43 while taking 888s instead of 84s; p95 sits at 12.67 across nearly every configuration. The residual is concentrated entirely in the hero photograph (mean 10.62, p95 27.07) while the rest of the page is 0.2-3.1. A photo has effectively continuous tone; ~200 flat regions cannot represent it. RESOLVED by changing the representation: a photographic hero ships a fixed-resolution WebP (app/heroart.py) instead of the traced SVG, at hero_fidelity 1.3-1.6 against 3.4-3.5 for the SVG master. Ruled out along the way, all measured: SVG gradient fills (montiva 2.20 -> 4.45), per-component flat colour (2.20 -> 2.21), harmonic/diffusion inpainting (4.19 -> 4.54), and coherent segmentation (k-means in Lab + connected components reaches 0.89 vs banding's 2.20 in a like-for-like paint sim, but needs ~214k regions / ~60MB SVG; grid quantise+merge = 8.69; transitive union-find merge collapses 214k -> 18 regions). Do NOT re-litigate the tracer's knobs against a photograph. Line art and flat vector designs are essentially exact and keep the traced SVG. Also: icons (card icons, star rows, map pins) are artwork pixels, not DOM, and a card's icon has no fixed position once the layout reflows, so recovering them as real assets is a separate feature. Artwork-internal labels are blanked along with the page copy (right for the page, but it removes the illustration's own captions); keeping them re-introduces ghosting wherever a traced label lands behind DOM text.",
-  "raster_hero": "The raster hero is built in three steps, and each has a failure mode that the art metric cannot see (art_score masks the text rects and measures the SVG). (1) app/heroart.py::wants_raster decides between the traced SVG and a raster export. TWO independent arms, either sufficient: (a) is_photographic samples how much colour survives area-averaging the hero band to a fixed 64x32 grid with 5-bit channels -- flat art scores 29-91, photographs 245-358, cut at 150, biased toward rasterising because misclassifying flat art only costs bytes while the reverse produces the smeared backdrop this exists to fix; (b) native_factor (== 1/stage_scale, capped at 3) is >= MIN_NATIVE_GAIN (1.2), i.e. the upload carries meaningfully more resolution than the 1024 px stage, so the traced SVG (bounded by the stage) would be magnified full-bleed on any desktop wider than 1024 while the raster is ~1:1. Arm (b) is what caught a real dark dashboard: colour score 113 (under the cut, so the old rule kept the SVG) while its artwork-region p95 was 17.3 against 4.7 for a raster of the same hero, with 1.55x of its linear detail unused. The reason string is recorded on the job (hero_reason). (2) The image is cropped from the ORIGINAL UPLOAD, not the normalised 1024x768 reference: normalize() aspect-fits every upload onto the stage and throws away real resolution (a real upload went 1672x941 -> 1024x576, 61% of its linear detail). native_reference writes a stage-sized reference at the upload's own scale and returns a single factor `m`; mkart is run against a generated designs/<id>-hi.json whose box and rects are the stage geometry times `m`. (3) The image is taken from the tracer's PREPARED (text-inpainted) image via `mkart --prepared-out`, never a raw crop: a raw crop bakes the mockup's own nav bar, headline and buttons into the backdrop, where they sit behind the real DOM copy as ghosts of themselves. This was caught by looking at the rendered page, not by any score. The export is inlined into the page as a data URI (so the page stays one file that renders over file://, which is how QA screenshots and the studio preview load it) and also shipped standalone in the zip. object-fit: cover on the <img> is the exact equivalent of the SVG's preserveAspectRatio='... slice'. Guarded by doctor polarity (the classifier, the resolution arm, and the native-resolution crop) and each fixture's hero_kind/hero_max.",
-  "chroma_subbanding": "mkart cut bands on LUMINANCE only and painted each with ONE median RGB, so a band spanning blue sky, green foliage and brown wood got their average -- that single decision is both the lost colour and the posterisation a design review reported on real uploads. chroma_cells=2 splits a chromatically MIXED band (spread > chroma_gate) along the two opponent chroma axes (CIELAB a*/b*-like). Splitting PER BAND, not one global partition, is what keeps it correct: every emitted mask is still {lum >= e_i} AND {chroma in cell}, a solid nested region, so the cumulative-mask trick and potrace's despeckling both survive; painted in ascending i, the last mask containing a pixel is (its band, its cell). chroma_smooth is what makes it AFFORDABLE: the cell boundaries become the traced contours, so thresholding raw per-pixel chroma gives a ragged edge and potrace spends thousands of points on it -- unsmoothed, montiva went 3.8 -> 16.9 MB. Smoothing takes it to 5.5 MB for most of the quality. Measured (art mean / p95 / SVG), turdsize 12 throughout: montiva 4.18/17.67/2.7MB -> 3.47/12.67/5.5MB, anthotype 2.45/13.00/3.7MB -> 2.04/8.67/6.0MB, anthosting 1.74/5.00/3.9MB -> 1.65/4.67/4.5MB. Two of three are SMALLER and better than what shipped. p95 is the number that matters -- it is the blotchiness the eye reads as posterisation, and the mean alone hides it. Guarded: chroma is off by default and A/B/C regenerate byte-identically.",
-  "blank_seam": "art_score is measured OUTSIDE the text rects, so it cannot see a fill that went wrong inside them. verify.blank_seams measures the absolute tonal step (0-255 intensity units) the trace leaves at the edge of every rect it had to fill -- text AND blank (a CTA's plate), via _removed_mask. Absolute, not a ratio, so it stays meaningful on a nearly flat design. Measured on the RENDER, not the diff: on the diff it would merely re-report that the reference has text there, which is true of every design. Reported per job as `blank_seam`, warned above 12, pinned per fixture by seam_max (negative-tested: forcing 0 fails montiva with 'blank seam 4/255 > max 0'). Numpy-only -- the studio venv runs the scorer and pins no scipy. Reads 3.3-3.7 on montiva and 0.7 on the clean designs.",
-  "corrections_this_session": [
-   "A blanked button rect is NOT a visible artefact. Reviewing the STANDALONE traced SVG shows a white plate where each CTA was; the BUILT PAGE draws the DOM button over it. Judging blanking on the bare SVG produces a false defect -- this caused a rejected fix (a harmonic inpaint 'fix' that measured worse).",
-   "whole_score being ~14x art_score is EXPECTED, not a blind metric: the text rects are ~28% of the stage and hold crisp type in the reference and nothing in the trace, so the unmasked mean is dominated by copy the page deliberately replaces. montiva's biggest single diff blob (1416px) lies 0% inside the mask.",
-   "Harmonic (diffusion) inpainting of the text rects is a REGRESSION, measured: montiva 4.19 -> 4.54 and 3.8 -> 9.3 MB. The tracer has to BAND whatever the fill produces, so a smooth gradient across a big rect means every band edge crosses it and the rect shatters into slivers. A flat plate is dull but traces cleanly. mkart._hole_fill is kept but NOT the default (inpaint='nearest'), with the numbers recorded."
-  ]
- },
- "scores": {
-  "a": 2.71,
-  "b": 2.76,
-  "c": 2.99
- },
- "scores_conversation_start": {
-  "a": 12.17,
-  "b": 16.92,
-  "c": 15.09
- },
- "pct_pixels_over_30": {
-  "a": 1.13,
-  "b": 1.59,
-  "c": 1.57
- },
- "metric": "A/B/C posters: mean abs pixel diff over the 1024x768 stage vs the reference PNG (lower = closer). Studio pages: art-region pixel fidelity + a structural read of the built DOM (two measures, not one).",
- "realistic_floor": "~3.0-3.4. The band-paint oracle beats the SVG render mainly on A and C because their bright bands are fragmented into 1-5px specks (78.9% of A bright ink, 57.2% of C) that vector tracing reproduces poorly; B is 26.0% and its oracle and render nearly agree. Raising `up` recovers this (A up=6 -> 3.67) at linear cost in file size.",
- "breakthrough": "the art layer is no longer hand-authored SVG shapes: it is real vector geometry recovered from the reference with potrace (qa/mkart.py), emitted through the normal page pipeline. Cut art error ~3-4x.",
- "pipeline": "pipeline/ (lib/designs.mjs is the design registry; designs/*.json is per-design config)",
- "outputs": "this repo",
- "python": "pipeline/.venv/bin/python (created by bootstrap.sh)",
- "node_path": "the node on PATH",
- "tools_installed": {
-  "potrace": "1.16 (brew) -- the only external tool needed"
- },
- "stage": [
-  1024,
-  768
- ],
- "refs": {
-  "a": "pipeline/qa/ref-a.png",
-  "b": "pipeline/qa/ref-b.png",
-  "c": "pipeline/qa/ref-c.png",
-  "note": "the original design PNGs live in the repo as pipeline/qa/ref-{a,b,c}.png; the old dev-tree path under assets/teaser/ no longer applies"
- },
- "variant_dirs": {
-  "a": "sites/variant-a",
-  "b": "sites/variant-b",
-  "c": "sites/variant-c"
- },
- "previews": {
-  "a": 4173,
-  "b": 4174,
-  "c": 4175
- },
- "builds": {
-  "a": "ok",
-  "b": "ok",
-  "c": "ok"
- },
- "art_params": {
-  "a": {
-   "box": [
-    418,
-    0,
+  "scores_conversation_start": {
+    "a": 12.17,
+    "b": 16.92,
+    "c": 15.09
+  },
+  "pct_pixels_over_30": {
+    "a": 1.13,
+    "b": 1.59,
+    "c": 1.57
+  },
+  "metric": "A/B/C posters: mean abs pixel diff over the 1024x768 stage vs the reference PNG (lower = closer). Studio pages: art-region pixel fidelity + a structural read of the built DOM (two measures, not one).",
+  "realistic_floor": "~3.0-3.4. The band-paint oracle beats the SVG render mainly on A and C because their bright bands are fragmented into 1-5px specks (78.9% of A bright ink, 57.2% of C) that vector tracing reproduces poorly; B is 26.0% and its oracle and render nearly agree. Raising `up` recovers this (A up=6 -> 3.67) at linear cost in file size.",
+  "breakthrough": "the art layer is no longer hand-authored SVG shapes: it is real vector geometry recovered from the reference with potrace (qa/mkart.py), emitted through the normal page pipeline. Cut art error ~3-4x.",
+  "pipeline": "pipeline/ (lib/designs.mjs is the design registry; designs/*.json is per-design config)",
+  "outputs": "this repo",
+  "python": "pipeline/.venv/bin/python (created by bootstrap.sh)",
+  "node_path": "the node on PATH",
+  "tools_installed": {
+    "potrace": "1.16 (brew) -- the only external tool needed"
+  },
+  "stage": [
     1024,
-    742
-   ],
-   "bands": 96,
-   "up": 2,
-   "turdsize": 2,
-   "alphamax": 0.0,
-   "opttol": 0.0,
-   "exclude_text": true,
-   "text_lum_max": 200.0,
-   "cumulative": true
-  },
-  "b": {
-   "box": [
-    0,
-    46,
-    1024,
-    726
-   ],
-   "bands": 24,
-   "up": 4,
-   "turdsize": 2,
-   "alphamax": 0.0,
-   "opttol": 0.0,
-   "exclude_text": true,
-   "text_lum_max": 200.0,
-   "cumulative": true
-  },
-  "c": {
-   "box": [
-    0,
-    78,
-    1024,
-    742
-   ],
-   "bands": 96,
-   "up": 2,
-   "turdsize": 2,
-   "alphamax": 0.0,
-   "opttol": 0.0,
-   "exclude_text": true,
-   "text_lum_max": 200.0,
-   "cumulative": true
-  }
- },
- "open_lead": {
-  "summary": "The art layer loses 5-8 of error between qa/mkart.py output and the browser.",
-  "evidence": [
-   "qa/artrecon.py band-paint reconstruction scores 1.2-1.8",
-   "the same bands emitted as SVG and rendered by Chrome score 7.3-10.1"
+    768
   ],
-  "ruled_out": [
-   "representation error (opttol 0.02-0.25, alphamax 0-1, prec 0-3 all <0.02)",
-   "minpx (0 px dropped on b)",
-   "band paint order (already darkest-first)"
+  "refs": {
+    "a": "pipeline/qa/ref-a.png",
+    "b": "pipeline/qa/ref-b.png",
+    "c": "pipeline/qa/ref-c.png",
+    "note": "the original design PNGs live in the repo as pipeline/qa/ref-{a,b,c}.png; the old dev-tree path under assets/teaser/ no longer applies"
+  },
+  "variant_dirs": {
+    "a": "sites/variant-a",
+    "b": "sites/variant-b",
+    "c": "sites/variant-c"
+  },
+  "previews": {
+    "a": 4173,
+    "b": 4174,
+    "c": 4175
+  },
+  "builds": {
+    "a": "ok",
+    "b": "ok",
+    "c": "ok"
+  },
+  "art_params": {
+    "a": {
+      "box": [
+        418,
+        0,
+        1024,
+        742
+      ],
+      "bands": 96,
+      "up": 2,
+      "turdsize": 2,
+      "alphamax": 0.0,
+      "opttol": 0.0,
+      "exclude_text": true,
+      "text_lum_max": 200.0,
+      "cumulative": true
+    },
+    "b": {
+      "box": [
+        0,
+        46,
+        1024,
+        726
+      ],
+      "bands": 24,
+      "up": 4,
+      "turdsize": 2,
+      "alphamax": 0.0,
+      "opttol": 0.0,
+      "exclude_text": true,
+      "text_lum_max": 200.0,
+      "cumulative": true
+    },
+    "c": {
+      "box": [
+        0,
+        78,
+        1024,
+        742
+      ],
+      "bands": 96,
+      "up": 2,
+      "turdsize": 2,
+      "alphamax": 0.0,
+      "opttol": 0.0,
+      "exclude_text": true,
+      "text_lum_max": 200.0,
+      "cumulative": true
+    }
+  },
+  "open_lead": {
+    "summary": "The art layer loses 5-8 of error between qa/mkart.py output and the browser.",
+    "evidence": [
+      "qa/artrecon.py band-paint reconstruction scores 1.2-1.8",
+      "the same bands emitted as SVG and rendered by Chrome score 7.3-10.1"
+    ],
+    "ruled_out": [
+      "representation error (opttol 0.02-0.25, alphamax 0-1, prec 0-3 all <0.02)",
+      "minpx (0 px dropped on b)",
+      "band paint order (already darkest-first)"
+    ],
+    "suspect": "qa/mkart.py:_fmt() adds potrace's translate tx/ty to RELATIVE path deltas; a relative delta transforms as d*s with no offset. Verified by inspection.",
+    "caution": "respecting command case is correct SVG but drove the render white (mean lum 247 vs reference 16), so it interacts with something else -- likely the frame-plate subpaths or the translate(x0 y0) wrapper.",
+    "backup": "this repo/mkart-backup.py"
+  },
+  "verified_fixes": [
+    "qa/glyph.py:strip_frame_subpaths() -- potrace emits a frame-filling rectangle as the first subpath of a band; left in it painted an opaque black plate over the brand marks.",
+    "Stage radial-gradients double-counted glow already baked into the traced art. B .16/.10/.07 -> .02/.02/.03 alone took B 6.09 -> 5.01.",
+    "Art BOX widened to recover artwork the old box cut off (A's ring reaches x~363).",
+    "TEXT exclusion rects + text_lum_max=70 stop the trace baking a blurry copy of the DOM type under the real text, while keeping the dim glow behind it.",
+    "CSS_OVERRIDE='...' node gen-page.mjs <v> && ./qa.sh <v> is the reliable A/B path; qa/batch.py can disagree because it rebuilds from an older cached style block."
   ],
-  "suspect": "qa/mkart.py:_fmt() adds potrace's translate tx/ty to RELATIVE path deltas; a relative delta transforms as d*s with no offset. Verified by inspection.",
-  "caution": "respecting command case is correct SVG but drove the render white (mean lum 247 vs reference 16), so it interacts with something else -- likely the frame-plate subpaths or the translate(x0 y0) wrapper.",
-  "backup": "this repo/mkart-backup.py"
- },
- "verified_fixes": [
-  "qa/glyph.py:strip_frame_subpaths() -- potrace emits a frame-filling rectangle as the first subpath of a band; left in it painted an opaque black plate over the brand marks.",
-  "Stage radial-gradients double-counted glow already baked into the traced art. B .16/.10/.07 -> .02/.02/.03 alone took B 6.09 -> 5.01.",
-  "Art BOX widened to recover artwork the old box cut off (A's ring reaches x~363).",
-  "TEXT exclusion rects + text_lum_max=70 stop the trace baking a blurry copy of the DOM type under the real text, while keeping the dim glow behind it.",
-  "CSS_OVERRIDE='...' node gen-page.mjs <v> && ./qa.sh <v> is the reliable A/B path; qa/batch.py can disagree because it rebuilds from an older cached style block."
- ],
- "per_region_now": {
-  "a": {
-   "title": 14.31,
-   "coming": 13.56,
-   "tagline": 19.85,
-   "ant": 11.9,
-   "pods": 7.89,
-   "bgR": 3.36
+  "per_region_now": {
+    "a": {
+      "title": 14.31,
+      "coming": 13.56,
+      "tagline": 19.85,
+      "ant": 11.9,
+      "pods": 7.89,
+      "bgR": 3.36
+    },
+    "b": {
+      "brand": 8.82,
+      "title": 23.15,
+      "coming": 13.45,
+      "tagline": 10.8,
+      "cta": 10.77,
+      "pods": 4.67,
+      "bgTL": 3.6
+    },
+    "c": {
+      "brand": 10.15,
+      "title": 19.92,
+      "coming": 15.57,
+      "tagline": 15.54,
+      "ant": 13.43,
+      "pods": 7.24,
+      "bgR": 5.32
+    }
   },
-  "b": {
-   "brand": 8.82,
-   "title": 23.15,
-   "coming": 13.45,
-   "tagline": 10.8,
-   "cta": 10.77,
-   "pods": 4.67,
-   "bgTL": 3.6
+  "gotchas": [
+    "potrace fills BLACK: pass the desired band as white; do not invert.",
+    "potrace emits its own y-flip translate(0,H) scale(1,-1); keep the transform, never rewrite coords.",
+    "qa.sh screenshots over file:// -- no server; a stray http.server once served stale art.",
+    "qa/batch.py._scope must be brace-aware or multi-line overrides are silently dropped.",
+    "Cap batch grids at COLS*MAX_ROWS or cells come back blank and scores go bogus.",
+    "qa/geom.py writes qa/geom-<v>.png, not qa/render-<v>.png.",
+    "gen-{a,b}.mjs are legacy hand-art generators; re-running them overwrites the good {v}.svg."
+  ],
+  "next_priorities": [
+    "Studio PRODUCT surface is the biggest open gap (the user wants this hosted for other people): no job history or deep link in the UI (reload loses the download), no retry (a failed build re-uploads and pays for a SECOND vision call even though raw-blocks.json is cached for exactly that), no cancel (the button only clears React state), a queued job across a restart is never resubmitted and spins forever, studio/data/jobs is never pruned (~40MB/job, 5.2 GB on disk), and there is no StaticFiles mount so the UI cannot be served in production.",
+    "Photographic hero art: RESOLVED by shipping a raster export instead of the traced SVG (see north_star.raster_hero). Remaining follow-ups are product-level, not fidelity: move the inlined data URI to an external asset with a <picture>/AVIF fallback once the page is served over HTTP, and prune the per-job workspace.",
+    "Payload vs parity on the posters: `bands` (~1 KB gzip per 0.001 mean). See qa/sweep_up.py.",
+    "Icons (card icons, star rows, map pins) are artwork pixels, not DOM; recovering them as real assets is a separate feature.",
+    "Keep the gate green: `doctor gate` locally, .github/workflows/gate.yml in CI."
+  ],
+  "handoff_doc": "this repo/HANDOFF.md",
+  "art_blur_px": {
+    "a": 0,
+    "b": 0,
+    "c": 0
   },
-  "c": {
-   "brand": 10.15,
-   "title": 19.92,
-   "coming": 15.57,
-   "tagline": 15.54,
-   "ant": 13.43,
-   "pods": 7.24,
-   "bgR": 5.32
+  "root_cause_fixed": "potrace fills the BLACK/bit-0 region of a bitmap, and PIL's L->'1' conversion also writes the mask as bit 0, so qa/mkart.py was tracing the COMPLEMENT of every luminance band. The emitted frame-spanning plate painted an opaque near-black sheet over the whole art layer. The old _fmt() coordinate bug happened to shrink those plates into invisible slivers, which is why the page looked plausible while the art contributed ~0 -- verified: hiding .art changed the score by <0.01.",
+  "fix": "qa/mkart.py passes (~mask)*255 to potrace and emits potrace's paths verbatim inside nested <g> transforms (no coordinate rewriting). _fmt() and the frame-plate stripper are both gone.",
+  "page_size": {
+    "a": "6.4 MB raw / 870 KB gzip",
+    "b": "3.4 MB raw / 523 KB gzip",
+    "c": "7.7 MB raw / 1051 KB gzip"
+  },
+  "page_size_tradeoff": "Measured Pareto (a): 2.77 @ 6.7MB, 2.85 @ 5.7MB (up3/bands64), 2.86 @ 4.3MB (up2/bands64), 2.94 @ 3.2MB (up2/bands48). (c): 3.11 @ 8.0MB, 3.24 @ 4.8MB (up2/bands64), 3.40 @ 2.8MB (up1/bands64). (b): 2.84 @ 4.8MB (up4/bands32), 2.90 @ 3.5MB (up4/bands24), 3.09 @ 1.9MB (up4/bands16). Shipped point is the best-value knee, not the max-parity extreme.",
+  "open_leads": [
+    "TEXT is now the largest single contributor (a 1.47, b 1.75, c 1.77 of the overall mean, vs art 1.06/1.42/1.37) but is at a local optimum for the Inter stack. Only a different font or a higher-resolution reference could move it.",
+    "More bands still buys score (a 128 bands -> 2.75) at ~1 KB gzip per 0.001 mean -- a pure size/parity judgement, not a technical barrier.",
+    "B brand / C brand remain the worst regional means (small areas)."
+  ],
+  "incremental_wins": [
+    "font: -webkit-font-smoothing:antialiased on all three (~0.04-0.08 each)",
+    "CUMULATIVE BANDS: trace {lum >= e_i} instead of the disjoint band {e_i<=lum<e_{i+1}}. Mathematically identical painted darkest-first, but one solid nested region per band instead of scattered 1px slivers: a 3.76->2.99, b 3.36->3.23, c 3.78->3.32, and the SVG halves.",
+    "alphamax=0 + opttol=0: a 3.76->3.65, c 3.78->3.72, b 3.36->3.34; file smaller. opttol is inert; alphamax=1.0 makes files BIGGER, so flat polygons are optimal at these resolutions.",
+    "Operating point moved to the knee of the size curve: a up2/bands64, b up4/bands24, c up2/bands64."
+  ],
+  "resolved_leads": [
+    "The _fmt() relative-coordinate lead is dead: cumulative masks removed the need for any coordinate rewriting and closed the art gap.",
+    "The A/C bright-band speck diagnosis is superseded: the loss was the disjoint-band decomposition, not the specks themselves."
+  ],
+  "exhausted_from_previous_session": [
+    "FONT: Inter beats Inter Tight/Inter Display/SF Pro/Helvetica Neue/Archivo/Public Sans by ~1.3 mean on a and ~0.9 on c. Inter is correct.",
+    "TYPE METRICS: h1 font-size is centred at its optimum on all three (a 80, b 84, c 82 px); letter-spacing, font-weight, transform, ink colour and opacity all fail to improve it. Text is at its floor for this stack.",
+    "BLUR: 0 px is optimal for all three (0.5 px costs 0.04-0.27).",
+    "BAND EDGES: uniform binning beats quantile binning and 1-D k-medians, which over-weight the huge dark region (a 1.74 vs 1.77 vs 3.45 paint error).",
+    "opttol is inert; alphamax=1.0 makes files bigger, so flat polygons are optimal.",
+    "text-shadow / glow RE-CHECKED under the corrected scorer: NOT exhausted -- tightening radius/alpha gained 0.05-0.09 on every variant. See glow_fix."
+  ],
+  "entry_point": "this repo/README.md",
+  "art_floor": {
+    "metric": "qa/artfloor.py -- band-paint oracle vs actual render, masked to the art window with live-text rects excluded",
+    "a": {
+      "oracle": 1.208,
+      "render": 1.477,
+      "trace_overhead": 0.269
+    },
+    "b": {
+      "oracle": 1.165,
+      "render": 1.383,
+      "trace_overhead": 0.218
+    },
+    "c": {
+      "oracle": 1.329,
+      "render": 1.527,
+      "trace_overhead": 0.198
+    },
+    "note": "The tracer is no longer the bottleneck (A's overhead was +1.56 pre-cumulative-mask at the then-current 40-band set). What remains is the reference's own band quantisation."
+  },
+  "error_contribution": {
+    "metric": "share of the overall mean, split by area; text rects from mkart.TEXT",
+    "a": {
+      "text": 1.47,
+      "art": 1.06,
+      "rest": 0.46
+    },
+    "b": {
+      "text": 1.75,
+      "art": 1.42,
+      "rest": 0.07
+    },
+    "c": {
+      "text": 1.77,
+      "art": 1.37,
+      "rest": 0.18
+    },
+    "note": "DOM text is now the largest single contributor but is at a local optimum for the Inter stack."
+  },
+  "per_region": {
+    "a": {
+      "title": 14.35,
+      "coming": 10.59,
+      "tagline": 17.41,
+      "cta": 5.78,
+      "ant": 2.17,
+      "pods": 1.88,
+      "bgTL": 0.78,
+      "bgR": 1.06,
+      "bgB": 0.8
+    },
+    "b": {
+      "brand": 5.87,
+      "title": 14.02,
+      "coming": 10.59,
+      "tagline": 9.25,
+      "cta": 9.91,
+      "ant": 2.87,
+      "pods": 1.96,
+      "bgTL": 2.52,
+      "bgR": 1.14,
+      "bgB": 0.66
+    },
+    "c": {
+      "brand": 7.68,
+      "title": 14.62,
+      "coming": 12.22,
+      "divider": 4.55,
+      "tagline": 11.28,
+      "cta": 9.95,
+      "ant": 3.6,
+      "pods": 2.16,
+      "bgTL": 2.04,
+      "bgR": 1.67,
+      "bgB": 1.17
+    }
+  },
+  "verify_targets": {
+    "a": 2.77,
+    "b": 2.82,
+    "c": 3.05
+  },
+  "reproducible": "Verified: re-running qa/mkart.py from the committed PARAMS produced byte-identical {a,b,c}.svg to the shipped ones.",
+  "viewing": "cd preview/ && ./start-persistent.sh 4173  ->  http://127.0.0.1:4173/ (gallery), /a/ /b/ /c/, /ref/<v>, /diff/<v>. Use start-persistent.sh (double-fork via daemonize.py) NOT `serve.py &` -- a background job dies with its shell, which is why the URLs previously stopped resolving. launchctl submit does not work (launchd cannot read the external volume). astro dev does NOT work on this project (managed dev server ignores --port; hangs re-transforming ~7MB inline SVG per request). The pages are self-contained and open directly from dist/index.html with no server and no network. Default browser is Safari.",
+  "self_hosted_fonts": {
+    "what": "Inter is vendored at pipeline/fonts/*.woff2 (6 weights, 144 KB) and inlined as @font-face by gen-page.mjs; the Google Fonts <link> and both preconnects were removed.",
+    "why": "The page previously loaded Inter from the Google Fonts CDN, so its typography -- and the scored fidelity -- depended on the network. With fonts.googleapis.com + fonts.gstatic.com DNS-blackholed the old build scored 4.22 on A instead of 2.71 (silent fallback to Helvetica).",
+    "result": "Offline score is identical to online.  Re-measured with the current scorer (PIL Lanczos) and the tightened glow it is 2.71 / 2.76 / 2.99, delta < 0.0001 mean vs the online render.",
+    "required_config": "build.inlineStylesheets: 'always' in every astro.config.mjs. The font CSS pushes the stylesheet past Astro's 4 kB auto-inline threshold; without it Astro emits /_astro/index.*.css which cannot load over file:// -- the protocol qa.sh and qa/verify.sh screenshot with. Symptom of regression: scores jump to 158/170/227 and the page renders unstyled.",
+    "gate": "qa/verify.sh fails on remote asset refs AND external /_astro/*.css, and asserts zero page-originated network requests via qa/netcheck.py (Chrome net-log based). qa/netcheck.py --selftest proves the detector sees a deliberate CDN fetch, so a zero is trustworthy. Both gates negative-tested.",
+    "refresh": "npm pack @fontsource/inter; copy package/files/inter-latin-{300..800}-normal.woff2 into pipeline/fonts/.",
+    "payload_cost": "3 weights (400/500/600) only -- those are the only font-weight values used across the three page CSS files. 72 KB of woff2 inlined as base64. Base64 costs ~33% raw but gzip removes exactly that, so the gzip delta equals the raw font size (~72 KB/variant) and the page stays a single file with zero extra requests.",
+    "measured": "Net-log verified: 0 page-originated http(s) requests on all three builds."
+  },
+  "preview_persistence": {
+    "problem": "The preview server had been started as a background job from a shell that later exited, so it was killed and the URLs stopped resolving in the browser.",
+    "fix": "preview/start-persistent.sh uses preview/daemonize.py (double-fork + setsid) so the server is re-parented to launchd (PPID 1) and survives shell exit.",
+    "usage": "./start-persistent.sh [port]  (default 4173); pidfile /tmp/anthosting-preview-<port>.pid, log /tmp/anthosting-preview-<port>.log",
+    "note": "launchctl submit does NOT work here -- launchd cannot read the external volume (Operation not permitted). The double-fork in daemonize.py is the working approach."
+  },
+  "font_loading": "self-hosted (was: Google Fonts CDN). See self_hosted_fonts.",
+  "non_pixel_fixes": {
+    "artwork_a11y": "The traced SVG was announced as aria-label='AntHosting {v} artwork', leaking the internal variant letter. Now aria-hidden='true' focusable='false' (the art is decorative). Geometry byte-identical; scores unchanged. Fixed in qa/mkart.py.",
+    "cta_dead_link": "A/B/C POSTERS: the CTA is href='#waitlist' but no element with that id exists, so the button does nothing. Those are fixed posters (the tracer's regression suite), not a website. The STUDIO's generated pages no longer have this gap -- their CTAs point at a real in-page anchor. Set a real URL in the returned content-<id>.json."
+  },
+  "scores_previous_scaler": {
+    "note": "produced with `sips -z`; the shipped scorer is now PIL Lanczos (qa/downsample.py)",
+    "a": 2.77,
+    "b": 2.9,
+    "c": 3.11
+  },
+  "scorer_downgrade_fixed": {
+    "what": "The 2x screenshot -> 1024x768 reference resize used `sips -z`, which is the worst measured reconstruction filter. PIL Lanczos is now canonical (qa/downsample.py), used by both qa.sh and qa/verify.sh.",
+    "why_it_matters": "The filter is not neutral: on B, sips 2.8970 vs lanczos 2.8205 -- 0.077, about 2.7% of the headline number. Page pixels were NOT changed to obtain this; only the measurement improved.",
+    "new_scores": "2.76 / 2.82 / 3.08, stable to +/-0.01 over 3 consecutive runs.",
+    "targets": "Tightened to 2.82 / 2.88 / 3.15 (~0.06 headroom above the stable value).",
+    "table": {
+      "sips": [
+        2.7718,
+        2.897,
+        3.1083
+      ],
+      "box": [
+        2.7736,
+        2.8312,
+        3.0886
+      ],
+      "hamming": [
+        2.7685,
+        2.8721,
+        3.0977
+      ],
+      "bicubic": [
+        2.7616,
+        2.8615,
+        3.091
+      ],
+      "lanczos": [
+        2.7587,
+        2.8205,
+        3.0803
+      ]
+    }
+  },
+  "glow_fix": {
+    "what": "text-shadow radius/alpha tightened on h1, h1 .green and h2 across all three variants (h1 14-18px->8-10px; h1 .green 18-20px->6-10px and alpha .30-.32->.20-.22; h2 12px->6px).",
+    "why_it_was_missed": "The previous session swept glow under the old `sips -z` scorer and concluded the shipped values were optimal. The blur introduced by that scaler hid the improvement. Re-swept via qa/tune.py against the corrected Lanczos scorer, it reproduces on all three.",
+    "gain": "A 2.76->2.71, B 2.82->2.76, C 3.08->2.99. Stable +/-0.01 over 3 runs. pct>30 unchanged (1.13/1.59/1.57), so this is not a contrast trade.",
+    "lesson": "Anything in the exhausted list that was judged only by aggregate mean should be re-checked now the scorer is honest. Font metrics were re-checked and still hold; glow did not."
+  },
+  "layout": {
+    "repo": "everything is in this repo; the dev-tree paths in the older entries of this file are historical",
+    "pipeline": "pipeline/  (art generation + all QA tooling)",
+    "sites": "sites/variant-{a,b,c}/",
+    "refs": "pipeline/qa/ref-{a,b,c}.png",
+    "design_config": "pipeline/designs/{a,b,c}.json",
+    "fonts": "pipeline/fonts/*.woff2",
+    "preview": "preview/  (serve.py + gallery + start-persistent.sh)"
+  },
+  "committed_vs_generated": {
+    "committed": "pipeline/{a,b,c}.svg (the traced art -- regenerating needs potrace), designs/*.json, qa/ref-*.png, fonts/*.woff2, *.page.css, content.json, all QA tooling, site package.json/astro.config.mjs, preview/",
+    "generated_gitignored": "pipeline/{v}-full.html and {v}-static.html (gen-page.mjs), sites/*/src/pages/index.astro (to-astro.mjs), sites/*/dist/ (astro build), qa/render-*.png scratch",
+    "fresh_clone": "./bootstrap.sh; then gen-page.mjs + to-astro.mjs for a/b/c; then npm run build in each site; then pipeline/qa/verify.sh"
+  },
+  "adding_a_design": {
+    "scaffold": "python qa/newdesign.py <name> path/to/design.png",
+    "trace": "python qa/mkart.py <name> --out <name>.svg",
+    "build": "node gen-page.mjs <name> && node to-astro.mjs <name> && (cd ../sites/variant-<name> && npm install && npm run build)",
+    "score": "./qa/verify.sh <name>",
+    "note": "build.sh / bootstrap.sh / verify.sh / preview gallery auto-discover designs/*.json",
+    "layout": "newdesign.py scaffolds layout: 'page' -- a responsive website with the traced art as the hero backdrop (the <!--ART--> placeholder). Pass through design.layout='poster' only to keep the historical fixed 1024x768 stage (what A/B/C use)."
+  },
+  "status_notes": [],
+  "targets": {
+    "a": 2.77,
+    "b": 2.82,
+    "c": 3.05
+  },
+  "verified_from_fresh_clone": true,
+  "verification": {
+    "gate": "studio/backend/doctor.py gate -- runs env -> polarity -> fixtures -> regress in order, fails if any stage fails. regress IS qa/verify.sh, so it covers both measures (A/B/C pixel fidelity + the fixtures' structure). --quick runs polarity alone (no potrace/node/Chrome/model).",
+    "fixtures": "doctor fixtures replays saved extractions (no model) and guards BOTH measures: structure (app.structure.inspect) AND the artwork's pixel fidelity via a per-fixture score_max on the art-region mean (light/antho 3.0, montiva 4.0 -- tightened from 5.0 when chroma sub-banding + turdsize 12 took montiva 4.21 -> 3.44, so the gain cannot silently evaporate). Each fixture ALSO pins art_p95_max (32/48/32) on the tail of the same diff over the artwork pixels, because the mean is dominated by whatever is flat and large -- a real dark design passed score_max at 1.37 while its artwork p95 was 17.3 against 4.7 for a raster of the same hero, so the mean alone is not a guard; pins seam_max (8.0) on blank_seam, because score_max masks the blanked rects out and so cannot see a fill that went wrong; AND hero_kind='photographic' + hero_max (2.5) on the shipped raster, because score_max measures the SVG master that a photographic page no longer shows. Fixture scores are not comparable between fixtures or to A/B/C. The dashboard fixture -- the flat illustration that drove the scene prototype -- additionally pins hero_layout='scene', the 3840 px full-bleed width budget its Retina warning assumes, all 33 recovered labels' presence in the shipped scene, and their worst mean/p95. Negative-tested both ways.",
+    "ci": ".github/workflows/gate.yml -- gate --quick on every push/PR (macos-latest, seconds, no pipeline); the full gate on main and nightly after a from-source build.",
+    "pinned_python": "pipeline/requirements.txt and studio/backend/requirements.txt are PINNED on purpose: the scores are a numeric gate computed through numpy/scipy/scikit-image/PIL, so an unpinned pip install could move a score with no code change. Bump deliberately and re-record the numbers.",
+    "docs_consistency": "doctor regress parses the qa/verify.sh means and fails if STATE.json scores/targets no longer match designs/*.json and the run, so this file cannot silently drift. When a target changes, update it here in the same commit.",
+    "critique": "doctor critique <job-id | design.png> screenshots the whole built page (captured tall, trimmed to content) and asks the vision model to review it against the mockup, printing a ranked list of composition/readability defects (typeface differences excluded; a GHOSTED hero backdrop is explicitly in scope, since the mockup's own text must be absent from the artwork, and so is a missing or smeared illustration label, which is part of the artwork and must be present). --page reviews an existing page, --out saves the report. A single verdict is noisy, so --votes N keeps only complaints that recur across runs and --baseline tags defects NEW/carried (--fail-on-new fails on a new high-severity one); defects carry a model-assigned stable key so they match across runs and builds. A review tool, NOT a gate stage: it needs a live model and is subjective.",
+    "fixture_bounds": {
+      "light": {
+        "score_max": 3.0,
+        "art_p95_max": 32.0,
+        "seam_max": 8.0,
+        "hero_kind": "photographic",
+        "hero_max": 2.5
+      },
+      "montiva": {
+        "score_max": 4.0,
+        "art_p95_max": 48.0,
+        "seam_max": 8.0,
+        "hero_kind": "photographic",
+        "hero_max": 2.5
+      },
+      "antho": {
+        "score_max": 3.0,
+        "art_p95_max": 32.0,
+        "seam_max": 8.0,
+        "hero_kind": "photographic",
+        "hero_max": 2.5
+      },
+      "dashboard": {
+        "score_max": 2.0,
+        "art_p95_max": 32.0,
+        "seam_max": 8.0,
+        "hero_kind": "photographic",
+        "hero_max": 2.5,
+        "hero_layout": "scene",
+        "hero_needed": 3840,
+        "hero_label_max": 24.0,
+        "hero_label_p95": 64.0,
+        "min_assets": 33,
+        "asset_dest": "hero-scene"
+      },
+      "hosting": {
+        "score_max": 3.0,
+        "art_p95_max": 48.0,
+        "seam_max": 8.0,
+        "hero_kind": "photographic",
+        "hero_max": 4.0,
+        "hero_layout": "full",
+        "hero_needed": 3840,
+        "min_assets": 26,
+        "asset_dest": "hero-artwork"
+      }
+    },
+    "fixture_bounds_note": "Machine-readable copy of the bounds doctor.py FIXTURES enforces; `doctor regress` fails if the two disagree. Keep it in step with the code in the same commit that changes a bound. score_max bounds the art-region mean; art_p95_max bounds the tail of the same diff over the pixels the eye reads as artwork (the mean is dominated by whatever is flat and large -- a real dark design passed at 1.37 while its artwork p95 was 17.3 against 4.7 for a raster of the same hero); seam_max bounds blank_seam (the art score masks the blanked rects out, so it cannot see a bad fill). The dashboard fixture adds the scene guards: hero_layout/hero_needed pin the integrated scene and the full-bleed width budget its Retina warning assumes; min_assets/asset_dest require every recovered artwork label to be in the shipped scene; hero_label_max/hero_label_p95 bound the worst label's difference (the p95 catches a sparse label whose rectangle mean hides its erased strokes)."
   }
- },
- "gotchas": [
-  "potrace fills BLACK: pass the desired band as white; do not invert.",
-  "potrace emits its own y-flip translate(0,H) scale(1,-1); keep the transform, never rewrite coords.",
-  "qa.sh screenshots over file:// -- no server; a stray http.server once served stale art.",
-  "qa/batch.py._scope must be brace-aware or multi-line overrides are silently dropped.",
-  "Cap batch grids at COLS*MAX_ROWS or cells come back blank and scores go bogus.",
-  "qa/geom.py writes qa/geom-<v>.png, not qa/render-<v>.png.",
-  "gen-{a,b}.mjs are legacy hand-art generators; re-running them overwrites the good {v}.svg."
- ],
- "next_priorities": [
-  "Studio PRODUCT surface is the biggest open gap (the user wants this hosted for other people): no job history or deep link in the UI (reload loses the download), no retry (a failed build re-uploads and pays for a SECOND vision call even though raw-blocks.json is cached for exactly that), no cancel (the button only clears React state), a queued job across a restart is never resubmitted and spins forever, studio/data/jobs is never pruned (~40MB/job, 5.2 GB on disk), and there is no StaticFiles mount so the UI cannot be served in production.",
-  "Photographic hero art: RESOLVED by shipping a raster export instead of the traced SVG (see north_star.raster_hero). Remaining follow-ups are product-level, not fidelity: move the inlined data URI to an external asset with a <picture>/AVIF fallback once the page is served over HTTP, and prune the per-job workspace.",
-  "Payload vs parity on the posters: `bands` (~1 KB gzip per 0.001 mean). See qa/sweep_up.py.",
-  "Icons (card icons, star rows, map pins) are artwork pixels, not DOM; recovering them as real assets is a separate feature.",
-  "Keep the gate green: `doctor gate` locally, .github/workflows/gate.yml in CI."
- ],
- "handoff_doc": "this repo/HANDOFF.md",
- "art_blur_px": {
-  "a": 0,
-  "b": 0,
-  "c": 0
- },
- "root_cause_fixed": "potrace fills the BLACK/bit-0 region of a bitmap, and PIL's L->'1' conversion also writes the mask as bit 0, so qa/mkart.py was tracing the COMPLEMENT of every luminance band. The emitted frame-spanning plate painted an opaque near-black sheet over the whole art layer. The old _fmt() coordinate bug happened to shrink those plates into invisible slivers, which is why the page looked plausible while the art contributed ~0 -- verified: hiding .art changed the score by <0.01.",
- "fix": "qa/mkart.py passes (~mask)*255 to potrace and emits potrace's paths verbatim inside nested <g> transforms (no coordinate rewriting). _fmt() and the frame-plate stripper are both gone.",
- "page_size": {
-  "a": "6.4 MB raw / 870 KB gzip",
-  "b": "3.4 MB raw / 523 KB gzip",
-  "c": "7.7 MB raw / 1051 KB gzip"
- },
- "page_size_tradeoff": "Measured Pareto (a): 2.77 @ 6.7MB, 2.85 @ 5.7MB (up3/bands64), 2.86 @ 4.3MB (up2/bands64), 2.94 @ 3.2MB (up2/bands48). (c): 3.11 @ 8.0MB, 3.24 @ 4.8MB (up2/bands64), 3.40 @ 2.8MB (up1/bands64). (b): 2.84 @ 4.8MB (up4/bands32), 2.90 @ 3.5MB (up4/bands24), 3.09 @ 1.9MB (up4/bands16). Shipped point is the best-value knee, not the max-parity extreme.",
- "open_leads": [
-  "TEXT is now the largest single contributor (a 1.47, b 1.75, c 1.77 of the overall mean, vs art 1.06/1.42/1.37) but is at a local optimum for the Inter stack. Only a different font or a higher-resolution reference could move it.",
-  "More bands still buys score (a 128 bands -> 2.75) at ~1 KB gzip per 0.001 mean -- a pure size/parity judgement, not a technical barrier.",
-  "B brand / C brand remain the worst regional means (small areas)."
- ],
- "incremental_wins": [
-  "font: -webkit-font-smoothing:antialiased on all three (~0.04-0.08 each)",
-  "CUMULATIVE BANDS: trace {lum >= e_i} instead of the disjoint band {e_i<=lum<e_{i+1}}. Mathematically identical painted darkest-first, but one solid nested region per band instead of scattered 1px slivers: a 3.76->2.99, b 3.36->3.23, c 3.78->3.32, and the SVG halves.",
-  "alphamax=0 + opttol=0: a 3.76->3.65, c 3.78->3.72, b 3.36->3.34; file smaller. opttol is inert; alphamax=1.0 makes files BIGGER, so flat polygons are optimal at these resolutions.",
-  "Operating point moved to the knee of the size curve: a up2/bands64, b up4/bands24, c up2/bands64."
- ],
- "resolved_leads": [
-  "The _fmt() relative-coordinate lead is dead: cumulative masks removed the need for any coordinate rewriting and closed the art gap.",
-  "The A/C bright-band speck diagnosis is superseded: the loss was the disjoint-band decomposition, not the specks themselves."
- ],
- "exhausted_from_previous_session": [
-  "FONT: Inter beats Inter Tight/Inter Display/SF Pro/Helvetica Neue/Archivo/Public Sans by ~1.3 mean on a and ~0.9 on c. Inter is correct.",
-  "TYPE METRICS: h1 font-size is centred at its optimum on all three (a 80, b 84, c 82 px); letter-spacing, font-weight, transform, ink colour and opacity all fail to improve it. Text is at its floor for this stack.",
-  "BLUR: 0 px is optimal for all three (0.5 px costs 0.04-0.27).",
-  "BAND EDGES: uniform binning beats quantile binning and 1-D k-medians, which over-weight the huge dark region (a 1.74 vs 1.77 vs 3.45 paint error).",
-  "opttol is inert; alphamax=1.0 makes files bigger, so flat polygons are optimal.",
-  "text-shadow / glow RE-CHECKED under the corrected scorer: NOT exhausted -- tightening radius/alpha gained 0.05-0.09 on every variant. See glow_fix."
- ],
- "entry_point": "this repo/README.md",
- "art_floor": {
-  "metric": "qa/artfloor.py -- band-paint oracle vs actual render, masked to the art window with live-text rects excluded",
-  "a": {
-   "oracle": 1.208,
-   "render": 1.477,
-   "trace_overhead": 0.269
-  },
-  "b": {
-   "oracle": 1.165,
-   "render": 1.383,
-   "trace_overhead": 0.218
-  },
-  "c": {
-   "oracle": 1.329,
-   "render": 1.527,
-   "trace_overhead": 0.198
-  },
-  "note": "The tracer is no longer the bottleneck (A's overhead was +1.56 pre-cumulative-mask at the then-current 40-band set). What remains is the reference's own band quantisation."
- },
- "error_contribution": {
-  "metric": "share of the overall mean, split by area; text rects from mkart.TEXT",
-  "a": {
-   "text": 1.47,
-   "art": 1.06,
-   "rest": 0.46
-  },
-  "b": {
-   "text": 1.75,
-   "art": 1.42,
-   "rest": 0.07
-  },
-  "c": {
-   "text": 1.77,
-   "art": 1.37,
-   "rest": 0.18
-  },
-  "note": "DOM text is now the largest single contributor but is at a local optimum for the Inter stack."
- },
- "per_region": {
-  "a": {
-   "title": 14.35,
-   "coming": 10.59,
-   "tagline": 17.41,
-   "cta": 5.78,
-   "ant": 2.17,
-   "pods": 1.88,
-   "bgTL": 0.78,
-   "bgR": 1.06,
-   "bgB": 0.8
-  },
-  "b": {
-   "brand": 5.87,
-   "title": 14.02,
-   "coming": 10.59,
-   "tagline": 9.25,
-   "cta": 9.91,
-   "ant": 2.87,
-   "pods": 1.96,
-   "bgTL": 2.52,
-   "bgR": 1.14,
-   "bgB": 0.66
-  },
-  "c": {
-   "brand": 7.68,
-   "title": 14.62,
-   "coming": 12.22,
-   "divider": 4.55,
-   "tagline": 11.28,
-   "cta": 9.95,
-   "ant": 3.6,
-   "pods": 2.16,
-   "bgTL": 2.04,
-   "bgR": 1.67,
-   "bgB": 1.17
-  }
- },
- "verify_targets": {
-  "a": 2.77,
-  "b": 2.82,
-  "c": 3.05
- },
- "reproducible": "Verified: re-running qa/mkart.py from the committed PARAMS produced byte-identical {a,b,c}.svg to the shipped ones.",
- "viewing": "cd preview/ && ./start-persistent.sh 4173  ->  http://127.0.0.1:4173/ (gallery), /a/ /b/ /c/, /ref/<v>, /diff/<v>. Use start-persistent.sh (double-fork via daemonize.py) NOT `serve.py &` -- a background job dies with its shell, which is why the URLs previously stopped resolving. launchctl submit does not work (launchd cannot read the external volume). astro dev does NOT work on this project (managed dev server ignores --port; hangs re-transforming ~7MB inline SVG per request). The pages are self-contained and open directly from dist/index.html with no server and no network. Default browser is Safari.",
- "self_hosted_fonts": {
-  "what": "Inter is vendored at pipeline/fonts/*.woff2 (6 weights, 144 KB) and inlined as @font-face by gen-page.mjs; the Google Fonts <link> and both preconnects were removed.",
-  "why": "The page previously loaded Inter from the Google Fonts CDN, so its typography -- and the scored fidelity -- depended on the network. With fonts.googleapis.com + fonts.gstatic.com DNS-blackholed the old build scored 4.22 on A instead of 2.71 (silent fallback to Helvetica).",
-  "result": "Offline score is identical to online.  Re-measured with the current scorer (PIL Lanczos) and the tightened glow it is 2.71 / 2.76 / 2.99, delta < 0.0001 mean vs the online render.",
-  "required_config": "build.inlineStylesheets: 'always' in every astro.config.mjs. The font CSS pushes the stylesheet past Astro's 4 kB auto-inline threshold; without it Astro emits /_astro/index.*.css which cannot load over file:// -- the protocol qa.sh and qa/verify.sh screenshot with. Symptom of regression: scores jump to 158/170/227 and the page renders unstyled.",
-  "gate": "qa/verify.sh fails on remote asset refs AND external /_astro/*.css, and asserts zero page-originated network requests via qa/netcheck.py (Chrome net-log based). qa/netcheck.py --selftest proves the detector sees a deliberate CDN fetch, so a zero is trustworthy. Both gates negative-tested.",
-  "refresh": "npm pack @fontsource/inter; copy package/files/inter-latin-{300..800}-normal.woff2 into pipeline/fonts/.",
-  "payload_cost": "3 weights (400/500/600) only -- those are the only font-weight values used across the three page CSS files. 72 KB of woff2 inlined as base64. Base64 costs ~33% raw but gzip removes exactly that, so the gzip delta equals the raw font size (~72 KB/variant) and the page stays a single file with zero extra requests.",
-  "measured": "Net-log verified: 0 page-originated http(s) requests on all three builds."
- },
- "preview_persistence": {
-  "problem": "The preview server had been started as a background job from a shell that later exited, so it was killed and the URLs stopped resolving in the browser.",
-  "fix": "preview/start-persistent.sh uses preview/daemonize.py (double-fork + setsid) so the server is re-parented to launchd (PPID 1) and survives shell exit.",
-  "usage": "./start-persistent.sh [port]  (default 4173); pidfile /tmp/anthosting-preview-<port>.pid, log /tmp/anthosting-preview-<port>.log",
-  "note": "launchctl submit does NOT work here -- launchd cannot read the external volume (Operation not permitted). The double-fork in daemonize.py is the working approach."
- },
- "font_loading": "self-hosted (was: Google Fonts CDN). See self_hosted_fonts.",
- "non_pixel_fixes": {
-  "artwork_a11y": "The traced SVG was announced as aria-label='AntHosting {v} artwork', leaking the internal variant letter. Now aria-hidden='true' focusable='false' (the art is decorative). Geometry byte-identical; scores unchanged. Fixed in qa/mkart.py.",
-  "cta_dead_link": "A/B/C POSTERS: the CTA is href='#waitlist' but no element with that id exists, so the button does nothing. Those are fixed posters (the tracer's regression suite), not a website. The STUDIO's generated pages no longer have this gap -- their CTAs point at a real in-page anchor. Set a real URL in the returned content-<id>.json."
- },
- "scores_previous_scaler": {
-  "note": "produced with `sips -z`; the shipped scorer is now PIL Lanczos (qa/downsample.py)",
-  "a": 2.77,
-  "b": 2.9,
-  "c": 3.11
- },
- "scorer_downgrade_fixed": {
-  "what": "The 2x screenshot -> 1024x768 reference resize used `sips -z`, which is the worst measured reconstruction filter. PIL Lanczos is now canonical (qa/downsample.py), used by both qa.sh and qa/verify.sh.",
-  "why_it_matters": "The filter is not neutral: on B, sips 2.8970 vs lanczos 2.8205 -- 0.077, about 2.7% of the headline number. Page pixels were NOT changed to obtain this; only the measurement improved.",
-  "new_scores": "2.76 / 2.82 / 3.08, stable to +/-0.01 over 3 consecutive runs.",
-  "targets": "Tightened to 2.82 / 2.88 / 3.15 (~0.06 headroom above the stable value).",
-  "table": {
-   "sips": [
-    2.7718,
-    2.897,
-    3.1083
-   ],
-   "box": [
-    2.7736,
-    2.8312,
-    3.0886
-   ],
-   "hamming": [
-    2.7685,
-    2.8721,
-    3.0977
-   ],
-   "bicubic": [
-    2.7616,
-    2.8615,
-    3.091
-   ],
-   "lanczos": [
-    2.7587,
-    2.8205,
-    3.0803
-   ]
-  }
- },
- "glow_fix": {
-  "what": "text-shadow radius/alpha tightened on h1, h1 .green and h2 across all three variants (h1 14-18px->8-10px; h1 .green 18-20px->6-10px and alpha .30-.32->.20-.22; h2 12px->6px).",
-  "why_it_was_missed": "The previous session swept glow under the old `sips -z` scorer and concluded the shipped values were optimal. The blur introduced by that scaler hid the improvement. Re-swept via qa/tune.py against the corrected Lanczos scorer, it reproduces on all three.",
-  "gain": "A 2.76->2.71, B 2.82->2.76, C 3.08->2.99. Stable +/-0.01 over 3 runs. pct>30 unchanged (1.13/1.59/1.57), so this is not a contrast trade.",
-  "lesson": "Anything in the exhausted list that was judged only by aggregate mean should be re-checked now the scorer is honest. Font metrics were re-checked and still hold; glow did not."
- },
- "layout": {
-  "repo": "everything is in this repo; the dev-tree paths in the older entries of this file are historical",
-  "pipeline": "pipeline/  (art generation + all QA tooling)",
-  "sites": "sites/variant-{a,b,c}/",
-  "refs": "pipeline/qa/ref-{a,b,c}.png",
-  "design_config": "pipeline/designs/{a,b,c}.json",
-  "fonts": "pipeline/fonts/*.woff2",
-  "preview": "preview/  (serve.py + gallery + start-persistent.sh)"
- },
- "committed_vs_generated": {
-  "committed": "pipeline/{a,b,c}.svg (the traced art -- regenerating needs potrace), designs/*.json, qa/ref-*.png, fonts/*.woff2, *.page.css, content.json, all QA tooling, site package.json/astro.config.mjs, preview/",
-  "generated_gitignored": "pipeline/{v}-full.html and {v}-static.html (gen-page.mjs), sites/*/src/pages/index.astro (to-astro.mjs), sites/*/dist/ (astro build), qa/render-*.png scratch",
-  "fresh_clone": "./bootstrap.sh; then gen-page.mjs + to-astro.mjs for a/b/c; then npm run build in each site; then pipeline/qa/verify.sh"
- },
- "adding_a_design": {
-  "scaffold": "python qa/newdesign.py <name> path/to/design.png",
-  "trace": "python qa/mkart.py <name> --out <name>.svg",
-  "build": "node gen-page.mjs <name> && node to-astro.mjs <name> && (cd ../sites/variant-<name> && npm install && npm run build)",
-  "score": "./qa/verify.sh <name>",
-  "note": "build.sh / bootstrap.sh / verify.sh / preview gallery auto-discover designs/*.json",
-  "layout": "newdesign.py scaffolds layout: 'page' -- a responsive website with the traced art as the hero backdrop (the <!--ART--> placeholder). Pass through design.layout='poster' only to keep the historical fixed 1024x768 stage (what A/B/C use)."
- },
- "status_notes": [],
- "targets": {
-  "a": 2.77,
-  "b": 2.82,
-  "c": 3.05
- },
- "verified_from_fresh_clone": true,
- "verification": {
-  "gate": "studio/backend/doctor.py gate -- runs env -> polarity -> fixtures -> regress in order, fails if any stage fails. regress IS qa/verify.sh, so it covers both measures (A/B/C pixel fidelity + the fixtures' structure). --quick runs polarity alone (no potrace/node/Chrome/model).",
-  "fixtures": "doctor fixtures replays saved extractions (no model) and guards BOTH measures: structure (app.structure.inspect) AND the artwork's pixel fidelity via a per-fixture score_max on the art-region mean (light/antho 3.0, montiva 4.0 -- tightened from 5.0 when chroma sub-banding + turdsize 12 took montiva 4.21 -> 3.44, so the gain cannot silently evaporate). Each fixture ALSO pins art_p95_max (32/48/32) on the tail of the same diff over the artwork pixels, because the mean is dominated by whatever is flat and large -- a real dark design passed score_max at 1.37 while its artwork p95 was 17.3 against 4.7 for a raster of the same hero, so the mean alone is not a guard; pins seam_max (8.0) on blank_seam, because score_max masks the blanked rects out and so cannot see a fill that went wrong; AND hero_kind='photographic' + hero_max (2.5) on the shipped raster, because score_max measures the SVG master that a photographic page no longer shows. Fixture scores are not comparable between fixtures or to A/B/C. Negative-tested both ways.",
-  "ci": ".github/workflows/gate.yml -- gate --quick on every push/PR (macos-latest, seconds, no pipeline); the full gate on main and nightly after a from-source build.",
-  "pinned_python": "pipeline/requirements.txt and studio/backend/requirements.txt are PINNED on purpose: the scores are a numeric gate computed through numpy/scipy/scikit-image/PIL, so an unpinned pip install could move a score with no code change. Bump deliberately and re-record the numbers.",
-  "docs_consistency": "doctor regress parses the qa/verify.sh means and fails if STATE.json scores/targets no longer match designs/*.json and the run, so this file cannot silently drift. When a target changes, update it here in the same commit.",
-  "critique": "doctor critique <job-id | design.png> screenshots the whole built page (captured tall, trimmed to content) and asks the vision model to review it against the mockup, printing a ranked list of composition/readability defects (typeface differences excluded; a GHOSTED hero backdrop is explicitly in scope, since the mockup's own text must be absent from the artwork). --page reviews an existing page, --out saves the report. A single verdict is noisy, so --votes N keeps only complaints that recur across runs and --baseline tags defects NEW/carried (--fail-on-new fails on a new high-severity one); defects carry a model-assigned stable key so they match across runs and builds. A review tool, NOT a gate stage: it needs a live model and is subjective.",
-  "fixture_bounds": {
-   "light": {
-    "score_max": 3.0,
-    "art_p95_max": 32.0,
-    "seam_max": 8.0,
-    "hero_kind": "photographic",
-    "hero_max": 2.5
-   },
-   "montiva": {
-    "score_max": 4.0,
-    "art_p95_max": 48.0,
-    "seam_max": 8.0,
-    "hero_kind": "photographic",
-    "hero_max": 2.5
-   },
-   "antho": {
-    "score_max": 3.0,
-    "art_p95_max": 32.0,
-    "seam_max": 8.0,
-    "hero_kind": "photographic",
-    "hero_max": 2.5
-   }
-  },
-  "fixture_bounds_note": "Machine-readable copy of the bounds doctor.py FIXTURES enforces; `doctor regress` fails if the two disagree. Keep it in step with the code in the same commit that changes a bound. score_max bounds the art-region mean; art_p95_max bounds the tail of the same diff over the pixels the eye reads as artwork (the mean is dominated by whatever is flat and large -- a real dark design passed at 1.37 while its artwork p95 was 17.3 against 4.7 for a raster of the same hero); seam_max bounds blank_seam (the art score masks the blanked rects out, so it cannot see a bad fill)."
- }
 }

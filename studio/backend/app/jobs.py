@@ -68,6 +68,40 @@ class Job:
     # tracer's own number on the SVG master, which for a photographic design is
     # a secondary artifact.
     hero_fidelity: float | None = None
+    # "full" (page-wide backdrop) or "split" (the artwork is an illustration
+    # beside the copy, shown whole).  A photographic hero is always full.
+    hero_layout: str | None = None
+    # How the raster hero's removed copy was reconstructed: "lama" (the
+    # optional external cleaner), "fallback" (the tracer's nearest fill), or
+    # "full" for a split hero (which does not offer the cleaner).
+    hero_cleanup: str | None = None
+    # Opt-in Google enhancement (see `app/enhance.py`): None (off), "pending"
+    # (a fully repaired candidate exists, not shipped), "diagnostic" (the
+    # source-preserving repair was partial/failed/off: the preview cannot be
+    # accepted), "accepted" (shipped), "skipped" (no candidate).
+    hero_enhance: str | None = None
+    hero_enhance_meta: dict | None = None
+    # The explicit per-candidate label review recorded at acceptance:
+    # {reviewed, method, at, candidate_sha256}.  Never assumed -- acceptance
+    # refuses without it, so "accepted" always carries a real review.
+    hero_enhance_audit: dict | None = None
+    # Artwork-label rects (stage coords), kept so the acceptance re-check can
+    # measure the shipped hero against the reference's labels without the
+    # original block objects.
+    artwork_rects: list | None = None
+    # Device pixels the shipped hero asset wants at 2x for its layout, and the
+    # scale it is actually painted at (asset width / needed; >1 = upscaled on a
+    # Retina display because the *upload* does not carry enough pixels).
+    hero_needed: int | None = None
+    hero_scale: float | None = None
+    # Worst per-pixel diff over an illustration label in the shipped hero: the
+    # rectangle mean and its p95 (a sparse label's thin glyphs can erase into a
+    # low mean while the p95 is unmistakable).
+    hero_label_max: float | None = None
+    hero_label_p95: float | None = None
+    # Where each recovered `part: artwork` block ended up (hero illustration /
+    # hero backdrop / SVG master): the asset-completeness record.
+    assets: list[dict] = field(default_factory=list)
     # Step the trace leaves at the blanked rects, 0-255 intensity units.  The art
     # score masks those rects out, so this is the only number that covers the
     # pixels where the fill went wrong.

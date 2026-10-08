@@ -9,11 +9,12 @@ from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
+from pydantic import BaseModel
 
 from . import config
 from .imageutil import MAX_UPLOAD_BYTES, UploadError
 from .jobs import STAGES, JobStore
-from .runner import PipelineRunner
+from .runner import NothingToAccept, PipelineRunner, ReviewRequired
 
 app = FastAPI(title="Anthotype Studio", version="0.1.0")
 
@@ -98,6 +99,42 @@ def preview(job_id: str) -> FileResponse:
 @app.get("/api/jobs/{job_id}/ref")
 def reference(job_id: str) -> FileResponse:
     return FileResponse(_job_file(job_id, "ref.png"), media_type="image/png")
+
+
+@app.get("/api/jobs/{job_id}/enhance")
+def enhance_preview(job_id: str) -> FileResponse:
+    """The opt-in enhancement candidate (a preview, not yet shipped)."""
+    job = store.get(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    p = job.dir / f"{job_id}-hero-enhance.webp"
+    if not p.is_file():
+        raise HTTPException(404, "no enhancement candidate for this job")
+    return FileResponse(p, media_type="image/webp")
+
+
+class EnhanceAccept(BaseModel):
+    # The caller confirming the candidate's labels were reviewed.  Acceptance
+    # refuses without it, and records the review against the candidate's hash.
+    reviewed: bool = False
+
+
+@app.post("/api/jobs/{job_id}/enhance/accept")
+def enhance_accept(job_id: str, body: EnhanceAccept | None = None) -> dict:
+    """Ship the candidate and rebuild the page (preview-before-accepting).
+
+    The runner serializes acceptances and rolls the job back on any failure, so
+    a failed rebuild leaves the base LaMa/Lanczos artwork shipping.
+    """
+    job = store.get(job_id)
+    if not job:
+        raise HTTPException(404, "no such job")
+    try:
+        return runner.accept_enhance(job_id, reviewed=bool(body and body.reviewed))
+    except (NothingToAccept, ReviewRequired) as exc:
+        raise HTTPException(409, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - surface the failure to the UI
+        raise HTTPException(500, f"accept failed: {exc}") from exc
 
 
 @app.get("/api/jobs/{job_id}/download")

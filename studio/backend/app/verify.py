@@ -96,6 +96,50 @@ def _art_mask(pipeline: Path, name: str) -> np.ndarray | None:
     return mask
 
 
+def _merge_rects(mask: np.ndarray | None,
+                 rects: list | None) -> np.ndarray | None:
+    """`mask` plus extra stage-space removal rects (e.g. the cleanup's masks).
+
+    The raster hero score excludes the pixels the page replaces.  The tracer's
+    `text`/`blank` cover its own removals; the optional LaMa cleanup removes a
+    few more complete elements (a CTA's grown plate, the band row whose copy a
+    later DOM section replaces), and those are the same kind of deliberate
+    removal -- excluding them keeps the score measuring the backdrop, not the
+    removal.  `blank_seams` deliberately does NOT use this: the tracer never
+    filled those pixels, so a step there is not a fill defect.
+    """
+    if not rects:
+        return mask
+    mask = mask.copy() if mask is not None else np.zeros((STAGE_H, STAGE_W), bool)
+    for x0, y0, x1, y1 in rects:
+        x0, y0 = max(0, int(x0)), max(0, int(y0))
+        x1, y1 = min(STAGE_W, int(x1)), min(STAGE_H, int(y1))
+        if x1 > x0 and y1 > y0:
+            mask[y0:y1, x0:x1] = True
+    return mask
+
+
+def _clear_rects(mask: np.ndarray | None,
+                 rects: list[list[int]] | None) -> np.ndarray | None:
+    """Clear every `rects` area from `mask`: artwork labels are never excluded.
+
+    A partially masked label would otherwise hide the very pixels damage shows
+    up in -- an erased glyph under the exclusion reads as a clean label (a
+    synthetic erased run went 114/228 -> 0/0).  The label rects are cleared from
+    the combined exclusions and scored in full, so damage cannot hide behind a
+    mask edge.
+    """
+    if mask is None or not rects:
+        return mask
+    mask = mask.copy()
+    for x0, y0, x1, y1 in rects:
+        x0, y0 = max(0, int(x0)), max(0, int(y0))
+        x1, y1 = min(STAGE_W, int(x1)), min(STAGE_H, int(y1))
+        if x1 > x0 and y1 > y0:
+            mask[y0:y1, x0:x1] = False
+    return mask
+
+
 def _removed_mask(pipeline: Path, name: str) -> np.ndarray | None:
     """Every rectangle the tracer *removed* pixels from: `text` plus `blank`.
 
@@ -301,41 +345,127 @@ def artwork_mask(ref: np.ndarray, keep: np.ndarray | None = None) -> np.ndarray:
     return eye
 
 
-def hero_fidelity(ref: np.ndarray, band: list[int], raster: Path,
+def _stage_crop(ref: np.ndarray, region: list[int] | None) -> tuple[int, int, int, int]:
+    """Clamp a stage-space region to the reference image.
+
+    `region` is either a full-bleed band `[y0, y1]` (full width) or a rectangle
+    `[x0, y0, x1, y1]` -- an illustration's figure, which the shipped asset was
+    cropped to.  Returns `(x0, y0, x1, y1)`.
+    """
+    if region and len(region) == 4:
+        x0, y0, x1, y1 = (int(round(v)) for v in region)
+    elif region and len(region) == 2:
+        x0, x1 = 0, ref.shape[1]
+        y0, y1 = (int(round(v)) for v in region)
+    else:
+        return 0, 0, ref.shape[1], ref.shape[0]
+    x0 = max(0, min(ref.shape[1] - 1, x0))
+    x1 = max(x0 + 1, min(ref.shape[1], x1))
+    y0 = max(0, min(ref.shape[0] - 1, y0))
+    y1 = max(y0 + 1, min(ref.shape[0], y1))
+    return x0, y0, x1, y1
+
+
+def _asset_diff(ref: np.ndarray, region: list[int] | None,
+                raster: Path) -> tuple[np.ndarray, tuple[int, int]]:
+    """Per-pixel abs diff between the reference crop and the shipped asset."""
+    x0, y0, x1, y1 = _stage_crop(ref, region)
+    target = ref[y0:y1, x0:x1]
+    img = Image.open(raster).convert("RGB")
+    if img.size != (target.shape[1], target.shape[0]):
+        img = img.resize((target.shape[1], target.shape[0]), Image.LANCZOS)
+    return np.abs(np.asarray(img, np.float32) - target).mean(axis=2), (x0, y0)
+
+
+def hero_fidelity(ref: np.ndarray, region: list[int], raster: Path,
                   mask: np.ndarray | None = None) -> tuple[float, float | None] | None:
-    """How faithfully the SHIPPED hero art matches the reference band.
+    """How faithfully the SHIPPED hero art matches the reference.
 
     `art_score` measures the traced SVG, which for a photographic design is a
     secondary artifact the page no longer shows.  This measures the thing the
-    page actually ships -- the raster export -- against the reference, at the
-    band's own stage size.  Chrome-free: the asset is a file.
+    page actually ships -- the raster export -- against the reference, over the
+    same region the page shows: `region` is the band for a full-bleed backdrop,
+    or the illustration's own `[x0, y0, x1, y1]` for a split figure (scoring a
+    deliberate figure crop against the whole band would report the crop itself
+    as an error).  Chrome-free: the asset is a file.
 
     `mask` (the tracer's removed rects) is excluded for the same reason the art
-    score excludes it: the export deliberately inpaints the mockup's own text
+    score excludes it: the export deliberately inpaints the mockup's own copy
     out, so scoring those pixels would penalise exactly the removal that makes
-    the backdrop usable.  What remains is the artwork.
+    the backdrop usable.  An illustration's own labels are NOT in that mask --
+    they are content the asset must retain, and they are scored.
 
     Returns `(mean, p95)`; the p95 is over the artwork pixels (see
     `artwork_mask`) and is None when there are too few to measure.
     """
-    y0, y1 = (int(round(v)) for v in band)
-    y0, y1 = max(0, min(ref.shape[0] - 1, y0)), min(ref.shape[0], y1)
-    if y1 <= y0:
+    if region is None or len(region) not in (2, 4):
         return None
-    target = ref[y0:y1]
-    img = Image.open(raster).convert("RGB")
-    if img.size != (target.shape[1], target.shape[0]):
-        img = img.resize((target.shape[1], target.shape[0]), Image.LANCZOS)
-    per_px = np.abs(np.asarray(img, np.float32) - target).mean(axis=2)
+    per_px, _ = _asset_diff(ref, region, raster)
     keep = np.ones(per_px.shape, bool)
     if mask is not None:
-        m = mask[y0:y1]
+        x0, y0, x1, y1 = _stage_crop(ref, region)
+        m = mask[y0:y1, x0:x1]
         if (~m).any():
             keep = ~m
-    eye = artwork_mask(target, keep)
+    x0, y0, x1, y1 = _stage_crop(ref, region)
+    eye = artwork_mask(ref[y0:y1, x0:x1], keep)
     p95 = (round(float(np.percentile(per_px[eye], 95)), 2)
            if int(eye.sum()) >= _EYE_MIN_PX else None)
     return float(per_px[keep].mean()), p95
+
+
+def label_fidelity(ref: np.ndarray, region: list[int], raster: Path,
+                   rects: list[list[int]] | None,
+                   mask: np.ndarray | None = None
+                   ) -> tuple[float, float] | None:
+    """The worst artwork label's difference: `(mean, p95)`.
+
+    `rects` are stage-space boxes of the model's `part: artwork` blocks -- the
+    labels an illustration carries.  A label the asset retained scores like the
+    rest of the artwork; a label the asset lost or inpainted away leaves its
+    fill behind and scores far higher.
+
+    The **p95** matters as much as the mean: a label is mostly background, so
+    erasing all its (thin) glyphs can leave the rectangle mean low -- a 60x12
+    caption whose strokes cover a quarter of the box reads ~45/255 even when
+    fully erased.  The percentile over the rect's own pixels sees the erased
+    strokes regardless of how much background surrounds them, which is why the
+    runner warns on either number.  `mask` (the tracer's removed rects) is
+    excluded for the same reason it is in `hero_fidelity`: where a label
+    overlaps copy the page deliberately replaces, the inpaint is the design,
+    not damage.  Returns None when no rect lands inside the shipped region.
+    """
+    if not rects:
+        return None
+    per_px, (ox, oy) = _asset_diff(ref, region, raster)
+    keep = None
+    if mask is not None:
+        x0, y0, x1, y1 = _stage_crop(ref, region)
+        keep = ~mask[y0:y1, x0:x1]
+    means: list[float] = []
+    p95s: list[float] = []
+    for r in rects:
+        x0, y0, x1, y1 = (int(round(v)) for v in r)
+        lx0, ly0 = max(0, x0 - ox), max(0, y0 - oy)
+        lx1 = min(per_px.shape[1], x1 - ox)
+        ly1 = min(per_px.shape[0], y1 - oy)
+        if lx1 <= lx0 or ly1 <= ly0:
+            continue
+        patch = per_px[ly0:ly1, lx0:lx1]
+        if keep is not None:
+            pk = keep[ly0:ly1, lx0:lx1]
+            if pk.any():
+                patch = patch[pk]
+            # A mask that covers the label entirely must NOT erase it from the
+            # check: skipping would silently turn a damaged label into no label
+            # at all.  The mask's job is to skip replaced copy *inside* a label,
+            # never the label; with no unmasked pixels the full rectangle is
+            # scored instead.
+        means.append(float(patch.mean()))
+        p95s.append(float(np.percentile(patch, 95)))
+    if not means:
+        return None
+    return max(means), max(p95s)
 
 
 def assess(job_id: str, page: Path, ref_png: Path, *,
@@ -343,7 +473,10 @@ def assess(job_id: str, page: Path, ref_png: Path, *,
            layout: str = "poster",
            background: tuple[int, int, int] | None = None,
            hero_image: Path | None = None,
-           hero_band: list[int] | None = None) -> dict:
+           hero_band: list[int] | None = None,
+           hero_figure: list[int] | None = None,
+           artwork_rects: list[list[int]] | None = None,
+           cleanup_rects: list[list[int]] | None = None) -> dict:
     """Return {art_score, art_p95, art_pct, whole_score, whole_pct, structure, issues}."""
     chrome = find_chrome()
     if not chrome:
@@ -408,16 +541,31 @@ def assess(job_id: str, page: Path, ref_png: Path, *,
 
     # What the page actually ships for the hero, when that is a raster rather
     # than the traced SVG.  Reported alongside `art_score` (the tracer's own
-    # number on the master) so neither hides the other.
-    if hero_image is not None and hero_band and Path(hero_image).is_file():
-        got = hero_fidelity(ref, hero_band, Path(hero_image),
-                            _removed_mask(pipeline, job_id) if pipeline else None)
+    # number on the master) so neither hides the other.  The region is the
+    # illustration's figure when the page shows one (the asset was cropped to
+    # it), else the hero band; see `hero_fidelity`.
+    region = hero_figure if (hero_figure and len(hero_figure) == 4) else hero_band
+    if hero_image is not None and region and Path(hero_image).is_file():
+        removed = _removed_mask(pipeline, job_id) if pipeline else None
+        # Artwork labels are protected content: the exclusions must never cover
+        # them.  Clear the label rects from the combined exclusions (tracer's
+        # removals + the cleanup's) and score them in full -- a partially masked
+        # label would otherwise hide exactly where damage shows.
+        removed_hero = _clear_rects(_merge_rects(removed, cleanup_rects),
+                                    artwork_rects)
+        got = hero_fidelity(ref, region, Path(hero_image), removed_hero)
         if got is not None:
             val, p95 = got
             out["hero_score"] = round(val, 2)
             if p95 is not None:
                 out["hero_p95"] = p95
             out["hero_source"] = "raster"
+            out["hero_region"] = list(region)
+        lab = label_fidelity(ref, region, Path(hero_image), artwork_rects,
+                             removed_hero)
+        if lab is not None:
+            out["hero_label_max"] = round(lab[0], 1)
+            out["hero_label_p95"] = round(lab[1], 1)
 
     # Surfaced as an advisory, not folded into the score: the two measures answer
     # different questions, and a high seam is a *readability* problem (a pasted-on
@@ -431,7 +579,10 @@ def assess(job_id: str, page: Path, ref_png: Path, *,
         from . import structure as _structure
         info = _structure.inspect(page)
         out["structure"] = info
-        out["issues"] = info.get("issues") or []
+        # Append, don't replace: the seam advisory above is one of `issues`, and
+        # overwriting the list here silently dropped it (a job could carry a
+        # pasted-on plate *and* report a clean structure).
+        out["issues"] = list(out.get("issues") or []) + list(info.get("issues") or [])
     except Exception:  # noqa: BLE001 - structure is advisory
         pass
     return out

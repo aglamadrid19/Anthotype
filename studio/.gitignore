@@ -1,6 +1,9 @@
 # ---- studio ---------------------------------------------------------------
 # Patterns are relative to this file (studio/), so no `studio/` prefix here.
 .venv/
+# The optional LaMa scene-cleanup environment (studio/setup-cleanup.sh): a
+# torch install, gigabytes, never committed.
+.cleanup-venv/
 data/
 backend/.env
 frontend/node_modules/

@@ -376,6 +376,33 @@ code {
   background: #0a1a15;
 }
 
+/* The explicit label-review confirmation required before accepting the
+   candidate: acceptance is refused until it is checked. */
+.check {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin-top: 12px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--muted);
+  cursor: pointer;
+}
+.check input {
+  margin-top: 2px;
+  accent-color: var(--accent, #35d08a);
+}
+
+/* The opt-in enhancement candidate: shown whole so the label check is possible
+   before accepting it into the page. */
+.enhance-preview {
+  display: block;
+  width: 100%;
+  margin-top: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
 .stage-frame {
   margin-top: 16px;
   border: 1px solid var(--line);

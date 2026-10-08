@@ -28,8 +28,9 @@ metric is now split:
   over the pixels the eye reads as artwork, because the mean is dominated by
   whatever is flat and large;
 - **the shipped hero** is scored separately when the page ships a raster rather
-  than the traced SVG: its own mean against the reference band covers what a
-  visitor actually sees;
+  than the traced SVG: its own mean against the region the page actually shows
+  (the hero band, or a split illustration's own figure) covers what a visitor
+  sees;
 - **the website** is scored on **structure** — landmarks, sections, one `h1`,
   resolving links, flow layout, reflow — which is what makes it a website.
 
@@ -42,9 +43,10 @@ full-bleed, so on any desktop wider than 1024 it is magnified (1.37× at 1400 px
 1.88× at 1920 px) while the upload may carry much more detail. So the page ships a
 WebP when **either** the artwork is continuous-tone **or** the upload carries
 ≥1.2× the stage's linear resolution. It is built from the original upload (not the
-1024×768 working reference) and from the tracer's **text-removed** image (not the
-raw reference, whose nav bar and headline would ghost behind the DOM copy). The
-SVG art master is produced for every design regardless.
+1024×768 working reference) and from the tracer's **prepared** image — the mockup
+copy the page replaces is inpainted out of it (otherwise the reference's nav bar
+and headline ghost behind the DOM copy), while an illustration's own labels are
+kept. The SVG art master is produced for every design regardless.
 
 The retired text-metrics machinery (`measure_lines`, `measure_weight`,
 `sample_line_colors`, per-line gradients, glow, `cap_top_offset` placement,
@@ -68,9 +70,12 @@ are fixed 1024×768 posters (`"layout": "poster"`) scored exactly as before.
 - `doctor polarity` → all checks pass (ink/box/two-tone/scope, the structure
   checks, the hero-representation guards, the two hero-band guards, and the
   "loose header box cannot crop the hero art" guard).
-- `doctor fixtures` → **light / montiva / antho all PASS**, each pinning
-  `hero_kind=photographic`, a shipped-hero-art bound (means 1.54 / 1.87 / 1.54)
-  and an `art_p95_max` bound (21.0 / 39.0 / 21.0 measured).
+- `doctor fixtures` → **light / montiva / antho / dashboard all PASS**.  The
+  first three pin `hero_kind=photographic`, a shipped-hero-art bound (means
+  1.57 / 1.89 / 1.57) and an `art_p95_max` bound (22.67 / 35.67 / 22.67
+  measured); the dashboard fixture pins the integrated scene prototype (layout,
+  3840 px budget, all 33 labels in the shipped scene, worst label 15.0/43.9
+  mean/p95, shipped hero 0.82).
 - `doctor regress` → **regression PASS**.
 - The studio builds a real page end to end on the montiva fixture (a real vision
   call): header + nav, hero, **3 content sections** (features / testimonials /
@@ -258,10 +263,12 @@ had **12 artwork blocks** (the "1 Image / 2 Sunlight / … / 5 Generate" step
 labels, plus the mockup's own wordmark and headline) all baked into the
 backdrop.
 
-Now `text_rects` is given **every** text block.  A text block is not art: it is
-blanked either way, and the tracer repaints it from the surrounding pixels, so
-there is no hard hole.  Guarded by a new `doctor polarity` check that the rects
-cover artwork text as well as page copy.
+That fix gave `text_rects` **every** text block.  It stopped the ghosting, but it
+also blanked the illustration's own labels (resolved in the latest session: the
+exclusion is now scoped to the copy the page actually replaces).  The ghosting
+rule still holds for replaced copy: a text block that becomes DOM must be
+blanked, and the tracer repaints it from the surrounding pixels, so there is no
+hard hole.
 
 Rebuilding both uploads end to end confirmed the ghosting is gone (the montiva
 hero now shows the photographed office, not a faded copy of its own headline),
@@ -304,10 +311,11 @@ guarded (full reasoning in `docs/HANDOFF.md`, Stage 9):
 - **Icons.**  The mockup's card icons, star rows and map pin are artwork pixels,
   not DOM; a card's icon has no fixed position once the layout reflows.
   Recovering them as real assets is a separate feature.
-- **Artwork-internal labels are blanked.**  Blanking every text block is right
-  for the page's own copy but also removes the illustration's own captions (the
-  anthotype step labels).  Keeping them re-introduces ghosting wherever a traced
-  label lands behind DOM text, which is not known at trace time.
+- **Artwork-internal labels are blanked — RESOLVED (see the illustration-labels
+  section below).** Blanking every text block removed the illustration's own
+  captions (the anthotype step labels).  Labels are now preserved in the artwork,
+  and a flat hero whose illustration has its own labels gets its own region
+  beside the copy, so a preserved label cannot sit behind DOM text.
 - **The traced art is flatter than the mockup** — it is posterised into 24-26
   luminance bands; that is the tracer's chosen payload/parity operating point.
 
@@ -627,6 +635,352 @@ fixture. All four are fixed.
 The fixture score is the **traced SVG rendered alone** for a `page` layout
 (`verify._render_art`), so none of this moved it — montiva stayed **4.19**. Page
 CSS and the tracer are scored separately, by design. `doctor gate` → **PASS 4/4**.
+
+## This session's changes (illustration labels, the figure region, resolution honesty)
+
+Driven by a review of the saved dashboard job (`d9d0855d6cf5`): Studio produced a
+good page but had **deliberately erased the illustration's own labels** (33
+`part: artwork` blocks), then **cropped and dimmed** what survived with
+`object-fit: cover` + the copy scrim, and its checks could not see any of it —
+`hero_fidelity` resized the asset to the reference band (ignoring the crop and
+the overlays) and `assess` overwrote the seam advisory with the structure issues.
+
+- **Only the copy the page replaces is excluded.** `generate.write_all` builds
+  `text`/`blank` from `page_blocks` minus the hero labels `_drop_artwork_labels`
+  keeps out of the DOM.  An illustration's labels stay in the traced master and
+  in the tracer's prepared image.  Guarded by the rewritten `doctor polarity`
+  check.
+- **A flat illustration gets its own region** (first milestone; the scene
+  prototype below supersedes it as the automatic composition -- `split` remains
+  an available mode).  `generate.hero_figure` detects a
+  hero whose artwork labels form a column clear of the copy; `build_content`
+  records `hero_layout` / `hero_figure`; `gen-page.mjs` adds `.hero-split` and
+  narrows the SVG viewBox to the figure; the CSS shows it whole (no `cover`, no
+  scrim), stacking below 880 px.  `runner._hero_art` declines the split for
+  continuous-tone artwork (a photograph stays full-bleed) and crops the raster
+  export to the figure (`heroart.export_from_prepared(figure=…)`).
+- **Resolution is sized and reported honestly.** Export target 2048 → 2880 → 3840
+  (`EXPORT_TARGET_WIDTH`, 2× a 1920 px desktop after the artwork-quality
+  experiment; never upscaled past the source).
+  `heroart.resolution_gap` records `hero_needed` / `hero_scale` per job and warns
+  when the upload is short.  The split figure is **capped at 560 CSS px** by the
+  page CSS (`HERO_FIGURE_MAX_CSS`), because without the cap the stacked layout
+  let it grow to 816 px at an 880 px viewport while the warning still assumed
+  560 — a reviewer caught the understated 1.43×.  `doctor polarity` now fails if
+  the emitted CSS and `heroart.HERO_CSS_SPLIT` drift, so the budget is the true
+  worst case.
+- **The checks now see it.** `verify.hero_fidelity` scores the raster against the
+  region the page actually shows (figure or band); `verify.label_fidelity`
+  reports the worst artwork label as **mean and p95** (`hero_label_max` /
+  `hero_label_p95`, warned above 28/255 and 64/255) — the p95 is what catches a
+  sparse caption whose erased strokes leave the rectangle mean low (a synthetic
+  thin-stroke label reads 20/255 mean but 200/255 p95); the seam advisory
+  survives the structure merge; the job carries an `assets` inventory that is
+  honest about what ships (under a split hero, artwork outside the figure is
+  `artwork-master`, not `hero-artwork`); the critique prompt treats a
+  missing/smeared illustration label as a defect instead of exempting "missing
+  fine detail".
+- **Fixtures:** **4/4 PASS**, now including a permanent `dashboard` fixture
+  (`studio/fixtures/dashboard-ref.png` = the original 1586×992 upload, plus a
+  cached extraction re-merged with its section assignments, which the raw job
+  cache omitted).  It pins `hero_layout='split'`, the 1120 px budget, all 33
+  labels in the shipped figure, and the worst label mean/p95 (17.3 / 49.1
+  measured).  The full-bleed three: art means 2.12 / 3.58 / 2.12
+  (light/montiva/antho) — 0.09–0.14 above the previous run, because the label
+  pixels are no longer masked out of the score.  Bounds unchanged (3.0/4.0;
+  seams 0/3/0).
+- **A/B/C regress:** untouched — the tracer and poster shell were not changed.
+
+Validation beyond the cached replay: a **fresh live upload** through the studio
+path (real vision call, no cache) finished `split` with a 782×906 WebP, all 33
+artwork blocks `hero-illustration`, worst label 8.0 mean / 23.4 p95, no
+structure issues.  A viewport matrix on the built page — 390, 834, 880, 881,
+1440, 1920 px — shows `scrollWidth == innerWidth` at every width, the figure
+whole (no `cover`/letterboxing) and never wider than the 560 px cap (350 / 560 /
+560 / 381 / 498 / 498 px in that order).
+
+**Known limit (unchanged by this work):** the figure's bounds come from the
+model's labels, so a drawing element that extends past its own labels — the
+dashboard's leftmost rack — is still clipped by ~50 stage px at the panel edge
+(visibly checked against the reference).  Recovering that needs pixel
+segmentation; the plan keeps it for the models benchmark, and every labelled
+element is preserved.
+
+## This session's changes (the reference-led scene prototype)
+
+The next milestone was a *convincing reconstruction* of the dashboard hero — not
+more fixes to the split template: the complete native-resolution copy-removed
+scene (racks, floor, lighting, the UI illustration) integrated across the hero,
+with the reference's hierarchy rebuilt as real HTML.
+
+- **A new `scene` composition** (`generate.build_page_css`, `gen-page.mjs`): the
+  whole copy-removed band IS the hero — an in-flow image at its own aspect, a
+  grid sibling of the copy in the same cell (`display: grid`, both children in
+  `1 / 1`), so nothing is cropped, there is no `cover`, no boxed column and no
+  scrim.  A flat illustration hero is composed this way automatically; the
+  previous `split` mode remains available, and a continuous-tone hero (a
+  photograph) stays `full`.
+- **The reference's own interface elements are gone from the artwork.**  The
+  page's eyebrow/headline/paragraph/buttons were already in the blank/inpaint
+  rects; a new benefit-row blank removes the reference's benefit icons wholesale
+  (they would duplicate the live row).  Illustration labels are retained.
+- **The benefit row moved inside the hero.**  The model tags it `features`; in
+  scene mode `_benefit_candidates` lifts the short value/sub-label lines that sit
+  under the copy and inside the band into the hero (at least two sharing a row),
+  dropping the section if it empties.  It renders as `.hero-benefits` (dot, bold
+  value, muted sub-label) — one line at desktop, wrapping on phones.
+- **Only "AntSeed" is accented.**  The two-tone headline's run *text* boundary is
+  unreliable on a wrapped block (`sample_runs` splits inside "hosting"), so the
+  accent is recovered from its share of the ink (`_tone_fraction`, classified by
+  chroma) and turned back into trailing words with the real Inter advances
+  (`_accent_html`).  `doctor polarity` guards the wrapped case.
+- **The prototype ships lossless.**  `heroart.export_from_prepared(lossless=True)`
+  writes a lossless WebP for the scene, so the composition is judged without
+  added compression: 1586×907, 782 KB, shipped scene mean **0.82** against the
+  reference band (worst label 15.0 mean / 43.9 p95).  The source-resolution
+  caveat stays explicit: 1586 px against the 3840 px a 1920 CSS @2x hero wants
+  (`hero_scale` 1.82), reported per job.
+- **The flat/photo verdict precedes the transformation.**  `runner.__call__`
+  measures `is_photographic` from the normalised upload *before* `write_all` and
+  passes `scene_ok`; the scene's content edits (benefit lift + blank) only run
+  for flat artwork.  The first cut ran them unconditionally, and the gate caught
+  it: photographic montiva's benefit row was lifted and blanked out of its
+  traced master (art mean 3.58 → 4.27, over its bound).  With `scene_ok=False`
+  montiva is back to 3.58.
+- **A live extraction is the acceptance test, not only the fixture.**  The fresh
+  live run returned all six benefit lines as `other` (the fixture had values
+  `other` + sub-labels `tagline`); that broke the pairing and let
+  `_drop_artwork_labels` swallow the row's right-hand items.  The pairer is now
+  role-agnostic and runs before the label filter, protecting its pairs; the live
+  job's own cache replay (`e47860139c4d`) renders all three benefits.
+- **Acceptance:** the side-by-side at 1024×768 (the reference's own aspect) at
+  `compare-1024.png` matches the hierarchy — wider headline with only "AntSeed"
+  accented, lighter supporting copy, buttons, and the benefit row inside the
+  hero — over the complete scene; 834/880 stack the scene above the copy (the
+  copy is nearly as tall as the scene below 900 px); 390 has no horizontal
+  overflow; 1440 keeps the copy on the scene's dark side at the reference's own
+  left proportion.  The fixed prototype built from the live extraction's own
+  cache is job `e47860139c4d` (`studio/data/jobs/e47860139c4d/index.html`);
+  opened in Safari for the human visual check.
+- **Known limits:** inpaint quality (a faint smudge can remain where the
+  reference's own copy/buttons were; the live copy covers most) and the 1586 px
+  source — a larger artwork upload is still needed for native Retina sharpness.
+  The scene shows the whole band, so the unlabelled left rack is no longer
+  clipped.
+
+`doctor gate --no-env` with the final tree: polarity all pass, fixtures **4/4**
+(light 2.12 / montiva 3.58 / antho 2.12 / dashboard scene 0.82), regress
+**2.71 / 2.76 / 2.99**, and the STATE.json consistency check passes.  A fresh
+live upload through the studio path (real vision call) finished `scene` too.
+
+## This session's changes (artwork-quality experiment — the better hero)
+
+The planning agent judged the integrated scene composition right but the
+backdrop damaged (pill/dot remnants, button ghosts, fill streaks) and short of
+Retina.  One controlled experiment against the original upload answered it; the
+cleanup was deliberately held out of Studio until the comparison succeeded; on
+that verdict it is now integrated (below).
+
+- **Component masks.** The old masks were glyph-tight; the pill (dot included),
+  both button plates and the benefit row (icons included) are now measured from
+  the source pixels and masked whole.  That alone removes the remnants; the copy
+  blocks are masked as full boxes so no glyph ghosts remain.
+- **LaMa masked inpainting wins the fill.** Nearest/Telea/diffusion smear or
+  replicate the element borders; LaMa continues the floor striping and glow
+  through the repaired boxes.  Outside the masks every candidate is
+  byte-identical to the source (max diff 0.0).
+- **Retina:** ×2 Lanczos and ×2 Real-ESRGAN (x2plus) both look dramatically
+  crisper than the 1586 native asset at 2×; Real-ESRGAN is slightly crunchier
+  and not clearly better — and neither is genuine detail.  A larger original
+  artwork remains the real fix.
+- **Artifacts:** `studio/data/experiments/artwork-quality/` — `before-after.png`
+  (the visible damage vs the winner), `masks.png`, `hero-lama.html`,
+  `hero-lama-x2-lanczos.html`, `hero-lama-x2-resr.html`, candidate WebPs and
+  `experiment.py` (masks → fills → LaMa → upscale → pages).
+- **Integrated (approved trial):** the winning cleanup is wired into the scene
+  path — optional external LaMa over upload-driven complete-element masks
+  (`app/cleanup.py`, `studio/setup-cleanup.sh`; via `STUDIO_CLEANUP_PYTHON` or
+  `studio/.cleanup-venv`), original pixels kept outside the masks, and an
+  explicit `hero_cleanup="fallback"` + warning when the cleaner is absent.  The
+  scene rendition is Lanczos ×2 (display sharpness only) and lossy
+  `SCENE_QUALITY=90`; the resolution warning uses `source_w` (the upload's own
+  width), so the 2.42× shortfall is still reported honestly.  Export target
+  2880 → **3840** and `MAX_NATIVE_SCALE` 3 → **4** for 1920 CSS @2× support.
+  Real-ESRGAN deferred: its comparison had a channel-order bug (basicsr takes
+  and returns BGR) — corrected, it is comparable to Lanczos q90 and no better.
+  Dashboard fixture through both paths: LaMa hero **1.39**, fallback **1.27**,
+  labels 15.4/42.4, both PASS.
+- **Review fixes (2026-10-04):** the first integrated run still ghosted the
+  eyebrow/buttons because component routing used "blank minus text" (on a dark
+  design `blank` contains every text rect, so only the benefit row was routed);
+  components are now named (CTA plates, the eyebrow's grown rect, the benefit
+  row pad-only) and header/nav rects are dropped.  Growth is **seed-connected**
+  (a rack edge inside the search window is no longer swallowed; the guard tests
+  a decoy inside the window).  `setup-cleanup.sh` fetches the model to
+  `torch.hub.get_dir()`, which is `~/.cache/torch` on macOS -- not the
+  `~/Library/Caches/torch` it previously assumed.  Fresh verification: the
+  rebuilt fixture ships hero **1.30**; a fresh live upload
+  (`f177dea4e2d8`, 12 masks after the header-band filter) ships 3172×1814 q90
+  at 206 KB, fidelity **1.30**, all 33 labels `hero-scene`; the whole-hero and
+  left-zone before/after/target comparisons live in the experiment dir and match
+  the approved prototype.
+
+## This session's changes (the Google enhancement: opt-in, audited, preview-before-accepting)
+
+The artwork-quality experiment's follow-up: a generative high-resolution
+rendition is available as an **opt-in, preview-before-accepting** step, never an
+automatic one.
+
+- **Label audit.** Every one of the 33 artwork labels was re-checked against the
+  cleaned source (local macOS Vision OCR + 2× visual sheets,
+  `studio/data/experiments/artwork-quality/google-probe/`).
+  `gemini-3-pro-image` 4K changed content — `28ms→26ms`, `36ms→26ms`,
+  `Staging→Slaping`, `End-to-end encrypted→Eod-to-end-encrypted` — while
+  `gemini-3.1-flash-image` 4K preserved all four in that run.  The earlier
+  "labels survive" claim was wrong for Pro and is corrected in the probe README.
+- **The metric caveat.** The enhanced band is aligned (best diff at 0–1 px
+  shift), but its `hero_fidelity` reads **4.8** against the base's **1.30**
+  because the metric measures **pixel drift** from the reference, not sharpness:
+  a resample of the source drifts least; a generative re-render drifts more
+  while being sharper.  The 4.8 is a real measurement of increased drift, not an
+  incomparable number; acceptance logs that note and the per-label audit is the
+  verdict on labels.
+- **Integration.** `app/enhance.py` (Google client + cache), runner
+  `_enhance_scene` / `accept_enhance`, `GET /api/jobs/<id>/enhance`,
+  `POST /api/jobs/<id>/enhance/accept` and the result-view card with *Accept
+  enhanced artwork*.  `STUDIO_ART_ENHANCE` selects `google-flash` (default
+  mode), `google-pro` or `auto`; `GEMINI_API_KEY` comes from the environment or
+  `studio/backend/.env`.  Results are cached by
+  `sha256(cleaned PNG)[:24] + model + size` under `studio/data/enhance-cache/`,
+  so retries and acceptance never pay twice.  `_verify` now scores the file the
+  content actually names (`_hero_image_path`), and `_package` ships the shipped
+  asset plus the pending candidate as provenance.
+- **Provenance.** The accepted asset keeps `hero_image.source_w` = the
+  **upload's** width (the resolution warning is unchanged) and adds
+  `hero_image.enhance` {provider, mode, model, size, generated, input_sha256,
+  image_tokens} with `rendition="enhance"`.  LaMa/Lanczos stays the fallback;
+  the runtime page is unchanged (asset inlined, zero network requests).
+- **Hardening (review follow-up).** `doctor gate` / `fixtures` force
+  `STUDIO_ART_ENHANCE_NETWORK=forbidden`, honored by `enhance.available()` and
+  `candidate()`, so a configured environment cannot make the gate call the
+  provider.  The whole candidate step (request, band crop, WebP encode, disk)
+  is inside the optional handler — any failure keeps LaMa/Lanczos.  Acceptance
+  is serialized (a runner lock) and failure-safe: the content, the job-dir
+  files, the generated **workspace pages** (`<id>-full.html`, the Astro
+  `index.astro`, the whole `dist/` tree) and every field the rebuild touches
+  are snapshotted and rolled back on any failure, and
+  `hero_enhance="accepted"` is set only after packaging succeeds.  It accepts
+  only a **finished** job (`status == "done"`; a running/queued/failed job gets
+  409).  Acceptance requires `reviewed=True` (the UI's checkbox gates the
+  button; the API body carries it) and records
+  `hero_enhance_audit={reviewed, method, at, candidate_sha256}` — the record
+  cannot claim an audit that did not happen.
+- **Verification.** `doctor polarity` gained "enhancement is opt-in, keyed,
+  cached and killable" and "enhancement acceptance is failure-safe and
+  serialized" (mocked: review gate, packaging-failure rollback, two concurrent
+  acceptances → exactly one wins).  Headless end-to-end
+  (`test_enhance_flow.py`, cache-seeded so no API call): candidate 3840×2193 /
+  269 KB from a 5220×3264 Flash output; acceptance rebuilt the page (477 KB)
+  shipping `<id>-hero-enhanced.webp` with the review audit recorded; the routes
+  answered 200 / 409 / 404 as expected.  The gate was rerun with
+  `STUDIO_ART_ENHANCE=google-flash` **configured**: the dashboard fixture
+  recorded `hero_enhance="skipped"` / "network forbidden -- skipped" and
+  shipped the LaMa hero 1.30, and the run passed **4/4** (fixtures 4/4, regress
+  2.71 / 2.76 / 2.99).  It was rerun once more after the round-two acceptance
+  fixes (finished-job gate, workspace-page rollback) with the same result and
+  the extended self-test green: `unfinished rejected=True`,
+  `rollback(incl. workspace pages)=True`, `accepted+audit=True`,
+  `serialized=True`.
+
+## This session's changes (full-layout raster heroes: cleanup + enhancement)
+
+The opt-in enhancement covered only `scene` jobs, so a photographic (or
+wider-than-stage) upload — `hero_layout="full"` — silently bypassed it even
+with `STUDIO_ART_ENHANCE` set.  A real upload (`ddbc2872f5dd`, 1672×941,
+colour score 214) exposed two gaps in sequence.
+
+- **The tracer's prepared fill is not a clean enhancement input.**  It is
+  text-removed but leaves rectangular patches, a residual CTA plate and the
+  feature icons/smears.  `_clean_scene` became **`_clean_artwork`**, run for
+  both `scene` and `full` raster layouts, with masks detected from the page's
+  own structure: CTA plates (`button_rects`), the hero eyebrow, the config's
+  copy rects, and the row drawn inside the band whose copy a later DOM section
+  replaces (`_benefit_blank_rects(..., any_layout=True)` — short lines sharing
+  a row, never a hard-coded cutoff).  The full-layout export now comes from the
+  cleaned upload, so the shipped backdrop is clean even without enhancement;
+  `hero_cleanup` is `lama`/`fallback` for both layouts.
+- **The enhancement input is the cleaned upload** for both layouts
+  (`_enhance_artwork`, band mapped through the ingest fit).  A missing cleaner
+  **skips** the enhancement — the prepared fill is never sent to the model.
+  The threshold and the layout decision were not touched (the upload is
+  genuinely continuous-tone, 214 ≥ 150).
+- **Framing + label guards (review follow-up).**  The enhancement input must
+  cover the band's full extent: `enhance.cover_band` extends it with the
+  design's background when the band runs past the upload (candidate 3840×2194,
+  fallback 3840×2193 — previously clamped to 3840×1929); no padding leaves the
+  scene input unchanged, so its cache keys stay valid.  Cleanup masks can never
+  remove an artwork label: `cleanup.subtract_rects` subtracts every label rect
+  from the masks (logged when it fires), `label_fidelity` scores a fully masked
+  label instead of skipping it (a synthetic erased label still reads 190/190),
+  and the combined exclusions are cleared of label rects (`verify._clear_rects`)
+  so a *partially* masked label still shows its damage (synthetic erased glyph
+  run: hidden 0/0 vs cleared 28.5/190).
+- **Tests:** `doctor polarity` gained "enhancement maps the cleaned upload and
+  stays optional" (incl. the padded-band framing), "the full-layout row blank
+  is detected from its blocks" (rendering stays scene-only) and "cleanup masks
+  never erase an artwork label from the check".  Fixture **`hosting`**
+  (`studio/fixtures/hosting-ref.png` + `hosting-blocks.json`) pins the
+  full-layout path: structure header/nav/hero/features, art 2.41 / p95 33.67,
+  hero 3.26, layout `full`, 26 artwork blocks → `hero-artwork`; `STATE.json`
+  records its bounds.
+- **Verification:** the hosting fixture with the integrated cleanup ships
+  `hero_cleanup=lama` (12 masks); the three feature-icon zones go 381/361/415
+  green pixels → **0/0/0** with the floor/rack glow preserved, labels unchanged
+  (18.0/67.7).  The cleanup's masks are recorded as `cleanup_removed` and
+  excluded from the raster score (montiva 2.52 → **2.02**, bound 2.5), never
+  from the seam check.  A build with enhancement configured and
+  `STUDIO_ART_ENHANCE_NETWORK=forbidden` records `hero_enhance="skipped"` /
+  "network forbidden -- skipped" (no spend).  `doctor gate` (5 fixtures)
+  passes.
+
+## This session's changes (the repair becomes a general stage)
+
+The visually approved v2 repair of the hosting candidate is now a Studio stage,
+not seven hard-coded patches.
+
+- **`app/repair.py`** — design-agnostic, runs with every opted-in enhancement
+  (scene + full): content detection from the **native pixels** (contrast against
+  a local background; a component is kept only when the border around its bbox
+  is flat — a UI panel, not artwork texture; shape-filtered so round blobs are
+  dots, not content; merged) plus every extraction artwork box; restoration
+  with the validated rules (exact source→output mapping, context-ring alignment
+  with a verified-flat fallback, opaque cores + adaptive feathering, zero
+  change outside, complete coverage); provenance (hashes, scale, regions,
+  transforms, residuals) and a separate repair cache (`repair-v1.png/json`
+  beside `output.png`).
+- **Fail-safe** — the repair always runs when enabled (even with **empty
+  extraction boxes**: the pixel detector is independent; real cached data is
+  complete either way — 50/50 with the job's boxes, 40/40 with none).  x clamps
+  by width and y by height (a portrait image no longer loses lower content).
+  Component bboxes are taken at **full resolution** (`_exact_bbox`), so a
+  one-pixel shift cannot move a stroke's edge into the flatness border and
+  zero the detector (regression: 2 detected / 2 repaired at both shifts, with
+  actual restored pixels asserted at 3×).  **Zero detections is uncertain, not
+  verified absence** (no-op repair removed).  `detected = repaired + skipped`
+  is enforced, and only a **complete** repair (`detected > 0`, nothing skipped)
+  is a normally acceptable `pending` candidate; partial/failed/off candidates
+  are **`diagnostic`** — the cleaned-native fallback ships, the preview is
+  shown for inspection, and `accept_enhance` refuses them.
+  `STUDIO_ART_REPAIR=off` disables the stage (diagnostic-only candidates).
+- **The approved hosting v2** was attached as a new candidate with the user's
+  approval bound to its SHA-256 (`hero_enhance_audit.candidate_sha256`),
+  accepted through the normal safeguards; the original Flash band is preserved
+  (`-hero-enhance-flash.webp`) and `ddbc2872f5dd` is untouched.
+- **Tests** — `doctor polarity` gained "source-preserving repair restores
+  content and never guesses" (synthetic panel: text+icon detected, textured half
+  excluded, core diff 7.2, outside 0, feather 3220 px, noise refused) and "the
+  enhancement repairs before deriving the band" (runner integration with a
+  mocked model output).  The configured gate runs spend-free.
 
 ## Environment
 

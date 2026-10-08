@@ -1,0 +1,571 @@
+{
+  "blocks": [
+    {
+      "text": "Anthosting",
+      "role": "brand",
+      "part": "page",
+      "bbox": [
+        78.0,
+        80.0,
+        168.0,
+        100.0
+      ],
+      "section": "header"
+    },
+    {
+      "text": "Product",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        620.0,
+        86.0,
+        652.0,
+        98.0
+      ],
+      "section": "nav"
+    },
+    {
+      "text": "Private Hosting",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        680.0,
+        86.0,
+        742.0,
+        98.0
+      ],
+      "section": "nav"
+    },
+    {
+      "text": "Docs",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        770.0,
+        86.0,
+        792.0,
+        98.0
+      ],
+      "section": "nav"
+    },
+    {
+      "text": "Pricing",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        818.0,
+        86.0,
+        846.0,
+        98.0
+      ],
+      "section": "nav"
+    },
+    {
+      "text": "Book a setup call",
+      "role": "cta",
+      "part": "page",
+      "bbox": [
+        890.0,
+        86.0,
+        964.0,
+        98.0
+      ],
+      "section": "nav"
+    },
+    {
+      "text": "BUILT FOR ANTSEED",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        68.0,
+        209.0,
+        174.0,
+        221.0
+      ],
+      "section": "hero"
+    },
+    {
+      "text": "Managed private hosting for AntSeed.",
+      "role": "headline",
+      "part": "page",
+      "bbox": [
+        42.0,
+        248.0,
+        484.0,
+        344.0
+      ],
+      "section": "hero"
+    },
+    {
+      "text": "Dedicated infrastructure, private deployments, and hands-on support for teams that want AntSeed on their own terms.",
+      "role": "subhead",
+      "part": "page",
+      "bbox": [
+        42.0,
+        366.0,
+        424.0,
+        428.0
+      ],
+      "section": "hero"
+    },
+    {
+      "text": "Book a setup call",
+      "role": "cta",
+      "part": "page",
+      "bbox": [
+        66.0,
+        471.0,
+        198.0,
+        487.0
+      ],
+      "section": "hero"
+    },
+    {
+      "text": "See architecture",
+      "role": "cta",
+      "part": "page",
+      "bbox": [
+        272.0,
+        471.0,
+        364.0,
+        485.0
+      ],
+      "section": "hero"
+    },
+    {
+      "text": "Private deployments",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        72.0,
+        541.0,
+        158.0,
+        553.0
+      ],
+      "section": "features"
+    },
+    {
+      "text": "Fully isolated environments",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        72.0,
+        558.0,
+        166.0,
+        568.0
+      ],
+      "section": "features"
+    },
+    {
+      "text": "Managed Infra",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        222.0,
+        541.0,
+        284.0,
+        553.0
+      ],
+      "section": "features"
+    },
+    {
+      "text": "We run the heavy lifting",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        222.0,
+        558.0,
+        284.0,
+        568.0
+      ],
+      "section": "features"
+    },
+    {
+      "text": "Monitoring & support",
+      "role": "other",
+      "part": "page",
+      "bbox": [
+        362.0,
+        541.0,
+        450.0,
+        553.0
+      ],
+      "section": "features"
+    },
+    {
+      "text": "Proactive and hands-on",
+      "role": "tagline",
+      "part": "page",
+      "bbox": [
+        362.0,
+        558.0,
+        428.0,
+        568.0
+      ],
+      "section": "features"
+    },
+    {
+      "text": "US WEST",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        576.0,
+        181.0,
+        610.0,
+        190.0
+      ]
+    },
+    {
+      "text": "Private region",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        576.0,
+        192.0,
+        626.0,
+        202.0
+      ]
+    },
+    {
+      "text": "EU CENTRAL",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        798.0,
+        194.0,
+        844.0,
+        203.0
+      ]
+    },
+    {
+      "text": "Private region",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        798.0,
+        205.0,
+        848.0,
+        215.0
+      ]
+    },
+    {
+      "text": "ASIA EAST",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        934.0,
+        233.0,
+        972.0,
+        242.0
+      ]
+    },
+    {
+      "text": "Private region",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        934.0,
+        244.0,
+        984.0,
+        254.0
+      ]
+    },
+    {
+      "text": "Anthosting",
+      "role": "brand",
+      "part": "artwork",
+      "bbox": [
+        638.0,
+        286.0,
+        680.0,
+        296.0
+      ]
+    },
+    {
+      "text": "All systems operational",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        908.0,
+        304.0,
+        980.0,
+        313.0
+      ]
+    },
+    {
+      "text": "Infrastructure",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        640.0,
+        321.0,
+        682.0,
+        330.0
+      ]
+    },
+    {
+      "text": "Deployments",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        640.0,
+        341.0,
+        682.0,
+        350.0
+      ]
+    },
+    {
+      "text": "Monitoring",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        640.0,
+        362.0,
+        678.0,
+        371.0
+      ]
+    },
+    {
+      "text": "Team",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        640.0,
+        383.0,
+        662.0,
+        392.0
+      ]
+    },
+    {
+      "text": "Settings",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        640.0,
+        404.0,
+        672.0,
+        413.0
+      ]
+    },
+    {
+      "text": "Your AntSeed deployment",
+      "role": "headline",
+      "part": "artwork",
+      "bbox": [
+        714.0,
+        321.0,
+        838.0,
+        335.0
+      ]
+    },
+    {
+      "text": "Private. Secure. Fully managed.",
+      "role": "tagline",
+      "part": "artwork",
+      "bbox": [
+        714.0,
+        342.0,
+        818.0,
+        352.0
+      ]
+    },
+    {
+      "text": "3 Regions",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        748.0,
+        370.0,
+        768.0,
+        396.0
+      ]
+    },
+    {
+      "text": "12 Services",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        836.0,
+        378.0,
+        856.0,
+        396.0
+      ]
+    },
+    {
+      "text": "99.99% Uptime",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        924.0,
+        386.0,
+        960.0,
+        404.0
+      ]
+    },
+    {
+      "text": "Infrastructure",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        714.0,
+        417.0,
+        772.0,
+        427.0
+      ]
+    },
+    {
+      "text": "as-seed-1",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        726.0,
+        449.0,
+        762.0,
+        458.0
+      ]
+    },
+    {
+      "text": "Production",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        782.0,
+        449.0,
+        812.0,
+        458.0
+      ]
+    },
+    {
+      "text": "Healthy",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        858.0,
+        459.0,
+        886.0,
+        468.0
+      ]
+    },
+    {
+      "text": "12ms",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        928.0,
+        469.0,
+        946.0,
+        478.0
+      ]
+    },
+    {
+      "text": "as-seed-1",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        726.0,
+        477.0,
+        762.0,
+        486.0
+      ]
+    },
+    {
+      "text": "Staging",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        782.0,
+        477.0,
+        806.0,
+        486.0
+      ]
+    },
+    {
+      "text": "Healthy",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        858.0,
+        487.0,
+        886.0,
+        496.0
+      ]
+    },
+    {
+      "text": "28ms",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        928.0,
+        497.0,
+        946.0,
+        506.0
+      ]
+    },
+    {
+      "text": "as-seed-test-1",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        726.0,
+        505.0,
+        776.0,
+        514.0
+      ]
+    },
+    {
+      "text": "Production",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        782.0,
+        505.0,
+        812.0,
+        514.0
+      ]
+    },
+    {
+      "text": "Healthy",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        858.0,
+        515.0,
+        886.0,
+        524.0
+      ]
+    },
+    {
+      "text": "36ms",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        928.0,
+        525.0,
+        946.0,
+        534.0
+      ]
+    },
+    {
+      "text": "Secure private tunnel",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        818.0,
+        590.0,
+        904.0,
+        602.0
+      ]
+    },
+    {
+      "text": "End-to-end encrypted",
+      "role": "other",
+      "part": "artwork",
+      "bbox": [
+        818.0,
+        616.0,
+        890.0,
+        626.0
+      ]
+    }
+  ]
+}

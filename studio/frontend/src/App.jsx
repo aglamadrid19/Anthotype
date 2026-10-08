@@ -116,7 +116,9 @@ export default function App() {
         </div>
       )}
 
-      {job && job.status === 'done' && <Result job={job} onReset={reset} />}
+      {job && job.status === 'done' && (
+        <Result job={job} onReset={reset} onUpdate={setJob} />
+      )}
     </div>
   );
 }

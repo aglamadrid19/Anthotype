@@ -117,21 +117,45 @@ ${artCss}
   //     the scrim in the page CSS keeps the copy legible over it.
   const band = Array.isArray(content.hero_band) ? content.hero_band : null;
   const hero = content.hero_image;
+  // Three hero compositions, chosen by `content.hero_layout`:
+  //   scene -- the reference-led prototype: the whole copy-removed scene in
+  //     flow, shown at its own aspect, with the live copy over its dark side.
+  //     The raster is the full band (no crop); a traced SVG gets the band's
+  //     viewBox with `meet`, so nothing is sliced away.
+  //   split -- the illustration in its own capped column (`hero_figure`).
+  //   full  -- the page-wide backdrop, `slice`/`cover` (a photograph, or flat
+  //     artwork at the stage's own resolution).
+  // The runner leaves a continuous-tone hero (a photograph) on `full` even when
+  // the model found illustration labels in it.
+  const scene = content.hero_layout === 'scene';
+  const split = content.hero_layout === 'split';
+  const figure = split && Array.isArray(content.hero_figure)
+    && content.hero_figure.length === 4 ? content.hero_figure : null;
   let heroArt;
   if (hero && hero.webp) {
     const b64 = readFileSync(join(HERE, hero.webp)).toString('base64');
     heroArt = `<picture><img class="hero-img" src="data:image/webp;base64,${b64}"`
       + ` width="${hero.w}" height="${hero.h}" alt=""`
       + ` decoding="async" fetchpriority="high"></picture>`;
+  } else if (figure) {
+    const [x0, y0, x1, y1] = figure;
+    heroArt = artSvg
+      .replace(/viewBox="[^"]*"/, `viewBox="${x0} ${y0} ${x1 - x0} ${y1 - y0}"`)
+      .replace('<svg ', '<svg preserveAspectRatio="xMidYMid meet" ');
   } else if (band && band[1] > band[0]) {
     const [y0, y1] = band;
+    const fit = scene ? 'xMidYMid meet' : 'xMidYMid slice';
     heroArt = artSvg
       .replace(/viewBox="[^"]*"/, `viewBox="0 ${y0} 1024 ${y1 - y0}"`)
-      .replace('<svg ', '<svg preserveAspectRatio="xMidYMid slice" ');
+      .replace('<svg ', `<svg preserveAspectRatio="${fit}" `);
   } else {
     heroArt = artSvg.replace('<svg ', '<svg preserveAspectRatio="xMidYMin slice" ');
   }
-  const markup = content.markup.replace('<!--ART-->', heroArt);
+  let markup = content.markup.replace('<!--ART-->', heroArt);
+  const heroClass = scene ? 'hero hero-scene' : split ? 'hero hero-split' : null;
+  if (heroClass) {
+    markup = markup.replace('<section class="hero"', `<section class="${heroClass}"`);
+  }
   html = `${head}
   ${markup}
   <style is:global>

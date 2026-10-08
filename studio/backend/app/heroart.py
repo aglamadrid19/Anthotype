@@ -84,17 +84,30 @@ PHOTO_DISTINCT = 150
 MIN_NATIVE_GAIN = 1.2
 
 # --- export ----------------------------------------------------------------
-# The hero box is `min-height: clamp(460px, 70vh, 680px)` and full-bleed, so on a
-# wide desktop at 2x it wants ~2800 device pixels across.  The reference is only
-# ~1670 px wide for the whole page and the hero crops to part of it, so the
-# source itself is the real ceiling; exporting at 2048 costs nothing and covers
-# the common case.  Never upscaled past the prepared image's own size.
-EXPORT_WIDTH = 2048
+# The hero box is `min-height: clamp(460px, 70vh, 680px)` and full-bleed, so a
+# 1920 px desktop at 2x wants ~3840 device pixels across.  The export target is
+# that width: the prepared image is never upscaled (the source is the real
+# ceiling), but a source that has the pixels keeps them instead of being
+# downsampled to a cap.  When the source is *below* the target the job records
+# the shortfall rather than hiding it -- see `resolution_gap`.  (The target was
+# 2880 until the artwork-quality experiment; a 1920 px Retina display is the
+# common wide case.)
+EXPORT_TARGET_WIDTH = 3840
+# The CSS width the hero artwork is actually shown at, for the resolution check.
+# Full-bleed takes the viewport; 1920 px is the widest desktop the generated
+# pages are budgeted for.  A split illustration is capped by the page CSS at
+# `generate.HERO_FIGURE_MAX_CSS` (560 px) -- `doctor polarity` fails if the two
+# numbers drift, because this budget must be the *worst case*, not the desktop
+# column width.
+HERO_CSS_FULL = 1920
+HERO_CSS_SPLIT = 560
 # The native reference is the stage scaled by a single factor `m`, chosen so the
 # upload is shown at its own resolution (`1 / stage_scale`) and capped here: the
 # inpainting is a median filter over the whole canvas, so an unbounded `m` buys
-# resolution the source does not have at a real cost in time and memory.
-MAX_NATIVE_SCALE = 3
+# resolution the source does not have at a real cost in time and memory.  4
+# covers a 4096 px upload at 1:1; the canvas is then up to 4096x3072 (~12.6 MP)
+# and the median-filter inpaint is correspondingly slower.
+MAX_NATIVE_SCALE = 4
 # WebP only, inlined into the page as a data URI (see `gen-page.mjs`).  Inlining
 # both WebP and AVIF would carry both payloads to every visitor for no gain, and
 # a `file://` page cannot reference a sibling asset at all; WebP is the right
@@ -140,6 +153,35 @@ def native_factor(stage_scale: float, max_scale: float = MAX_NATIVE_SCALE) -> fl
     """
     scale = stage_scale if stage_scale and stage_scale > 0 else 1.0
     return max(1.0, min(1.0 / scale, float(max_scale)))
+
+
+def needed_width(layout: str) -> int:
+    """Device pixels the hero artwork wants at 2x for the layout it ships in."""
+    css = HERO_CSS_SPLIT if layout == "split" else HERO_CSS_FULL
+    return 2 * css
+
+
+def resolution_gap(asset_w: int, layout: str) -> tuple[int, float, str | None]:
+    """How far the shipped hero asset is from 2x of its rendered size.
+
+    Returns `(needed_px, scale, note)`: `scale > 1` means the asset is magnified
+    in device pixels on a Retina display, and `note` is a one-line, honest
+    account of it.  The asset is never upscaled beyond the upload's own detail
+    (there is nothing to invent), so a shortfall from the *source* is reported
+    instead of padded away.
+    """
+    need = needed_width(layout)
+    scale = need / max(1, int(asset_w))
+    if scale <= 1.05:
+        return need, 1.0, None
+    where = ("split illustration" if layout == "split"
+             else "full-bleed scene" if layout == "scene"
+             else "full-bleed hero")
+    return need, scale, (
+        f"hero artwork is {asset_w} px wide; a {where} at "
+        f"{HERO_CSS_FULL if layout != 'split' else HERO_CSS_SPLIT} CSS px needs "
+        f"~{need} px for 2x displays, so it is magnified {scale:.2f}x on Retina "
+        f"-- a higher-resolution upload would sharpen it")
 
 
 def wants_raster(arr: np.ndarray, band: list[int] | None,
@@ -231,27 +273,58 @@ def scaled_config(base: dict, m: float, ref_rel: str, name: str,
 
 def export_from_prepared(prepared_png: Path, band: list[int] | None, m: float,
                          out_dir: Path, stem: str,
-                         export_width: int = EXPORT_WIDTH) -> dict:
-    """Crop the hero band out of the prepared (text-removed) reference, to WebP.
+                         export_width: int = EXPORT_TARGET_WIDTH,
+                         figure: list[int] | None = None,
+                         lossless: bool = False,
+                         quality: int = WEBP_QUALITY,
+                         upscale: int = 1) -> dict:
+    """Crop the hero's pixels out of the prepared (text-removed) reference.
 
     `band` is in stage coordinates and the prepared image is the stage scaled by
-    `m`, so the crop is `band * m` across the full width.  Returns a manifest
-    `{"webp": {"name", "w", "h", "bytes"}}`, or `{}` if nothing was written.
+    `m`, so the full-bleed crop is `band * m` across the full width.  When
+    `figure` is given -- the illustration's own `[x0, y0, x1, y1]`, stage
+    coordinates -- that rectangle is the crop instead.  `lossless` writes a
+    lossless WebP (the artwork-quality experiment's isolation mode); the shipped
+    page uses the studio quality.  `upscale` is the *rendering* enhancement: a
+    Lanczos grow (capped at `export_width`) for display sharpness, which does
+    not create source detail -- the manifest's `source_w` is the pre-upscale
+    width and is what the resolution warning must use.
+
+    Nothing is ever upscaled past `export_width`, and the width is never grown
+    past the prepared image's own size except by `upscale`.  Returns a manifest
+    `{"webp": {"name", "w", "h", "source_w", "bytes"}}`, or `{}`.
     """
     img = Image.open(prepared_png).convert("RGB")
-    if band and len(band) == 2:
+    if figure and len(figure) == 4:
+        fx0, fy0, fx1, fy1 = (float(v) for v in figure)
+        x0 = max(0, int(round(fx0 * m)))
+        y0 = max(0, int(round(fy0 * m)))
+        x1 = min(img.width, int(round(fx1 * m)))
+        y1 = min(img.height, int(round(fy1 * m)))
+        if x1 > x0 and y1 > y0:
+            img = img.crop((x0, y0, x1, y1))
+    elif band and len(band) == 2:
         y0 = max(0, min(img.height - 1, int(round(band[0] * m))))
         y1 = max(y0 + 1, min(img.height, int(round(band[1] * m))))
         img = img.crop((0, y0, img.width, y1))
     w = min(export_width, img.width)
+    source_w = w
     h = max(1, round(w * img.height / max(1, img.width)))
     if (w, h) != img.size:
         img = img.resize((w, h), Image.LANCZOS)
+    if upscale > 1 and img.width < export_width:
+        factor = min(float(upscale), export_width / max(1, img.width))
+        if factor > 1.01:
+            img = img.resize((max(1, round(img.width * factor)),
+                              max(1, round(img.height * factor))), Image.LANCZOS)
 
     out_dir.mkdir(parents=True, exist_ok=True)
     p = out_dir / f"{stem}.webp"
-    img.save(p, quality=WEBP_QUALITY, method=6)
+    if lossless:
+        img.save(p, format="WEBP", lossless=True, method=6)
+    else:
+        img.save(p, quality=quality, method=6)
     if not p.is_file() or not p.stat().st_size:
         return {}
     return {"webp": {"name": p.name, "w": img.width, "h": img.height,
-                     "bytes": p.stat().st_size}}
+                     "source_w": source_w, "bytes": p.stat().st_size}}

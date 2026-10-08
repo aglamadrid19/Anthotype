@@ -294,6 +294,612 @@ def _seam_probe(flat: bool) -> float:
     return blank_seams(img, mask) or 0.0
 
 
+def _enhance_accept_selftest() -> tuple[bool, str]:
+    """Mocked acceptance: review gate, rollback on failure, serialization.
+
+    No node, Chrome or network: the build stages, verifier and packager are
+    stubbed, so only the runner's state machine is exercised.  Runs in a temp
+    job store, never the real `studio/data/jobs`.
+    """
+    from app import jobs as jobs_mod, runner as runner_mod, workspace as ws_mod
+    from app.jobs import Job
+    from PIL import Image
+
+    tmp = Path(tempfile.mkdtemp(prefix="enhance-selftest-"))
+    jobs_dir = tmp / "jobs"
+    jid = "selftest-enhance"
+    job_dir = jobs_dir / jid
+    ws = ws_mod.Workspace(root=job_dir / "workspace", job_id=jid)
+    ws.pipeline.mkdir(parents=True)
+    (ws.site / "dist").mkdir(parents=True)
+    cfg = ws.pipeline / f"content-{jid}.json"
+    base_cfg = json.dumps({"hero_image": {"webp": f"{jid}-hero.webp"}})
+    cfg.write_text(base_cfg)
+    Image.new("RGB", (8, 8), (10, 20, 30)).save(
+        ws.pipeline / f"{jid}-hero-enhance.webp", "WEBP")
+    Image.new("RGB", (4, 4), (1, 2, 3)).save(job_dir / "ref.png")
+    # Base sentinels for everything a failed acceptance may overwrite: the
+    # generated workspace pages and the packaged job files.
+    (ws.site / "src" / "pages").mkdir(parents=True, exist_ok=True)
+    (ws.site / "src" / "pages" / "index.astro").write_text("base astro")
+    ws.full_page.write_text("base full")
+    ws.dist_page.write_text("base dist")
+    (job_dir / "index.html").write_text("base page")
+    (job_dir / "dist.zip").write_bytes(b"base zip")
+
+    saved = (jobs_mod.JOBS_DIR, ws_mod.create)
+    jobs_mod.JOBS_DIR = jobs_dir
+    ws_mod.create = lambda _jid, _dir: ws
+    try:
+        store = jobs_mod.JobStore(lambda job: None)
+        job = Job(id=jid, created=time.time(), updated=time.time(),
+                  status="done", stage="done", progress=1.0, message="Done",
+                  src={"background": [0, 0, 0]}, hero_enhance="pending",
+                  hero_enhance_meta={"model": "fake-image-model"},
+                  hero_fidelity=1.30)
+        store._jobs[jid] = job          # no public hook for a synthetic job
+        store._persist(job)
+        runner = runner_mod.PipelineRunner(store)
+        runner._verify = lambda *a, **k: store.update(jid, hero_fidelity=4.80)
+
+        def fake_stage(_jid, name, *_a, **_k):
+            if name == "compose":
+                ws.full_page.write_text("enhanced full")
+            elif name == "to-astro":
+                (ws.site / "src" / "pages" / "index.astro").write_text("enhanced astro")
+            return ""
+
+        runner._stage = fake_stage
+
+        def fake_build(_jid, _ws):
+            _ws.dist_page.write_text("enhanced dist")
+
+        runner._npm_build = fake_build
+
+        def partial_package(_jid, _ws):
+            # A packaging failure AFTER files were written: the rollback must
+            # restore both the packaged files and the generated workspace pages.
+            (job_dir / "index.html").write_text("enhanced page")
+            (job_dir / "dist.zip").write_bytes(b"enhanced zip")
+            raise RuntimeError("zip write failed")
+
+        runner._package = partial_package
+
+        # 0. An unfinished job cannot be accepted at all.
+        store.update(jid, status="running", stage="building")
+        try:
+            runner.accept_enhance(jid, reviewed=True)
+            unfinished = False
+        except runner_mod.NothingToAccept:
+            unfinished = True
+        store.update(jid, status="done", stage="done", progress=1.0, message="Done")
+
+        # 1. Review gate: no acceptance without the explicit review.
+        try:
+            runner.accept_enhance(jid, reviewed=False)
+            review_gate = False
+        except runner_mod.ReviewRequired:
+            review_gate = True
+        # 2. Failure rollback: content, state, workspace pages and files restored.
+        try:
+            runner.accept_enhance(jid, reviewed=True)
+            rollback = False
+        except RuntimeError:
+            rollback = True
+        st = store.get(jid)
+        rollback = (rollback and st.hero_enhance == "pending"
+                    and st.hero_enhance_audit is None
+                    and cfg.read_text() == base_cfg
+                    and not (ws.pipeline / f"{jid}-hero-enhanced.webp").exists()
+                    and ws.full_page.read_text() == "base full"
+                    and (ws.site / "src" / "pages" / "index.astro").read_text()
+                    == "base astro"
+                    and ws.dist_page.read_text() == "base dist"
+                    and (job_dir / "index.html").read_text() == "base page"
+                    and (job_dir / "dist.zip").read_bytes() == b"base zip")
+
+        # 3. Success: accepted only after packaging, with the review recorded.
+        def ok_package(_jid, _ws):
+            p = job_dir / "dist.zip"
+            p.write_bytes(b"zip")
+            return p
+
+        runner._package = ok_package
+        out = runner.accept_enhance(jid, reviewed=True)
+        success = (out["hero_enhance"] == "accepted"
+                   and (out.get("hero_enhance_audit") or {}).get("reviewed") is True
+                   and out["artifacts"].get("hero", "").endswith("-hero-enhanced.webp")
+                   and json.loads(cfg.read_text())["hero_image"]["webp"]
+                   .endswith("-hero-enhanced.webp"))
+
+        # 4. Serialization: two concurrent acceptances, exactly one wins.
+        store.update(jid, hero_enhance="pending", hero_enhance_audit=None)
+
+        def slow_stage(*_a, **_k):
+            time.sleep(0.15)
+            return ""
+
+        runner._stage = slow_stage
+        import threading as _threading
+        results: list[str] = []
+
+        def attempt():
+            try:
+                runner.accept_enhance(jid, reviewed=True)
+                results.append("ok")
+            except runner_mod.NothingToAccept:
+                results.append("nothing")
+            except Exception as exc:  # noqa: BLE001
+                results.append(type(exc).__name__)
+
+        threads = [_threading.Thread(target=attempt) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        serialized = sorted(results) == ["nothing", "ok"]
+        ok = unfinished and review_gate and rollback and success and serialized
+        detail = (f"unfinished rejected={unfinished}, review gate={review_gate}, "
+                  f"rollback(incl. workspace pages)={rollback}, "
+                  f"accepted+audit={success}, serialized={serialized} {sorted(results)}")
+        return ok, detail
+    finally:
+        jobs_mod.JOBS_DIR, ws_mod.create = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _enhance_artwork_selftest() -> tuple[bool, str]:
+    """Mocked enhancement: cleaned-upload mapping + failure safety.
+
+    The input is the cleaned upload at the upload's own resolution; the band
+    maps through the ingest fit (`(band - pad) / scale`), then the candidate's
+    own scale.  A synthetic vertical ramp makes the mapping checkable by value;
+    no model, no network, no pipeline.
+    """
+    from app import enhance as enhance_mod, runner as runner_mod, workspace as ws_mod
+    from PIL import Image
+
+    import numpy as np
+
+    tmp = Path(tempfile.mkdtemp(prefix="enhance-art-selftest-"))
+    jid = "selftest-art"
+    ws = ws_mod.Workspace(root=tmp / "ws", job_id=jid)
+    ws.pipeline.mkdir(parents=True)
+    # The mock model output is a vertical ramp; the native input is its own
+    # downscale with two protected bars drawn on it -- so the repair can
+    # actually align (a black native against a bright ramp could not, and the
+    # candidate would rightly become diagnostic).  The bars map to candidate
+    # rows 218+, outside the band's sampled 40..160 rows, so the mapping
+    # assertions below stay exact.
+    cand = tmp / "candidate.png"
+    ramp = np.zeros((560, 400, 3), np.uint8)                    # model output: 2x upload
+    ramp[:, :, :] = (np.arange(560) % 256)[:, None, None]
+    Image.fromarray(ramp).save(cand)
+    cleaned = tmp / "cleaned.png"
+    arr = np.asarray(Image.fromarray(ramp).resize((200, 128), Image.LANCZOS)).copy()
+    arr[50:60, 10:60] = 220
+    arr[90:100, 10:60] = 220
+    Image.fromarray(arr).save(cleaned)
+
+    class _Norm:
+        src_w, src_h = 200, 128
+        scale = 0.5
+        pad = (0, 0, 0, 0)
+        background = (0, 0, 0)
+
+    class _Stub:
+        def __init__(self) -> None:
+            self.fields: dict = {}
+
+        def log(self, *_a, **_k) -> None:
+            pass
+
+        def update(self, _jid, **kw) -> None:
+            self.fields.update(kw)
+
+    store = _Stub()
+    runner = runner_mod.PipelineRunner(store)
+    saved = (enhance_mod.available, enhance_mod.candidate)
+    try:
+        enhance_mod.available = lambda: True
+        enhance_mod.candidate = lambda _p: {"png": cand, "meta": {
+            "provider": "mock", "model": "mock-model", "size": "4K",
+            "generated": [400, 256], "cached": True}}
+        runner._enhance_artwork(jid, ws, _Norm(), {"hero_band": [10, 40]}, cleaned)
+        out = ws.pipeline / f"{jid}-hero-enhance.webp"
+        ok = (store.fields.get("hero_enhance") == "pending" and out.is_file())
+        mapped = False
+        size = "-"
+        if ok:
+            img = Image.open(out).convert("RGB")
+            size = f"{img.width}x{img.height}"
+            # band [10, 40], scale 0.5, pad 0 -> upload rows 20..80; the
+            # candidate is 2x the upload -> rows 40..160; width stays 400.
+            first = img.getpixel((200, 0))[0]
+            last = img.getpixel((200, img.height - 1))[0]
+            mapped = (img.size == (400, 120)
+                      and abs(first - 40) <= 4 and abs(last - 159) <= 4)
+        # A band that extends past the upload's own pixels (into the canvas
+        # letterbox) must still come back at the fallback's geometry: the input
+        # is extended with the design's background, never clamped short.
+        # band [10, 100], scale 0.5 -> upload rows 20..200; the upload is 128
+        # tall, so the input pads to 200 and the crop spans 20..200 -> 360/400
+        # of the width.
+        store.fields.clear()
+        runner._enhance_artwork(jid, ws, _Norm(), {"hero_band": [10, 100]}, cleaned)
+        out2 = ws.pipeline / f"{jid}-hero-enhance.webp"
+        padded = (ws.pipeline / f"{jid}-enhance-input.png").is_file()
+        meta = store.fields.get("hero_enhance_meta") or {}
+        framing = (out2.is_file() and Image.open(out2).size == (400, 360)
+                   and padded and bool((meta.get("input") or {}).get("padded")))
+        # A failing candidate keeps the shipped asset and never raises.
+        def boom(_p):
+            raise RuntimeError("candidate failed")
+        enhance_mod.candidate = boom
+        store.fields.clear()
+        runner._enhance_artwork(jid, ws, _Norm(), {"hero_band": [10, 40]}, cleaned)
+        safe = store.fields.get("hero_enhance") == "skipped"
+        ok = ok and mapped and framing and safe
+        return ok, (f"pending+mapped={mapped} (size {size}), "
+                    f"padded-band framing={framing}, failure -> skipped={safe}")
+    finally:
+        enhance_mod.available, enhance_mod.candidate = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _repair_selftest() -> tuple[bool, str]:
+    """Source-preserving repair: detection, restoration, uncertainty, feather.
+
+    Synthetic images only: a flat panel with text/icon content next to a
+    textured "artwork" area.  No model, no network, no pipeline.
+    """
+    import numpy as np
+    from app import repair
+    from PIL import Image
+
+    tmp = Path(tempfile.mkdtemp(prefix="repair-selftest-"))
+    W, H = 400, 300
+    rng = np.random.default_rng(7)
+    native = np.zeros((H, W, 3), np.float32)
+    native[:, :] = 20
+    # the textured "artwork" half: noisy gradient with dots (not flat -> must
+    # NOT be detected as content)
+    for x in range(220, W):
+        native[:, x] = 20 + (x - 220) * 0.3
+    dots = rng.integers(0, 2, (H, W)) > 0.9
+    native[dots, :] += rng.integers(40, 120, (dots.sum(), 1))
+    # the flat UI panel
+    native[20:280, 20:200] = 35
+    # text strokes (elongated) and a ring icon
+    native[58:66, 40:140] = 220
+    native[88:96, 40:120] = 220
+    native[118:126, 40:150] = 220
+    yy, xx = np.mgrid[0:H, 0:W]
+    ring = (np.hypot(yy - 215, xx - 165) < 14) & (np.hypot(yy - 215, xx - 165) > 8)
+    native[ring] = (60, 200, 120)
+    native_u8 = np.clip(native, 0, 255).astype(np.uint8)
+    nat_p = tmp / "native.png"
+    Image.fromarray(native_u8).save(nat_p)
+
+    boxes = [[40, 58, 140, 66]]                 # one text bar is boxed
+    regions = repair.detect_content(native, boxes)
+    hit_text = any(r[0] <= 60 and r[2] >= 130 and r[1] <= 100 and r[3] >= 60
+                   for r in regions)
+    hit_icon = any(r[0] <= 175 and r[2] >= 155 and r[1] <= 230 and r[3] >= 200
+                   for r in regions)
+    in_globe = [r for r in regions if r[0] > 220]
+    detect_ok = hit_text and hit_icon and not in_globe
+
+    # corrupted enhanced: text and icon replaced with noise; the artwork half
+    # re-rendered (different noise)
+    enh = native_u8.copy()
+    enh[58:66, 40:140] = rng.integers(0, 255, (8, 100, 3), dtype=np.uint8)
+    enh[88:96, 40:120] = rng.integers(0, 255, (8, 80, 3), dtype=np.uint8)
+    enh[118:126, 40:150] = rng.integers(0, 255, (8, 110, 3), dtype=np.uint8)
+    enh[200:230, 150:180] = rng.integers(0, 255, (30, 30, 3), dtype=np.uint8)
+    enh[:, 220:] = np.clip(enh[:, 220:].astype(int) + rng.integers(-25, 25, enh[:, 220:].shape), 0, 255).astype(np.uint8)
+    enh_p = tmp / "enhanced.png"
+    Image.fromarray(enh).save(enh_p)
+
+    rep = repair.repair_candidate(nat_p, enh_p, boxes=boxes, out_dir=tmp)
+    repaired_ok = feather_ok = False
+    detail = ""
+    if isinstance(rep, dict):
+        out = np.asarray(Image.open(rep["png"]).convert("RGB"), np.float32)
+        dests = [p["dest"] for p in rep["meta"]["regions"]]
+        covered = np.zeros((H, W), bool)
+        for x0, y0, x1, y1 in dests:
+            covered[y0:y1, x0:x1] = True
+        outside = np.abs(out - enh.astype(np.float32)).max(axis=2)[~covered]
+        # the text bar's core now carries the native content
+        core = np.abs(out[60:64, 60:120] - native[60:64, 60:120]).mean()
+        # the textured half was NOT restored
+        globe = np.abs(out[:, 240:] - native[:, 240:]).mean()
+        d = np.abs(out - enh.astype(np.float32)).max(axis=2)
+        partial = int(((d > 0) & (d < 255)).sum())
+        feather_ok = partial > 0 and d[covered].max() > 0
+        repaired_ok = (outside.max() == 0 and core < 14 and globe > 5
+                       and rep["meta"]["audit"]["outside_max_diff"] == 0
+                       and (tmp / "repair-v1.json").is_file())
+        detail = (f"outside {outside.max():.0f}, core diff {core:.1f}, "
+                  f"globe kept {globe:.1f}, feather px {partial}")
+    # uncertainty: a noise "enhancement" must fail the repair, never guess
+    noise_p = tmp / "noise.png"
+    Image.fromarray(rng.integers(0, 255, (H, W, 3), dtype=np.uint8)).save(noise_p)
+    failed = repair.repair_candidate(nat_p, noise_p, boxes=boxes, out_dir=tmp)
+    uncertain_ok = (isinstance(failed, tuple) and failed[0] is None
+                    and isinstance(failed[1], str) and failed[1])
+    ok = detect_ok and repaired_ok and feather_ok and uncertain_ok
+    return ok, (f"detect text={hit_text} icon={hit_icon} globe-excluded="
+                f"{not in_globe}; repair {detail}; uncertain={uncertain_ok}")
+
+
+def _repair_runner_selftest() -> tuple[bool, str]:
+    """The runner repairs the raw candidate before deriving the band.
+
+    Synthetic native + a mocked model output; the real repair runs.  The
+    candidate must be pending, carry `repair` provenance, and the band must
+    come from the repaired raw (the corrupt text is gone in the band).
+    """
+    import numpy as np
+    from app import enhance as enhance_mod, runner as runner_mod, workspace as ws_mod
+    from app.extract import Block
+    from PIL import Image
+
+    tmp = Path(tempfile.mkdtemp(prefix="repair-runner-selftest-"))
+    jid = "selftest-repair"
+    ws = ws_mod.Workspace(root=tmp / "ws", job_id=jid)
+    ws.pipeline.mkdir(parents=True)
+    W, H = 400, 300
+    rng = np.random.default_rng(11)
+    native = np.full((H, W, 3), 35, np.float32)
+    native[58:66, 40:140] = 220
+    native[88:96, 40:120] = 220
+    nat_p = ws.pipeline / f"{jid}-cleaned.png"
+    Image.fromarray(np.clip(native, 0, 255).astype(np.uint8)).save(nat_p)
+    enh = native.copy()
+    enh[58:66, 40:140] = rng.integers(0, 255, (8, 100, 3))
+    enh[88:96, 40:120] = rng.integers(0, 255, (8, 80, 3))
+    enh_p = tmp / "model-output.png"
+    Image.fromarray(np.clip(enh, 0, 255).astype(np.uint8)).save(enh_p)
+
+    class _Norm:
+        src_w, src_h = W, H
+        scale = 1.0
+        pad = (0, 0, 0, 0)
+        background = (0, 0, 0)
+
+    class _Stub:
+        def __init__(self) -> None:
+            self.fields: dict = {}
+
+        def log(self, *_a, **_k) -> None:
+            pass
+
+        def update(self, _jid, **kw) -> None:
+            self.fields.update(kw)
+
+    store = _Stub()
+    runner = runner_mod.PipelineRunner(store)
+    saved = (enhance_mod.available, enhance_mod.candidate)
+    try:
+        enhance_mod.available = lambda: True
+        enhance_mod.candidate = lambda _p: {"png": enh_p, "meta": {
+            "provider": "mock", "model": "mock-model", "size": "4K",
+            "generated": [W, H], "cached": True}}
+        blocks = [Block("row", "other", (40, 58, 140, 66), part="artwork")]
+        runner._enhance_artwork(jid, ws, _Norm(), {"hero_band": [10, 200]},
+                                nat_p, blocks)
+        meta = store.fields.get("hero_enhance_meta") or {}
+        rep = meta.get("repair") or {}
+        band = ws.pipeline / f"{jid}-hero-enhance.webp"
+        # the band must come from the repaired raw: its text row is the native
+        # content, not the noise
+        from PIL import Image as _Image
+        band_arr = np.asarray(_Image.open(band).convert("RGB"), np.float32) \
+            if band.is_file() else np.zeros((1, 1, 3), np.float32)
+        core = band_arr[58:66, 60:120].std() if band.is_file() else 999
+        ok = (store.fields.get("hero_enhance") == "pending"
+              and rep.get("version") == "v1"
+              and rep.get("audit", {}).get("repaired", 0) >= 1
+              and band.is_file() and core < 60)
+        return ok, (f"pending={store.fields.get('hero_enhance')}, "
+                    f"repair={rep.get('version')}, "
+                    f"regions={rep.get('audit', {}).get('repaired')}, "
+                    f"band text std={core:.0f} (noise would be ~70+)")
+    finally:
+        enhance_mod.available, enhance_mod.candidate = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def _repair_gaps_selftest() -> tuple[bool, str]:
+    """Repair edge cases: empty boxes, portrait images, invalid regions."""
+    import numpy as np
+    from app import repair
+    from PIL import Image
+
+    tmp = Path(tempfile.mkdtemp(prefix="repair-gaps-"))
+    rng = np.random.default_rng(3)
+
+    # empty extraction boxes: the pixel detector must still find the content
+    W, H = 300, 220
+    native = np.full((H, W, 3), 35, np.float32)
+    native[40:52, 30:200] = 220
+    native[120:132, 30:170] = 220
+    nat = tmp / "n1.png"
+    Image.fromarray(np.clip(native, 0, 255).astype(np.uint8)).save(nat)
+    enh = native.copy()
+    enh[40:52, 30:200] = rng.integers(0, 255, (12, 170, 3))
+    enh[120:132, 30:170] = rng.integers(0, 255, (12, 140, 3))
+    en = tmp / "e1.png"
+    Image.fromarray(np.clip(enh, 0, 255).astype(np.uint8)).save(en)
+    r1 = repair.repair_candidate(nat, en, boxes=[], out_dir=tmp / "r1")
+    empty_ok = (isinstance(r1, dict) and r1["meta"]["audit"]["detected"] >= 2
+                and r1["meta"]["audit"]["repaired"] >= 2
+                and not r1["meta"]["audit"]["skipped"])
+
+    # portrait 120x300: the lower label must not be lost to a width clamp
+    PW, PH = 120, 300
+    p_native = np.full((PH, PW, 3), 35, np.float32)
+    p_native[40:52, 20:100] = 220
+    p_native[240:252, 20:100] = 220
+    pn = tmp / "pn.png"
+    Image.fromarray(np.clip(p_native, 0, 255).astype(np.uint8)).save(pn)
+    p_enh = p_native.copy()
+    p_enh[40:52, 20:100] = rng.integers(0, 255, (12, 80, 3))
+    p_enh[240:252, 20:100] = rng.integers(0, 255, (12, 80, 3))
+    pe = tmp / "pe.png"
+    Image.fromarray(np.clip(p_enh, 0, 255).astype(np.uint8)).save(pe)
+    r2 = repair.repair_candidate(pn, pe, boxes=[], out_dir=tmp / "r2")
+    portrait_ok = False
+    if isinstance(r2, dict):
+        out = np.asarray(Image.open(r2["png"]).convert("RGB"), np.float32)
+        lower = np.abs(out[242:250, 30:90] - p_native[242:250, 30:90]).mean()
+        portrait_ok = (r2["meta"]["audit"]["detected"] >= 2
+                       and r2["meta"]["audit"]["repaired"] >= 2 and lower < 14)
+
+    # an out-of-bounds box is skipped with a reason, never fatal
+    r3 = repair.repair_candidate(nat, en,
+                                 boxes=[[500, 500, 600, 600], [30, 40, 200, 52]],
+                                 out_dir=tmp / "r3")
+    invalid_ok = (isinstance(r3, dict)
+                  and len(r3["meta"]["audit"]["skipped"]) >= 1
+                  and r3["meta"]["audit"]["repaired"] >= 1)
+
+    # the one-pixel regression + a 3x model output: both stroke positions must
+    # be detected and the ACTUAL PIXELS restored (not just the audit counts)
+    def strokes(shift: int) -> np.ndarray:
+        img = np.full((220, 300, 3), 35, np.float32)
+        for (x0, y0, x1, y1) in ((30, 40, 200, 52), (30, 120, 170, 132)):
+            img[y0 + shift:y1 + shift, x0:x1] = 220
+        return np.clip(img, 0, 255).astype(np.uint8)
+
+    shift_ok = True
+    shift_detail = []
+    for shift in (0, 1):
+        npath = tmp / f"n_shift{shift}.png"
+        Image.fromarray(strokes(shift)).save(npath)
+        big = np.asarray(Image.fromarray(strokes(shift)).resize(
+            (300 * 3, 220 * 3), Image.NEAREST)).copy()
+        for (x0, y0, x1, y1) in ((30, 40, 200, 52), (30, 120, 170, 132)):
+            big[(y0 + shift) * 3:(y1 + shift) * 3, x0 * 3:x1 * 3] = 35
+        epath = tmp / f"e_shift{shift}.png"
+        Image.fromarray(big).save(epath)
+        r = repair.repair_candidate(npath, epath, boxes=[],
+                                    out_dir=tmp / f"r_shift{shift}")
+        if not isinstance(r, dict):
+            shift_ok = False
+            shift_detail.append(f"shift {shift}: refused {r}")
+            continue
+        out = np.asarray(Image.open(r["png"]).convert("RGB"), np.float32)
+        px_ok = True
+        for (x0, y0, x1, y1) in ((30, 40, 200, 52), (30, 120, 170, 132)):
+            core = out[(y0 + shift) * 3 + 2:(y1 + shift) * 3 - 2,
+                       x0 * 3 + 2:x1 * 3 - 2]
+            px_ok = px_ok and float(core.mean()) > 150
+        audit = r["meta"]["audit"]
+        counts_ok = (audit["detected"] >= 2
+                     and audit["repaired"] == audit["detected"]
+                     and not audit["skipped"])
+        shift_detail.append(f"shift {shift}: det={audit['detected']} "
+                            f"rep={audit['repaired']} pixels={px_ok}")
+        shift_ok = shift_ok and px_ok and counts_ok
+
+    # zero detections is UNCERTAIN, never "verified absent"
+    blank = np.full((120, 120, 3), 35, np.uint8)
+    bn, be = tmp / "blank.png", tmp / "blank-e.png"
+    Image.fromarray(blank).save(bn)
+    Image.fromarray(blank).save(be)
+    zero = repair.repair_candidate(bn, be, boxes=[])
+    zero_ok = isinstance(zero, tuple) and zero[0] is None
+
+    ok = empty_ok and portrait_ok and invalid_ok and shift_ok and zero_ok
+    return ok, (f"empty-boxes={empty_ok}, portrait={portrait_ok}, "
+                f"invalid-region={invalid_ok}, one-pixel+3x={shift_ok} "
+                f"[{'; '.join(shift_detail)}], zero-detect-uncertain={zero_ok}")
+
+
+def _repair_diagnostic_selftest() -> tuple[bool, str]:
+    """A partial repair is diagnostic only: it cannot be accepted."""
+    import numpy as np
+    from app import enhance as enhance_mod, runner as runner_mod, workspace as ws_mod
+    from app.extract import Block
+    from PIL import Image
+
+    tmp = Path(tempfile.mkdtemp(prefix="repair-diag-"))
+    jid = "selftest-diag"
+    ws = ws_mod.Workspace(root=tmp / "ws", job_id=jid)
+    ws.pipeline.mkdir(parents=True)
+    W, H = 400, 300
+    rng = np.random.default_rng(5)
+    native = np.full((H, W, 3), 35, np.float32)
+    native[40:52, 30:180] = 220                      # flat panel: alignable
+    for x in range(220, W):                          # textured half
+        native[:, x] = 25 + (x - 220) * 0.2
+    dots = rng.integers(0, 2, (H, W)) > 0.9
+    native[dots, :] += rng.integers(40, 120, (dots.sum(), 1))
+    native[200:212, 260:360] = 220                   # label on the texture
+    nat = ws.pipeline / f"{jid}-cleaned.png"
+    Image.fromarray(np.clip(native, 0, 255).astype(np.uint8)).save(nat)
+    enh = native.copy()
+    enh[40:52, 30:180] = rng.integers(0, 255, (12, 150, 3))
+    enh[200:212, 260:360] = rng.integers(0, 255, (12, 100, 3))
+    enh[:, 220:] = rng.integers(0, 255, enh[:, 220:].shape)   # re-rendered
+    en = tmp / "model.png"
+    Image.fromarray(np.clip(enh, 0, 255).astype(np.uint8)).save(en)
+
+    class _Norm:
+        src_w, src_h = W, H
+        scale = 1.0
+        pad = (0, 0, 0, 0)
+        background = (0, 0, 0)
+
+    class _Job:
+        pass
+
+    class _Stub:
+        def __init__(self) -> None:
+            self.fields = {"status": "done", "hero_enhance": "pending",
+                           "warnings": []}
+
+        def log(self, *_a, **_k) -> None:
+            pass
+
+        def update(self, _jid, **kw) -> None:
+            self.fields.update(kw)
+
+        def get(self, _jid):
+            j = _Job()
+            j.__dict__.update(self.fields)
+            return j
+
+    store = _Stub()
+    runner = runner_mod.PipelineRunner(store)
+    saved = (enhance_mod.available, enhance_mod.candidate)
+    try:
+        enhance_mod.available = lambda: True
+        enhance_mod.candidate = lambda _p: {"png": en, "meta": {
+            "provider": "mock", "model": "mock-model", "size": "4K",
+            "generated": [W, H], "cached": True}}
+        blocks = [Block("left", "other", (30, 40, 180, 52), part="artwork"),
+                  Block("right", "other", (260, 200, 360, 212), part="artwork")]
+        runner._enhance_artwork(jid, ws, _Norm(), {"hero_band": [10, 280]},
+                                nat, blocks)
+        state = store.fields.get("hero_enhance")
+        meta = store.fields.get("hero_enhance_meta") or {}
+        skipped = len((meta.get("repair") or {}).get("audit", {}).get("skipped") or [])
+        refused = False
+        try:
+            runner.accept_enhance(jid, reviewed=True)
+        except runner_mod.NothingToAccept as exc:
+            refused = "diagnostic" in str(exc)
+        ok = state == "diagnostic" and skipped >= 1 and refused
+        return ok, (f"state={state}, skipped={skipped}, accept refused={refused}")
+    finally:
+        enhance_mod.available, enhance_mod.candidate = saved
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def cmd_polarity(_args: list[str]) -> int:
     """Synthetic light/dark checks -- no vision model, no pipeline, fast.
 
@@ -359,25 +965,24 @@ def cmd_polarity(_args: list[str]) -> int:
     _line(OK if ok else BAD, "page copy vs artwork",
           ", ".join(f"{k}={v}" for k, v in checks.items()))
 
-    # The tracer's exclusion rects must cover EVERY text block, including the
-    # text inside the artwork.  Artwork-internal text is not emitted as DOM, but
-    # if it is left unblanked the trace bakes a ghost of it into the hero
-    # backdrop, right where the real copy sits -- the ugliest defect the page can
-    # have.  The pad is fixed, so a tiny caption is still enclosed (the rect
-    # grows on both sides of it).
-    rects = generate.text_rects([
+    # The tracer's exclusion rects must cover exactly the copy the page REPLACES
+    # with live DOM -- and NOT the text inside the artwork.  An illustration's
+    # own labels (a dashboard's region names, a device mockup's captions) are
+    # content of the artwork: blanking them strips real content out of the hero
+    # and leaves fill smears where they were (a measured dashboard lost 33
+    # labels this way).  Only a block that becomes DOM may be blanked.
+    blocks_ex = [
         Block("Heading", "headline", (100, 100, 300, 140)),
         Block("Plant Pigment", "other", (559, 344, 619, 356), part="artwork"),
         Block("6", "other", (366, 470, 372, 476), part="artwork"),
-    ])
+    ]
+    replaced = [b for b in blocks_ex if generate.is_page_text(b)]
+    rects = generate.text_rects(replaced)
     g = generate.TEXT_RECT_GROW
-    ok = (len(rects) == 3
-          and rects[2] == [366 - g, 470 - g, 372 + g, 476 + g]
-          and rects[0] == [100 - g, 100 - g, 300 + g, 140 + g]
-          and not generate.is_page_text(
-              Block("6", "other", (366, 470, 372, 476), part="artwork")))
-    _line(OK if ok else BAD, "exclusion rects cover artwork text",
-          f"{len(rects)} rects, tiny {rects[2]}, head pad {g}")
+    ok = (replaced == [blocks_ex[0]] and len(rects) == 1
+          and rects[0] == [100 - g, 100 - g, 300 + g, 140 + g])
+    _line(OK if ok else BAD, "exclusion rects cover replaced copy, never artwork text",
+          f"{len(rects)} rect(s); artwork text is preserved in the asset")
 
     # A CTA's *plate* must be removed whole, not just its label: dropping the
     # label's bands leaves the button behind, ghosting under the DOM button (a
@@ -676,6 +1281,411 @@ def cmd_polarity(_args: list[str]) -> int:
               f"{m['w']}x{m['h']} from a 1600x800 source (reference crop would be "
               f"1024), native canvas {native['size']}" if m else "no raster written")
 
+        # An illustration ships as its own figure crop, not as a page-wide band:
+        # the band crop is full width, the figure crop is the rectangle the page
+        # actually shows.  A figure that still exported the band would defeat the
+        # whole point (the labels `cover` crops away would be back in the asset
+        # but not on the page).
+        fig_written = heroart.export_from_prepared(
+            hi_path, [128, 528], native["m"], Path(td) / "out", "fig",
+            figure=[512, 128, 1024, 528])
+        fm = fig_written.get("webp")
+        ok = bool(fm) and fm["w"] == 800 and fm["h"] == 625
+        _line(OK if ok else BAD, "an illustration export is the figure's own crop",
+              f"{fm['w']}x{fm['h']} for a 512x400 stage figure at m=1.56 "
+              f"(the band crop would be 1600 wide)" if fm else "no raster written")
+
+        # The export target is 2x a 1920 px desktop (3840), and a source that has
+        # the pixels keeps them rather than being downsampled to the old cap.
+        wide = Path(td) / "wide.png"
+        Image.fromarray(np.full((120, 5000, 3), 120, np.uint8)).save(wide)
+        w_written = heroart.export_from_prepared(
+            wide, None, 1.0, Path(td) / "out", "wide")
+        wm = w_written.get("webp")
+        mid = Path(td) / "mid.png"
+        Image.fromarray(np.full((120, 3000, 3), 120, np.uint8)).save(mid)
+        m_written = heroart.export_from_prepared(
+            mid, None, 1.0, Path(td) / "out", "mid")
+        mm = m_written.get("webp")
+        ok = (bool(wm) and wm["w"] == heroart.EXPORT_TARGET_WIDTH
+              and bool(mm) and mm["w"] == 3000)
+        _line(OK if ok else BAD, "the hero export target is Retina-sized",
+              f"5000 px source exports at {wm['w']} px "
+              f"(target {heroart.EXPORT_TARGET_WIDTH}); a 3000 px source stays "
+              f"{mm['w']} px" if wm and mm else "no raster written")
+
+    # A hero with an illustration column -- artwork labels clear of the copy --
+    # gets a figure region beside the copy, shown whole.  The split is refused
+    # when the labels overlap the copy (nothing to separate), when there are too
+    # few to be an illustration, or when the region would be too narrow.
+    hero_sections = generate.group_sections([
+        Block("Your AntSeed deployment", "headline", (42, 248, 484, 344),
+              section="hero"),
+        Block("Dedicated infrastructure, private deployments", "subhead",
+              (42, 366, 424, 428), section="hero"),
+        Block("Book a setup call", "cta", (66, 471, 198, 487), section="hero"),
+    ])
+    labels = [Block(f"Label {i}", "other", (640, 300 + 28 * i, 700, 312 + 28 * i),
+                    part="artwork") for i in range(4)]
+    overlapping = [Block(f"Near {i}", "other", (420, 300 + 28 * i, 470, 312 + 28 * i),
+                         part="artwork") for i in range(4)]
+    hb = generate.hero_band(hero_sections)
+    fig = generate.hero_figure(hero_sections, labels, hb)
+    fig_near = generate.hero_figure(hero_sections, overlapping, hb)
+    fig_few = generate.hero_figure(hero_sections, labels[:3], hb)
+    # `write_all` hands the builder every block; only `part: artwork` may make a
+    # figure, or a page block's box (a narrow lede) would drag the left edge over
+    # the copy and silently disable the split.
+    fig_mixed = generate.hero_figure(
+        hero_sections,
+        labels + [b for _, g in hero_sections for b in g], hb)
+    ok = (fig is not None and fig[0] > 484 and fig[2] >= 700
+          and fig[1] == hb[0] and fig[3] == hb[1]
+          and fig_near is None and fig_few is None and fig_mixed == fig)
+    _line(OK if ok else BAD, "a hero illustration gets its own figure region",
+          f"{fig}; labels over the copy -> {fig_near}; 3 labels -> {fig_few}; "
+          f"mixed page+art blocks -> {fig_mixed}")
+
+    # ...and the shipped-asset check can see a label that was blanked away.  A
+    # sparse caption is the hard case: erasing all its thin strokes can leave the
+    # rectangle *mean* below the warning threshold (background dilutes it), so
+    # the check returns (mean, p95) and the p95 is what sees the erased glyphs.
+    from app import verify as _verify
+
+    with tempfile.TemporaryDirectory() as td:
+        def written(arr, name: str) -> Path:
+            p = Path(td) / name
+            Image.fromarray(np.asarray(arr, np.uint8)).save(p)
+            return p
+
+        # A solid plate: both numbers separate cleanly.
+        solid = np.zeros((200, 300, 3), np.float32)
+        solid[40:60, 100:160] = 200
+        lost_solid = solid.copy()
+        lost_solid[40:60, 100:160] = 0
+        kept_solid = _verify.label_fidelity(
+            solid, [0, 0, 300, 200], written(solid, "s1.png"), [[100, 40, 160, 60]])
+        gone_solid = _verify.label_fidelity(
+            solid, [0, 0, 300, 200], written(lost_solid, "s2.png"), [[100, 40, 160, 60]])
+        # A sparse caption: one thin stroke line in a 60x10 box (~10% ink), the
+        # shape of a real small label.  Erased, its mean stays under the 28/255
+        # warning while its p95 is unmistakable.
+        sparse = np.zeros((120, 260, 3), np.float32)
+        sparse[50, 80:140] = 200
+        lost_sparse = sparse.copy()
+        lost_sparse[50, 80:140] = 0
+        gone_sparse = _verify.label_fidelity(
+            sparse, [0, 0, 260, 120], written(lost_sparse, "s3.png"),
+            [[80, 45, 140, 55]])
+    ok = (kept_solid is not None and kept_solid[0] < 2 and kept_solid[1] < 2
+          and gone_solid is not None and gone_solid[0] > 100
+          and gone_sparse is not None and gone_sparse[0] < 28
+          and gone_sparse[1] > 100)
+    _line(OK if ok else BAD, "a lost illustration label is visible to the check",
+          f"solid kept {kept_solid[0]:.0f}/{kept_solid[1]:.0f}, erased "
+          f"{gone_solid[0]:.0f}/{gone_solid[1]:.0f}; sparse erased "
+          f"{gone_sparse[0]:.0f} mean (under the 28 warn) but "
+          f"{gone_sparse[1]:.0f} p95")
+
+    # The split figure's width budget must be the page's actual worst case: the
+    # CSS caps the figure at `generate.HERO_FIGURE_MAX_CSS` and the resolution
+    # warning (`heroart.HERO_CSS_SPLIT`) budgets 2x that.  The first cut let the
+    # stacked layout grow the figure to 816 px while the warning still assumed
+    # 560, understating the Retina magnification; this guard is why they cannot
+    # drift again.
+    split_css = generate.build_page_css(generate.palette([], (11, 16, 17)))
+    ok = (generate.HERO_FIGURE_MAX_CSS == heroart.HERO_CSS_SPLIT
+          and f"max-width: {heroart.HERO_CSS_SPLIT}px" in split_css
+          and ".hero.hero-split .hero-art" in split_css
+          and heroart.needed_width("split") == 2 * generate.HERO_FIGURE_MAX_CSS)
+    _line(OK if ok else BAD, "the split figure's width budget matches its CSS cap",
+          f"CSS caps the figure at {generate.HERO_FIGURE_MAX_CSS} px and the "
+          f"budget asks {heroart.needed_width('split')} device px at 2x")
+
+    # The asset inventory must be honest about what the page displays.  Under a
+    # split hero only the figure region ships, so artwork inside the old band but
+    # outside the figure lives in the SVG master alone (`artwork-master`), not
+    # `hero-artwork`; under a full hero the band is what ships.  All the
+    # dashboard fixture's labels sit inside its figure, so only this direct check
+    # covers the outside-figure case.
+    from app.runner import PipelineRunner
+    from app.extract import Block as _ArtBlock
+    inv_blocks = [
+        _ArtBlock("In figure", "other", (600, 200, 700, 210), part="artwork"),
+        _ArtBlock("In band only", "other", (200, 200, 300, 210), part="artwork"),
+        _ArtBlock("Below band", "other", (200, 700, 300, 710), part="artwork"),
+    ]
+    split_dest = [a["destination"] for a in PipelineRunner._asset_inventory(
+        inv_blocks, {"hero_band": [100, 600], "hero_layout": "split",
+                     "hero_figure": [500, 100, 1024, 600]})]
+    full_dest = [a["destination"] for a in PipelineRunner._asset_inventory(
+        inv_blocks, {"hero_band": [100, 600], "hero_layout": "full",
+                     "hero_figure": None})]
+    scene_dest = [a["destination"] for a in PipelineRunner._asset_inventory(
+        inv_blocks, {"hero_band": [100, 600], "hero_layout": "scene",
+                     "hero_figure": None})]
+    ok = (split_dest == ["hero-illustration", "artwork-master", "artwork-master"]
+          and full_dest == ["hero-artwork", "hero-artwork", "artwork-master"]
+          and scene_dest == ["hero-scene", "hero-scene", "artwork-master"])
+    _line(OK if ok else BAD, "the asset inventory says where artwork actually ships",
+          f"split {split_dest}; full {full_dest}; scene {scene_dest}")
+
+    # --- the scene prototype's three pieces ---------------------------------
+    # The accent word comes from the ink share (wrapping makes the run text
+    # boundary unreliable), rendered back through the real Inter advances.
+    head = Block("Managed private hosting for AntSeed.", "headline",
+                 (42, 248, 484, 344))
+    head.runs = [("Managed private ho", (252, 252, 253)),
+                 ("sting for AntSeed.", (27, 188, 99))]
+    head.meta["accent_frac"] = 0.235
+    acc = generate._accent_html(head)
+    ok = ('<span class="accent">AntSeed.</span>' in acc
+          and acc.startswith("Managed private hosting for")
+          and '<span style="color:' not in acc)
+    _line(OK if ok else BAD, "the scene headline accents the reference's own words",
+          acc[:96])
+
+    # The reference's benefit row sits inside the hero band but is easily tagged
+    # a later section; the scene lifts it into the hero and blanks its original
+    # row (icons included) out of the artwork.
+    hero_sec = generate.group_sections([
+        Block("Managed private hosting for AntSeed.", "headline",
+              (42, 248, 484, 344), section="hero"),
+        Block("Dedicated infrastructure, private deployments", "subhead",
+              (42, 366, 424, 428), section="hero"),
+        Block("Book a setup call", "cta", (66, 471, 198, 487), section="hero"),
+        Block("Private deployments", "other", (72, 541, 158, 553),
+              section="features"),
+        Block("Fully isolated environments", "tagline", (72, 558, 166, 568),
+              section="features"),
+        Block("Managed Infra", "other", (222, 541, 284, 553), section="features"),
+        Block("We run the heavy lifting", "tagline", (222, 558, 284, 568),
+              section="features"),
+        Block("Monitoring & support", "other", (362, 541, 450, 553),
+              section="features"),
+        Block("Proactive and hands-on", "tagline", (362, 558, 428, 568),
+              section="features"),
+    ])
+    hb_scene = generate.hero_band(hero_sec)
+    cand = generate._benefit_candidates(hero_sec, hb_scene)
+    lifted = generate._lift_blocks_to_hero(hero_sec, cand)
+    names = [n for n, _ in lifted]
+    hero_blocks = [b for n, g in lifted if n == "hero" for b in g]
+    pairs = generate._benefit_pairs(hero_blocks)
+    # A live extraction returned all six benefit lines as `other`.  With the
+    # eyebrow as the only tagline anchor, `_drop_artwork_labels` used the
+    # eyebrow's width as the copy edge and swallowed the row's right-hand items
+    # -- so the pairer runs first and the pairs are protected from that filter.
+    cand_ids = {id(b) for b in cand}
+    live_hero = [Block(b.text, "other", b.bbox) if id(b) in cand_ids else b
+                 for b in hero_blocks]
+    live_pairs = generate._benefit_pairs(live_hero)
+    live_html = generate._hero_html(live_hero, "#top", benefits=True)
+    ok = ("features" not in names and len(cand) == 6 and len(pairs) == 3
+          and len(live_pairs) == 3 and live_html.count('class="benefit"') == 3
+          and any(b.text == "Private deployments" for b in hero_blocks))
+    _line(OK if ok else BAD, "the reference's benefit row moves inside the hero",
+          f"sections {names}, {len(cand)} block(s), {len(pairs)} pair(s), "
+          f"all-`other` roles -> {len(live_pairs)} pair(s), "
+          f"{live_html.count('class=\"benefit\"')} rendered")
+
+    blanks = generate._benefit_blank_rects(
+        hero_sec, {"hero_layout": "scene", "hero_band": hb_scene})
+    ok = (len(blanks) == 1 and blanks[0][0] == 32 and blanks[0][1] <= 535
+          and blanks[0][2] >= 450 and blanks[0][3] >= 570)
+    _line(OK if ok else BAD, "the reference's own benefit row is blanked out",
+          f"{blanks} (must reach the icons left of the text)")
+
+    # The scene composition is emitted only for `scene`, budgets a full-bleed
+    # width, and carries no scrim over the artwork.
+    scene_css = generate.build_page_css(generate.palette([], (11, 16, 17)))
+    scrim_off = ".hero.hero-scene .hero-art::after" in scene_css and \
+        "display: none;" in scene_css.split(".hero.hero-scene .hero-art::after", 1)[1][:120]
+    ok = (".hero.hero-scene" in scene_css and ".hero-benefits" in scene_css
+          and scrim_off and heroart.needed_width("scene") == 3840)
+    _line(OK if ok else BAD, "the scene is full-width, scrim-free and budgeted",
+          f"scene CSS present={'.hero.hero-scene' in scene_css}, "
+          f"scrim off={scrim_off}, budget={heroart.needed_width('scene')} px at 2x")
+
+    # The scene cleanup's masks must be upload-driven, and must never swallow
+    # illustration content: a component's mask grows only along the pixels
+    # *connected* to the tracer's rect, within a hard cap -- so an unrelated
+    # bright blob inside the search window (the rack edge the review
+    # reproduced) is out of reach even though it is nearby.
+    from app import cleanup as _cleanup
+    from PIL import ImageDraw
+    canvas = Image.fromarray(np.full((200, 440, 3), 16, np.uint8))
+    dr = ImageDraw.Draw(canvas)
+    dr.rounded_rectangle([40, 80, 200, 120], radius=18,
+                         outline=(210, 210, 210), width=3)
+    dr.ellipse([205, 130, 225, 150], fill=(220, 60, 60))   # decoy INSIDE the window
+    dr.ellipse([380, 80, 400, 100], fill=(220, 60, 60))    # decoy beyond the window
+    arr_ci = np.asarray(canvas)
+    grown = _cleanup.component_masks(arr_ci, [[60, 82, 180, 118]], max_grow=40)
+    copied = _cleanup.copy_masks(arr_ci, [[60, 82, 180, 118]], pad=3)
+    ok = (len(grown) == 1
+          and grown[0][0] <= 45 and grown[0][2] >= 195     # the capsule is covered
+          and grown[0][1] <= 85 and grown[0][3] >= 115
+          and grown[0][2] <= 180 + 40                      # the hard cap holds
+          and grown[0][3] < 130 and grown[0][2] <= 205     # neither decoy is reached
+          and copied == [[57, 79, 183, 121]])
+    _line(OK if ok else BAD, "the cleanup masks grow along the element, not the window",
+          f"component {grown[0]}, copy {copied[0]} (inside-window and far decoys kept out)")
+
+    # The opt-in enhancement (see `app/enhance.py`) must be OFF unless asked for,
+    # must need its key, and its cache key must be stable -- the gate runs
+    # without the env var, so the fixtures always exercise the LaMa/Lanczos
+    # path; a stray default would silently add network calls and cost.
+    from app import enhance as _enhance
+    saved_env = os.environ.pop("STUDIO_ART_ENHANCE", None)
+    saved_net = os.environ.pop("STUDIO_ART_ENHANCE_NETWORK", None)
+    try:
+        off = _enhance.mode() is None and not _enhance.available()
+        os.environ["STUDIO_ART_ENHANCE"] = "google-flash"
+        flash = _enhance.mode() == "google-flash"
+        os.environ["STUDIO_ART_ENHANCE"] = "auto"
+        auto = _enhance.mode() == "google-flash"
+        os.environ["STUDIO_ART_ENHANCE"] = "nonsense"
+        junk = _enhance.mode() is None
+        orig_key = _enhance._key
+        _enhance._key = lambda: ""          # force "no key configured"
+        try:
+            keyed = not _enhance.available()
+        finally:
+            _enhance._key = orig_key
+        os.environ["STUDIO_ART_ENHANCE"] = "google-flash"
+        tmp = Path(tempfile.mkdtemp())
+        (tmp / "x.png").write_bytes(b"abc")
+        k1 = _enhance.cache_key(tmp / "x.png", "gemini-3.1-flash-image")
+        k2 = _enhance.cache_key(tmp / "x.png", "gemini-3.1-flash-image")
+        stable = k1 == k2 and k1.endswith("-gemini-3.1-flash-image-4k")
+        # The band crop maps upload rows through the candidate's own scale and
+        # never upscales past the candidate's pixels.
+        from PIL import Image as _Image
+        _Image.new("RGB", (200, 100), (10, 10, 10)).save(tmp / "cand.png")
+        b1 = _enhance.band(tmp / "cand.png", 100, (10, 60), 100)
+        b2 = _enhance.band(tmp / "cand.png", 100, (10, 60), 400)
+        band_ok = b1.size == (100, 40) and b2.size == (200, 80)
+        # The kill switch wins over a configured mode AND a present key: this is
+        # what keeps `doctor gate` / `fixtures` spend-free on a machine where the
+        # enhancement is configured in the environment.
+        os.environ["STUDIO_ART_ENHANCE_NETWORK"] = "forbidden"
+        net_off = (not _enhance.available()
+                   and _enhance.candidate(tmp / "x.png") is None)
+        os.environ.pop("STUDIO_ART_ENHANCE_NETWORK", None)
+        ok = off and flash and auto and junk and keyed and stable and band_ok and net_off
+        _line(OK if ok else BAD, "enhancement is opt-in, keyed, cached and killable",
+              f"off={off}, flash={flash}, auto->flash={auto}, junk off={junk}, "
+              f"needs key={keyed}, cache key stable={stable}, band={band_ok}, "
+              f"network kill switch={net_off}")
+    finally:
+        os.environ.pop("STUDIO_ART_ENHANCE", None)
+        if saved_env is not None:
+            os.environ["STUDIO_ART_ENHANCE"] = saved_env
+        os.environ.pop("STUDIO_ART_ENHANCE_NETWORK", None)
+        if saved_net is not None:
+            os.environ["STUDIO_ART_ENHANCE_NETWORK"] = saved_net
+
+    # Acceptance is the risky mutation: a mocked run proves it refuses without a
+    # review, rolls back on any failure and serializes concurrent requests.
+    ok, detail = _enhance_accept_selftest()
+    _line(OK if ok else BAD, "enhancement acceptance is failure-safe and serialized",
+          detail)
+
+    # The enhancement maps the cleaned upload through the ingest fit and stays
+    # optional on failure (both raster layouts share this path).
+    ok, detail = _enhance_artwork_selftest()
+    _line(OK if ok else BAD, "enhancement maps the cleaned upload and stays optional",
+          detail)
+
+    # A row drawn inside a full-layout band (a features row whose copy the DOM
+    # section below replaces) must be detected from its blocks -- never a
+    # hard-coded cutoff -- so the cleanup can mask its icons/plates whole.  The
+    # scene-gated rendering call must still return nothing for a full hero.
+    from app.extract import Block as _Block
+    hero_blk = _Block("Managed private hosting for AntSeed.", "headline",
+                      (96, 261, 465, 348), section="hero")
+    feat = [
+        _Block("Private deployments", "other", (124, 517, 202, 527), section="features"),
+        _Block("Fully isolated environments", "tagline", (124, 532, 207, 540), section="features"),
+        _Block("Managed infra", "other", (258, 517, 312, 527), section="features"),
+        _Block("We run the heavy lifting", "tagline", (258, 532, 330, 540), section="features"),
+    ]
+    sec = generate.group_sections([hero_blk, *feat])
+    content_full = {"hero_layout": "full", "hero_band": [158, 743]}
+    rects = generate._benefit_blank_rects(sec, content_full, any_layout=True)
+    scene_only = generate._benefit_blank_rects(sec, content_full)
+    ok = (len(rects) == 1 and rects[0][0] <= 84 and rects[0][2] >= 330
+          and scene_only == [])
+    _line(OK if ok else BAD, "the full-layout row blank is detected from its blocks",
+          f"{rects} (rendering stays scene-only: {scene_only})")
+
+    # A cleanup mask must never remove an artwork label: the runner subtracts
+    # the label rects from the masks, and the label check scores a fully masked
+    # label instead of skipping it (no silent coverage loss).
+    from app import cleanup as _cleanup, verify as _verify
+    from PIL import Image as _Image
+    masks, cut = _cleanup.subtract_rects([[0, 0, 100, 100]], [[40, 40, 60, 60]])
+    gap = all(not (r[0] < 60 and r[2] > 40 and r[1] < 60 and r[3] > 40)
+              for r in masks)
+    ref = np.full((768, 1024, 3), 30, np.float32)
+    ref[40:60, 60:140] = 220                       # a bright "label"
+    raster = _Image.fromarray(ref.astype(np.uint8)).convert("RGB")
+    raster.paste((30, 30, 30), (60, 40, 140, 60))  # erased
+    lp = Path(tempfile.mkdtemp()) / "label.png"
+    raster.save(lp)
+    cover = np.zeros((768, 1024), bool)
+    cover[30:70, 50:150] = True                    # a cleanup mask over the label
+    lab = _verify.label_fidelity(ref, [0, 0, 1024, 768], lp,
+                                 [[60, 40, 140, 60]], cover)
+    ok = (cut == 1 and gap and len(masks) == 4
+          and lab is not None and lab[0] > 100 and lab[1] > 100)
+    _line(OK if ok else BAD, "cleanup masks never erase an artwork label from the check",
+          f"subtract cut={cut} -> {len(masks)} rect(s), gap={gap}; "
+          f"masked label still scored {lab}")
+
+    # A PARTIALLY masked label must still show its damage: the label rects are
+    # cleared from the combined exclusions, so an erased glyph run under the
+    # mask edge is scored (the old path scored only the unmasked background and
+    # read ~0).
+    ref2 = np.full((768, 1024, 3), 30, np.float32)
+    ref2[48:52, 70:130] = 220                     # a thin bright "glyph" run
+    raster2 = _Image.fromarray(ref2.astype(np.uint8)).convert("RGB")
+    raster2.paste((30, 30, 30), (70, 48, 130, 52))  # the glyphs erased
+    lp2 = Path(tempfile.mkdtemp()) / "label2.png"
+    raster2.save(lp2)
+    label = [[60, 40, 140, 60]]                   # the label rect
+    partial = np.zeros((768, 1024), bool)
+    partial[48:52, 70:130] = True                 # exclusion covers the glyphs only
+    hidden = _verify.label_fidelity(ref2, [0, 0, 1024, 768], lp2, label, partial)
+    scored = _verify.label_fidelity(ref2, [0, 0, 1024, 768], lp2, label,
+                                    _verify._clear_rects(partial, label))
+    ok = (hidden is not None and hidden[0] < 5
+          and scored is not None and scored[0] > 20 and scored[1] > 100)
+    _line(OK if ok else BAD, "a partially masked artwork label still shows its damage",
+          f"hidden {hidden} vs cleared {scored}")
+
+    # The source-preserving repair: content detection, restoration, context
+    # alignment, real feathering and the fail-safe on uncertainty.
+    ok, detail = _repair_selftest()
+    _line(OK if ok else BAD, "source-preserving repair restores content and never guesses",
+          detail)
+
+    # The enhancement runs the repair on the raw candidate before the band.
+    ok, detail = _repair_runner_selftest()
+    _line(OK if ok else BAD, "the enhancement repairs before deriving the band", detail)
+
+    # Edge cases: empty extraction boxes, portrait images, invalid regions.
+    ok, detail = _repair_gaps_selftest()
+    _line(OK if ok else BAD, "repair handles empty boxes, portraits and invalid regions",
+          detail)
+
+    # A partial repair is diagnostic only: the native fallback ships and the
+    # candidate cannot be accepted.
+    ok, detail = _repair_diagnostic_selftest()
+    _line(OK if ok else BAD, "a partial repair is diagnostic and cannot be accepted",
+          detail)
+
     # A light ground must produce a light palette (and a dark one a dark palette).
     light_pal = generate.palette(synthetic, (248, 249, 247))
     dark_pal = generate.palette(synthetic, (10, 12, 14))
@@ -845,6 +1855,39 @@ FIXTURES: dict[str, dict] = {
         seam_max=8.0,
         hero_kind="photographic", hero_max=2.5,
     ),
+    # The flat dashboard that drove the illustration work: its artwork carries
+    # 33 of its own labels and the reference's benefit row.  The prototype
+    # composes it as the integrated `scene` (the whole copy-removed scene in
+    # flow, copy over its dark side, benefits lifted inside the hero), so this
+    # fixture is what fails if that path regresses.
+    "dashboard": dict(
+        ref="dashboard-ref.png", blocks="dashboard-blocks.json",
+        note="flat dashboard scene: integrated prototype with its 33 labels",
+        expect=["header", "nav", "hero"],
+        page=17,
+        score_max=2.0, art_p95_max=32.0, seam_max=8.0,
+        hero_kind="photographic", hero_max=2.5,
+        hero_layout="scene", hero_needed=3840,
+        hero_label_max=24.0, hero_label_p95=64.0,
+        min_assets=33, asset_dest="hero-scene",
+        html_has=["hero hero-scene", "hero-benefits", 'class="accent"'],
+    ),
+    # The same dashboard artwork rendered continuous-tone: the tracer reads it
+    # as a photograph (colour score 214 >= 150), so the layout is `full`, not
+    # the flat `scene`.  This pins the full-layout raster path AND the opt-in
+    # enhancement's full-layout arm (`runner._enhance_full`, input = the
+    # text-removed prepared canvas, band mapped through `m`).  The fixture
+    # builds offline, so the enhancement itself is skipped by the kill switch.
+    "hosting": dict(
+        ref="hosting-ref.png", blocks="hosting-blocks.json",
+        note="photographic full-bleed hero (wider-than-stage upload)",
+        expect=["header", "nav", "hero"],
+        page=17,
+        score_max=3.0, art_p95_max=48.0, seam_max=8.0,
+        hero_kind="photographic", hero_max=4.0,
+        hero_layout="full", hero_needed=3840,
+        min_assets=26, asset_dest="hero-artwork",
+    ),
 }
 LIGHT_FIXTURE = STUDIO_DIR / "fixtures"
 # Kept for the README's `doctor light` entry point.
@@ -952,6 +1995,22 @@ def _run_fixture(name: str, keep: bool = False) -> int:
               + (f"  score {j.hero_distinct}" if j.hero_distinct is not None else "")
               + (f", shipped art mean {j.hero_fidelity:.2f}" if j.hero_fidelity is not None else "")
               + (f"  (max {hb:g})" if hb is not None else ""))
+    if j.hero_layout:
+        print(f"layout   : {j.hero_layout}"
+              + (f", needs {j.hero_needed} device px at 2x"
+                 if j.hero_needed is not None else "")
+              + (f" (shipped {j.hero_scale:.2f}x)" if j.hero_scale is not None else ""))
+    if j.hero_label_max is not None:
+        print(f"labels   : worst mean {j.hero_label_max:.1f}/255"
+              + (f", p95 {j.hero_label_p95:.1f}/255"
+                 if j.hero_label_p95 is not None else "")
+              + (f"  (max {spec['hero_label_max']:g})"
+                 if "hero_label_max" in spec else ""))
+    if j.assets:
+        from collections import Counter
+        counts = Counter(a.get("destination") for a in j.assets)
+        print(f"assets   : {len(j.assets)} artwork block(s) -> "
+              + ", ".join(f"{k} {v}" for k, v in sorted(counts.items())))
     print(f"blocks   : {len(page)} page, {len(art)} artwork left to the tracer")
     seam = j.blank_seam
     if seam is not None:
@@ -961,6 +2020,10 @@ def _run_fixture(name: str, keep: bool = False) -> int:
     print(f"job dir  : {j.dir}")
 
     failed = _fixture_ok(spec, info, page, art) + issues
+    # A composition expectation the structure scan cannot express (a class on
+    # the hero, a component the markup must carry).
+    failed += [f"markup is missing {want!r}" for want in spec.get("html_has", [])
+               if want not in html]
     if bound is not None:
         if j.score is None:
             failed.append("art fidelity not measured (no score)")
@@ -997,6 +2060,41 @@ def _run_fixture(name: str, keep: bool = False) -> int:
             failed.append("shipped hero art not measured")
         elif j.hero_fidelity >= hero_bound:
             failed.append(f"shipped hero art mean {j.hero_fidelity:.2f} >= max {hero_bound:g}")
+    # The illustration path: the layout must be the one this fixture guards, the
+    # width budget must match the figure (a drifted constant would make the
+    # Retina warning lie), and every label must still be in the shipped asset.
+    want_layout = spec.get("hero_layout")
+    if want_layout is not None and j.hero_layout != want_layout:
+        failed.append(f"hero layout {j.hero_layout!r} != {want_layout!r}")
+    want_need = spec.get("hero_needed")
+    if want_need is not None and j.hero_needed != want_need:
+        failed.append(f"hero budget {j.hero_needed} != {want_need} "
+                      f"(figure crop or the width constants moved)")
+    label_bound = spec.get("hero_label_max")
+    if label_bound is not None:
+        if j.hero_label_max is None:
+            failed.append("illustration labels not measured")
+        elif j.hero_label_max > label_bound:
+            failed.append(f"worst label mean {j.hero_label_max:.1f} > max {label_bound:g}")
+    label_p95_bound = spec.get("hero_label_p95")
+    if label_p95_bound is not None:
+        if j.hero_label_p95 is None:
+            failed.append("illustration label p95 not measured")
+        elif j.hero_label_p95 > label_p95_bound:
+            failed.append(f"worst label p95 {j.hero_label_p95:.1f} > max "
+                          f"{label_p95_bound:g}")
+    min_assets = spec.get("min_assets")
+    if min_assets is not None:
+        assets = j.assets or []
+        if len(assets) < min_assets:
+            failed.append(f"{len(assets)} asset block(s) < {min_assets}")
+        want_dest = spec.get("asset_dest")
+        if want_dest:
+            wrong = [a for a in assets if a.get("destination") != want_dest]
+            if wrong:
+                failed.append(
+                    f"{len(wrong)} artwork block(s) not '{want_dest}' "
+                    f"(e.g. {wrong[0].get('destination')}: {wrong[0].get('text')!r})")
     ok = j.status == "done" and not failed
 
     if not keep:
@@ -1020,10 +2118,21 @@ def cmd_fixtures(args: list[str]) -> int:
     if bad:
         print(f"unknown fixture(s): {', '.join(bad)}; have {', '.join(FIXTURES)}")
         return 2
-    failed = 0
-    for n in names:
-        failed += _run_fixture(n, keep=keep)
-        print("=" * 60)
+    # Fixtures must be spend-free and deterministic even when the paid
+    # enhancement is configured in the developer's environment: force the kill
+    # switch for the whole run, restore it afterwards.
+    saved_net = os.environ.get("STUDIO_ART_ENHANCE_NETWORK")
+    os.environ["STUDIO_ART_ENHANCE_NETWORK"] = "forbidden"
+    try:
+        failed = 0
+        for n in names:
+            failed += _run_fixture(n, keep=keep)
+            print("=" * 60)
+    finally:
+        if saved_net is None:
+            os.environ.pop("STUDIO_ART_ENHANCE_NETWORK", None)
+        else:
+            os.environ["STUDIO_ART_ENHANCE_NETWORK"] = saved_net
     print(f"fixtures: {len(names) - failed}/{len(names)} passed")
     return 1 if failed else 0
 
@@ -1085,7 +2194,9 @@ def _state_consistency(measured: dict[str, float]) -> list[str]:
     else:
         for name, spec in FIXTURES.items():
             want = {k: spec[k] for k in
-                    ("score_max", "art_p95_max", "seam_max", "hero_kind", "hero_max")
+                    ("score_max", "art_p95_max", "seam_max", "hero_kind", "hero_max",
+                     "hero_layout", "hero_needed", "hero_label_max", "hero_label_p95",
+                     "min_assets", "asset_dest")
                     if k in spec}
             got = recorded.get(name)
             if not isinstance(got, dict):
@@ -1165,6 +2276,10 @@ def cmd_gate(args: list[str]) -> int:
 
     `--quick` is the guard a fast CI job (or a pre-commit hook) can afford: it
     needs no potrace, no node, no Chrome and no vision model.
+
+    The paid enhancement is forced off for the whole run
+    (`STUDIO_ART_ENHANCE_NETWORK=forbidden`), so a machine with the enhancement
+    configured in its environment can never make the gate spend money.
     """
     global _failures
 
@@ -1186,14 +2301,22 @@ def cmd_gate(args: list[str]) -> int:
         return 2
 
     print(f"anthotype gate: {' -> '.join(name for name, _, _ in plan)}\n")
-    results = []
-    for name, fn, fargs in plan:
-        print("=" * 68)
-        print(f"stage: {name}")
-        print("=" * 68)
-        _failures = 0  # each stage owns its failure count
-        results.append((name, fn(fargs)))
-        print()
+    saved_net = os.environ.get("STUDIO_ART_ENHANCE_NETWORK")
+    os.environ["STUDIO_ART_ENHANCE_NETWORK"] = "forbidden"
+    try:
+        results = []
+        for name, fn, fargs in plan:
+            print("=" * 68)
+            print(f"stage: {name}")
+            print("=" * 68)
+            _failures = 0  # each stage owns its failure count
+            results.append((name, fn(fargs)))
+            print()
+    finally:
+        if saved_net is None:
+            os.environ.pop("STUDIO_ART_ENHANCE_NETWORK", None)
+        else:
+            os.environ["STUDIO_ART_ENHANCE_NETWORK"] = saved_net
 
     failed = [name for name, rc in results if rc != 0]
     print("=" * 68)
@@ -1278,14 +2401,17 @@ CRITIQUE_PROMPT = (
     "to SVG (flat designs) or a fixed-resolution photographic export (designs "
     "with a photo hero).\n"
     "The target is a REAL website, not a pixel copy. The reference's typeface is "
-    "deliberately NOT reproduced, so do NOT report typeface/font differences, "
-    "sub-pixel spacing, or missing fine detail. The copy is DOM text, so the "
-    "mockup's own type must NOT appear in the backdrop -- a ghost of the "
-    "mockup's headline, nav bar or buttons showing through the hero IS a defect "
-    "(report it as ghosted/duplicated text). Icons, avatars and small images "
-    "that the mockup composited as flat art are intentionally absent -- do NOT "
-    "report those as missing, but DO report a photographic hero that is missing, "
-    "smeared or posterised. Judge COMPOSITION and "
+    "deliberately NOT reproduced, so do NOT report typeface/font differences or "
+    "sub-pixel spacing. The copy is DOM text, so the mockup's own type must NOT "
+    "appear in the backdrop -- a ghost of the mockup's headline, nav bar or "
+    "buttons showing through the hero IS a defect (report it as ghosted/"
+    "duplicated text). An illustration's own labels and elements (a dashboard's "
+    "region names and table values, a device mockup's captions, a diagram's step "
+    "labels) are part of the artwork asset and must be present: report any that "
+    "are missing, smeared, cropped or hidden, and report an illustration that is "
+    "cropped or dimmed by the backdrop treatment. Small lower-section icons and "
+    "logos may be approximate -- report them honestly, but rank them below a "
+    "damaged or missing hero illustration. Judge COMPOSITION and "
     "READABILITY: hierarchy, grouping, balance, contrast, and anything that "
     "reads as a defect (ghosted/duplicated text, stray or orphaned elements, "
     "broken rows, unreadable copy, misplaced sections).\n"

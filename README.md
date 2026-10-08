@@ -62,17 +62,21 @@ Two things the raster gets right, and both are easy to get wrong:
 - it is cropped from the **original upload**, not the normalised 1024×768 working
   reference, which discards real resolution (a real upload went 1672×941 →
   1024×576, 61% of its linear detail); and
-- it is taken from the tracer's **text-removed** image, not a raw crop — the
-  mockup is a picture *of a page*, so a raw crop bakes its nav bar, headline and
-  buttons into the backdrop, where they ghost behind the real DOM copy.
+- it is taken from the tracer's **prepared** image, not a raw crop — the mockup
+  is a picture *of a page*, so a raw crop bakes its nav bar, headline and buttons
+  into the backdrop, where they ghost behind the real DOM copy.  (Only the copy
+  the page replaces is inpainted out; an illustration's own labels are kept.)
 
 The **SVG art master is always produced** and always shipped in the project zip.
 When the page ships the raster instead, the master is a secondary artifact and is
 not tuned.
 
-Both representations are cropped to the **hero band** — the mockup's own header is
-excluded (the page renders its own), and the band is trimmed to the hero box's
-aspect so `cover` stops magnifying it. See `generate.hero_band`.
+The full-bleed representations are cropped to the **hero band** — the mockup's own
+header is excluded (the page renders its own), and the band is trimmed to the hero
+box's aspect so `cover` stops magnifying it. See `generate.hero_band`.  A flat
+hero whose artwork is an illustration gets its own figure region instead
+(`generate.hero_figure`), shown whole beside the copy so `cover` cannot crop its
+labels.
 
 ## What it does
 
@@ -80,16 +84,17 @@ The reference is exposed, banded, and traced; the palette is sampled; the page
 is assembled as semantic HTML. Where the artwork is photographic, the hero
 backdrop is instead exported at a fixed resolution from the **original upload**
 (never the normalised reference, which would bake in the ingest downscale) and
-from the tracer's **text-removed** image (never the raw reference, which would
-ghost the mockup's own type behind the copy).
+from the tracer's **prepared** image (never the raw reference, which would ghost
+the mockup's own type behind the copy).
 
 ```
 design.png
    │
    ├─ app/heroart.py     is the hero flat art or a photograph?  (measured)
    │                     photographic -> the tracer prepares a native-resolution
-   │                                    reference and inpaints the text out of it;
-   │                                    that image is cropped to the hero band,
+   │                                    reference and inpaints the replaced copy
+   │                                    out of it; that image is cropped to the
+   │                                    hero band (or the illustration's figure),
    │                                    encoded to WebP and inlined as a data URI
    │
    ├─ qa/mkart.py        band the artwork by luminance, trace each band to SVG
@@ -118,8 +123,8 @@ weight or colour tuning removes. So the metric is split:
 
 | layer | how it is judged |
 |---|---|
-| **the artwork** | pixel fidelity over the **art region** (the page-copy rects masked out). This is the moat — the tracer's job. |
-| **the shipped hero** | for a photographic backdrop, mean-abs-diff of the **exported raster** against the reference band (`hero_fidelity`). The art score above measures the SVG master, which such a page no longer shows. |
+| **the artwork** | pixel fidelity over the **art region** (the rects of the copy the page replaces are masked out; an illustration's own labels are part of the artwork and are scored). This is the moat — the tracer's job. |
+| **the shipped hero** | for a photographic backdrop, mean-abs-diff of the **exported raster** against the region the page shows — the hero band, or an illustration's own figure (`hero_fidelity`). The art score above measures the SVG master, which such a page no longer shows. |
 | **the website** | structure: landmarks, sections, one `h1`, resolving links, flow layout, and reflow at phone/tablet/desktop widths. |
 
 `studio/backend/app/structure.py` reads the built page and reports the last;
@@ -320,10 +325,13 @@ docs/HANDOFF.md        full engineering history: what was tried, what worked,
   at the most relevant section that exists on the page (never `#`); the A/B/C
   posters still carry `href="#waitlist"`. Set the real URL in the generated
   `content-*.json` (or `content.json`) once it is known.
-- **The artwork is one backdrop, not per-section art.** The traced SVG is the
-  hero's full-bleed decorative layer; lower sections sit on solid background
-  tones derived from the reference. Cropping the trace per section would be more
-  faithful to the mockup and considerably more fragile.
+- **The artwork is the hero's.** Usually the traced SVG as a full-bleed decorative
+  layer; when the hero carries a flat illustration with its own labels, the studio
+  composes the whole copy-removed scene as the hero itself — an in-flow image at
+  its own aspect with the live copy over its dark side, no cover crop, no boxed
+  column and no scrim. Lower sections sit on solid background tones derived from
+  the reference; a general per-section asset pipeline (logos, icons,
+  lower-section images) is future work.
 - **Structure inference is a heuristic.** The vision model returns sections and
   reading order, and the generator falls back to clustering the blocks by
   vertical gap and eyebrow labels when the model is vague. A page it gets wrong

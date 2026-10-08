@@ -11,9 +11,17 @@ reference's glyphs are not reproduced, they are replaced by authored copy in the
 site's own type.
 
 The one place the reference pixels still matter is `mkart.py`'s exclusion rects:
-the model's text boxes are exactly the rectangles the tracer must exclude so the
-traced artwork does not bake in a rasterised copy of the words.  Growing them
-slightly is safe -- it only preserves a little more of the glow the type sits on.
+the boxes of the copy the page *actually replaces* with DOM text are the
+rectangles the tracer must exclude, so the traced artwork does not bake in a
+rasterised copy of words the page renders live.  Growing them slightly is safe --
+it only preserves a little more of the glow the type sits on.
+
+The distinction matters.  An illustration's own labels (a dashboard's row names,
+a device mockup's captions, a diagram's step numbers) are **part of the
+artwork**, not copy the page replaces: blanking them strips real content out of
+the hero asset and leaves fill smears where they were measured.  So the
+exclusion rects cover `page_blocks()` minus labels dropped from the hero's DOM,
+and never a `part: artwork` block.
 """
 from __future__ import annotations
 
@@ -28,7 +36,7 @@ from PIL import Image
 
 from .config import STAGE_H, STAGE_W
 from .extract import Block
-from .fontmetrics import char_at_x_fraction
+from .fontmetrics import char_at_x_fraction, text_width_em
 
 # Safety growth on the mkart text-exclusion rects (stage px).
 TEXT_RECT_GROW = 6
@@ -74,6 +82,50 @@ HERO_BAND_ASPECT = 1.75
 # alone would then crop 53 px of the hero artwork above the copy.
 HERO_BAND_HEADER_GAP = 0.6
 HERO_BAND_HEADER_GAP_MAX = 12.0
+
+# A hero's artwork is usually *texture* (a photo, a glow field) and the full-bleed
+# backdrop is right for it.  But a hero can also carry an ILLUSTRATION -- a
+# dashboard mockup, a device, a diagram -- and the model recovers its labels as
+# `part: artwork` blocks.  `object-fit: cover` then crops exactly the sides those
+# labels sit on (a measured dashboard lost 21% of its width, including its
+# right-edge status labels) and the copy scrim dims the rest.  So a hero with
+# enough artwork labels gets its own responsive figure region, shown whole.
+#
+# The split is only *offered* here; the runner takes it only for flat artwork.
+# A continuous-tone hero is a photograph and stays the page-wide backdrop, even
+# when the model found text in it -- see `runner._hero_art`.
+HERO_ILLUSTRATION_MIN = 4
+# The figure region is the illustration's labels grown by this much (stage px),
+# so the drawing around them is not clipped.  The left edge gets twice the pad:
+# a drawing usually extends some way left of its leftmost label (a rail, a
+# rack, a panel edge), while the right edge is usually near the stage edge.
+HERO_FIGURE_PAD = 28
+# The clear space required between the hero copy's right edge and the nearest
+# illustration label before the copy/figure split is taken.
+HERO_SPLIT_GAP = 16
+# The widest a split figure is ever rendered, in CSS px.  The two-column layout
+# keeps it near half of `--maxw`, but the single-column layout below 880px would
+# otherwise let it grow to the full container (816 px at an 880px viewport), and
+# the resolution budget (`heroart.HERO_CSS_SPLIT`) would understate the Retina
+# magnification.  The CSS pins the figure to this, so the budget is the truth.
+# `doctor polarity` fails if the emitted CSS and the budget drift apart.
+HERO_FIGURE_MAX_CSS = 560
+
+# --- the integrated scene (the reference-led prototype) ---------------------
+# A hero whose artwork is a *complete scene* -- racks, floor, lighting, a UI
+# illustration -- is not a boxed picture and not a texture: the whole
+# copy-removed scene is the hero itself, shown at its own aspect in normal flow,
+# with the live copy over its dark side.  No cover crop, no scrim.  This is the
+# prototype composition; the split/full modes remain for other hero shapes.
+#
+# The reference draws a benefit row (icon + value + sub-label) inside the hero,
+# under the buttons; the model often tags it a later section.  When the hero is
+# a scene, that row is lifted into the hero and the reference's own row is
+# blanked out of the artwork -- its icons would otherwise duplicate the HTML
+# row.  `HERO_BENEFIT_BLANK_PAD` is how far around the row's text the blank
+# reaches (left, top, right, bottom; stage px): 40 to the left catches the
+# icons, which sit outside the text boxes.
+HERO_BENEFIT_BLANK_PAD = (40, 8, 8, 8)
 
 
 def _as_array(png: Path) -> np.ndarray:
@@ -185,6 +237,43 @@ def sample_runs(arr: np.ndarray, bbox: tuple[float, float, float, float], text: 
         return [(text, tuple(int(v) for v in np.median(pick, axis=0)))]
     return [(text[:idx], tuple(int(v) for v in np.median(neutral, axis=0))),
             (text[idx:], tuple(int(v) for v in np.median(coloured, axis=0)))]
+
+
+def _tone_fraction(arr: np.ndarray, bbox: tuple[float, float, float, float],
+                   background: tuple[int, int, int],
+                   accent: tuple[int, int, int]) -> float:
+    """The share of a two-tone block's ink that is the accent colour.
+
+    `sample_runs` can see that a line is two-tone but cannot say *where* the
+    accent starts on a block that wraps across lines (its x-boundary maps to a
+    character index as if the line were single).  The ink fraction is reliable
+    regardless of wrapping, and the renderer turns it back into words with the
+    real Inter advance widths -- see `_accent_html`.
+
+    Classification is by **chroma**, not nearest colour: a pale accent (a light
+    green wordmark) is close to white in RGB distance, so nearest-colour pulls
+    half the neutral anti-aliased greys into the accent group (measured 0.43 on
+    a headline whose true share is 0.24).  A pixel is the accent when its
+    saturation clears a third of the accent core's own saturation; greys of any
+    tone stay neutral.
+    """
+    x0, y0, x1, y1 = (int(round(v)) for v in bbox)
+    x0, y0 = max(0, x0), max(0, y0)
+    x1, y1 = min(STAGE_W, x1), min(STAGE_H, y1)
+    sub = arr[y0:y1, x0:x1]
+    if sub.size == 0:
+        return 0.0
+    dist = np.linalg.norm(sub - np.array(background, dtype=np.float32), axis=2)
+    ink = dist > max(28.0, float(np.percentile(dist, 60)))
+    px = sub[ink]
+    if px.size == 0:
+        return 0.0
+    a = np.array(accent, dtype=np.float32)
+    accent_sat = float(a.max() - a.min())
+    if accent_sat < 20.0:                     # a near-neutral "accent": no split
+        return 0.0
+    sat = px.max(axis=1) - px.min(axis=1)
+    return float((sat > 0.33 * accent_sat).mean())
 
 
 def sample_fill(arr: np.ndarray, bbox: tuple[float, float, float, float],
@@ -495,6 +584,12 @@ def decorate(blocks: list[Block], ref_png: Path,
             b.bbox = snap_to_ink(arr, b.bbox, background)
             b.runs = sample_runs(arr, b.bbox, b.text, background)
             b.color = b.runs[0][1] if len(b.runs) == 1 else None
+            # A two-tone block (a headline with its accent word) also carries the
+            # accent's *share* of the ink, which is what survives wrapping; see
+            # `_accent_html`.
+            if len(b.runs) == 2:
+                b.meta["accent_frac"] = round(_tone_fraction(
+                    arr, b.bbox, background, b.runs[1][1]), 4)
     return blocks
 
 
@@ -955,6 +1050,37 @@ def _inline(b: Block) -> str:
     return html.escape(b.text)
 
 
+def _accent_html(b: Block) -> str:
+    """A two-tone line with the accent on the word(s) the reference colours.
+
+    `sample_runs` returns the run *colours*, but on a block that wraps its text
+    boundary is unreliable (it maps the accent's first column to a character
+    index as if the line were single, so "Managed private hosting for AntSeed."
+    split inside "hosting").  The reliable signal is the accent's share of the
+    ink (`_tone_fraction`); the renderer turns that back into words with the
+    real Inter advance widths, choosing the trailing word run whose width share
+    is closest.  A prototype-scoped treatment (used by the scene hero), falling
+    back to the plain inline form whenever the match is not convincing.
+    """
+    frac = b.meta.get("accent_frac")
+    words = b.text.split()
+    if not frac or len(words) < 2 or not 0.08 <= float(frac) <= 0.6:
+        return _inline(b)
+    full = text_width_em(b.text)
+    if full <= 0:
+        return _inline(b)
+
+    def share(k: int) -> float:
+        return text_width_em(" ".join(words[-k:])) / full
+
+    k = min(range(1, len(words)), key=lambda n: abs(share(n) - float(frac)))
+    if abs(share(k) - float(frac)) > 0.08:
+        return _inline(b)
+    prefix = " ".join(words[:-k])
+    return (f'{html.escape(prefix)} '
+            f'<span class="accent">{html.escape(" ".join(words[-k:]))}</span>')
+
+
 def _attr(value: str) -> str:
     return html.escape(value, quote=True)
 
@@ -1295,7 +1421,8 @@ def _band_html(name: str, band: list[Block], cta_href: str) -> str:
     return "\n    ".join(parts)
 
 
-def _drop_artwork_labels(blocks: list[Block]) -> list[Block]:
+def _drop_artwork_labels(blocks: list[Block],
+                         protect: set[int] | None = None) -> list[Block]:
     """Remove a hero illustration's own captions from the hero's DOM copy.
 
     A hero is often a copy column beside an illustration (a device mockup, a
@@ -1318,9 +1445,15 @@ def _drop_artwork_labels(blocks: list[Block]) -> list[Block]:
     overlap test is safe.  A `brand` block is deliberately NOT an anchor: on an
     upload whose hero is a device mockup the logo drawn on the screen comes back
     `role: brand`, and using it as the column edge would swallow the illustration.
+
+    `protect` are blocks the caller already knows are real content (the scene's
+    benefit pairs): a live extraction returned every benefit line as `other`, so
+    the eyebrow was the only tagline anchor, the column edge collapsed to the
+    eyebrow's width, and rule (b) swallowed the row's right-hand items.
     """
     if not blocks:
         return blocks
+    protect = protect or set()
     copy = [b for b in blocks if b.role in {"headline", "subhead"}]
     if not copy:
         return blocks
@@ -1331,6 +1464,8 @@ def _drop_artwork_labels(blocks: list[Block]) -> list[Block]:
     hero_top = min(c.bbox[1] for c in copy)
 
     def is_label(b: Block) -> bool:
+        if id(b) in protect:
+            return False
         if b.role not in {"other", "brand"}:
             return False
         if len(b.text) > 60:
@@ -1353,29 +1488,152 @@ def _drop_artwork_labels(blocks: list[Block]) -> list[Block]:
     return kept if len(kept) >= 2 else blocks
 
 
+def _benefit_pairs(blocks: list[Block]) -> list[tuple[Block, Block]]:
+    """Pair a benefit row's value with the sub-label drawn under it.
+
+    The reference's benefit row is "Private deployments" over "Fully isolated
+    environments", three of them in a line.  The sub-label is not a sentence and
+    shares the value's column, so it is paired by position -- like a contact
+    panel's value/label, but without the phone/email shape requirement.  Either
+    line can come back `other` or `tagline` (a live extraction returned all six
+    as `other`), so the pairing does not depend on which of the two roles the
+    model chose: two short stacked lines in one column are a benefit item.
+    """
+    pairs: list[tuple[Block, Block]] = []
+    used: set[int] = set()
+    for v in sorted(blocks, key=lambda b: b.bbox[0]):
+        if id(v) in used or v.role not in ("other", "tagline") or len(v.text) > 44:
+            continue
+        cands = [l for l in blocks
+                 if l is not v and id(l) not in used
+                 and l.role in ("other", "tagline")
+                 and _x_overlaps(l, v)
+                 and v.bbox[1] - 4 <= l.bbox[1] <= v.bbox[3] + 18
+                 and len(l.text) <= 44]
+        if cands:
+            l = min(cands, key=lambda b: (b.bbox[1], b.bbox[0]))
+            used.add(id(v))
+            used.add(id(l))
+            pairs.append((v, l))
+    return pairs
+
+
+def _benefit_candidates(sections: list[tuple[str, list[Block]]],
+                        band: list[int] | None) -> list[Block]:
+    """Benefit-row blocks drawn inside the hero's band but tagged a later section.
+
+    The reference draws the benefit row below the hero buttons and inside the
+    scene, and the model tends to call it `features`; left there it renders as
+    cards below the fold instead of part of the hero.  Candidates are short
+    value/sub-label lines under the hero copy's own bottom and inside the band,
+    with at least two sharing a row so a stray caption cannot be lifted.  This is
+    prototype-scoped to the scene layout (`build_content` only lifts in scene
+    mode), because the band deliberately overshoots into the next section and a
+    general rule would pull real section copy into the hero.
+    """
+    hero = [b for n, g in sections if n == "hero" for b in g]
+    if not hero or not band or len(band) != 2:
+        return []
+    copy_bottom = max(b.bbox[3] for b in hero)
+    out: list[Block] = []
+    for name, group in sections:
+        if name in ("header", "nav", "hero", "footer"):
+            continue
+        for b in group:
+            if (b.role in ("other", "tagline")
+                    and len(b.text) <= 44
+                    and copy_bottom <= (b.bbox[1] + b.bbox[3]) / 2.0 <= band[1] + 8):
+                out.append(b)
+    row = [b for b in out if sum(1 for o in out if o is not b and _overlaps(b, o)) >= 1]
+    return row if len(row) >= 2 else []
+
+
+def _lift_blocks_to_hero(sections: list[tuple[str, list[Block]]],
+                         blocks: list[Block]) -> list[tuple[str, list[Block]]]:
+    """Move `blocks` into the hero section, dropping sections left empty."""
+    ids = {id(b) for b in blocks}
+    hero = [b for n, g in sections if n == "hero" for b in g] + list(blocks)
+    out: list[tuple[str, list[Block]]] = []
+    for name, group in sections:
+        if name == "hero":
+            out.append(("hero", hero))
+            continue
+        kept = [b for b in group if id(b) not in ids]
+        if kept:
+            out.append((name, kept))
+    return out
+
+
+def _benefit_blank_rects(sections: list[tuple[str, list[Block]]],
+                         content: dict, any_layout: bool = False) -> list[list[int]]:
+    """The reference's own benefit row, removed whole.
+
+    The row's text is already in the exclusion rects, but its icons are not:
+    left in the artwork they sit beside the live HTML row as duplicates, so the
+    whole row (grown by `HERO_BENEFIT_BLANK_PAD`, which reaches the icons) is
+    blanked.  The *rendering* only lifts the row into the hero for a scene; a
+    full-bleed band can still show the same row behind the DOM section below,
+    which is why the artwork cleanup asks for it with `any_layout=True`.
+    """
+    if content.get("hero_layout") != "scene" and not any_layout:
+        return []
+    row = _benefit_candidates(sections, content.get("hero_band"))
+    if not row:
+        return []
+    left, top, right, bottom = HERO_BENEFIT_BLANK_PAD
+    x0 = min(b.bbox[0] for b in row)
+    y0 = min(b.bbox[1] for b in row)
+    x1 = max(b.bbox[2] for b in row)
+    y1 = max(b.bbox[3] for b in row)
+    return [[max(0, int(round(x0)) - left), max(0, int(round(y0)) - top),
+             min(STAGE_W, int(round(x1)) + right),
+             min(STAGE_H, int(round(y1)) + bottom)]]
+
+
 def _hero_html(blocks: list[Block], cta_href: str,
-               sublabels: dict[int, Block] | None = None) -> str:
-    """The hero's copy: eyebrow, headline, subhead, actions, a trust row.
+               sublabels: dict[int, Block] | None = None,
+               dropped: set[int] | None = None,
+               accent: bool = False,
+               benefits: bool = False) -> str:
+    """The hero's copy: eyebrow, headline, subhead, actions, a benefits row.
 
     Grouping the calls to action and the short trust badges into their own rows
     is what makes the hero read as a hero rather than a stack of paragraphs.
+    `dropped`, when given, collects the ids of blocks that were identified as
+    illustration labels and left out of the DOM -- `write_all` keeps them in the
+    artwork instead of blanking them.  `accent` marks the two-tone reference
+    headline (see `_accent_html`); `benefits` is the scene hero, whose lifted
+    value/sub-label row renders as `.hero-benefits` rather than as badges.
     """
     # Buttons sharing a row are emitted left to right, as they are drawn.  The
     # reading order sorts by top edge first, and a solid button and an outline one
     # beside it rarely share a top edge (a pixel or two apart is enough), so it
     # would swap them.
-    blocks = _drop_artwork_labels(blocks)
+    #
+    # The benefit row is identified first and protected from the label filter: a
+    # live extraction gave every benefit line the `other` role, which left the
+    # eyebrow as the only tagline anchor and let `_drop_artwork_labels` swallow
+    # the row's right-hand items.
+    pairs = _benefit_pairs(blocks) if benefits else []
+    protect = {id(v) for v, _ in pairs} | {id(l) for _, l in pairs}
+    kept = _drop_artwork_labels(blocks, protect=protect)
+    if dropped is not None:
+        kept_ids = {id(b) for b in kept}
+        dropped.update(id(b) for b in blocks if id(b) not in kept_ids)
+    blocks = kept
     subs = sublabels or {}
     # A phone line that is a button's second line is not hero copy: drop it here
     # so it cannot render as an orphaned paragraph under the button row.
     sub_ids = {id(p) for p in subs.values()}
     blocks = [b for b in blocks if id(b) not in sub_ids]
     cta_blocks = _row_order([b for b in blocks if b.role == "cta"])
+    benefit_ids = ({id(v) for v, _ in pairs} | {id(l) for _, l in pairs})
     # Short lines that share a row are trust badges, not copy.  The model's role
     # for them is not stable (the same reference came back `other` on one run and
     # `tagline` on the next), so detect them by shape, not by role.
     short = [b for b in blocks
-             if b.role in {"other", "tagline"} and len(b.text) <= 40]
+             if b.role in {"other", "tagline"} and len(b.text) <= 40
+             and id(b) not in benefit_ids]
     badges = _row_order([b for b in short
                          if sum(1 for o in short if o is not b and _overlaps(b, o)) >= 1])
 
@@ -1384,8 +1642,17 @@ def _hero_html(blocks: list[Block], cta_href: str,
     # ("Open source · Community driven · Powered by Antseed"), which then reads as
     # a caption for the buttons.
     out: list[str] = []
-    actions_done = badges_done = headline_done = False
+    actions_done = badges_done = benefits_done = headline_done = False
     for b in _reading_order(blocks):
+        if id(b) in benefit_ids:
+            if not benefits_done:
+                items = "".join(
+                    f'<li class="benefit"><span class="b-title">{_inline(v)}</span>'
+                    f'<span class="b-sub">{_inline(l)}</span></li>'
+                    for v, l in pairs)
+                out.append(f'<ul class="hero-benefits">{items}</ul>')
+                benefits_done = True
+            continue
         if b.role == "cta":
             if not actions_done:
                 row = "".join(_cta_html(c, cta_href, sub=subs.get(id(c)))
@@ -1406,7 +1673,7 @@ def _hero_html(blocks: list[Block], cta_href: str,
             # accent line, which is also how the mockup draws them.  Emitting a
             # second h1 is a structure defect the pipeline only warned about.
             if not headline_done:
-                out.append(f'<h1>{_inline(b)}</h1>')
+                out.append(f'<h1>{_accent_html(b) if accent else _inline(b)}</h1>')
                 headline_done = True
             else:
                 out.append(f'<p class="subhead accent">{_inline(b)}</p>')
@@ -1424,6 +1691,12 @@ def _hero_html(blocks: list[Block], cta_href: str,
     if badges and not badges_done:
         row = "".join(f'<span class="badge">{_inline(b)}</span>' for b in badges)
         out.append(f'<ul class="hero-badges">{row}</ul>')
+    if pairs and not benefits_done:
+        items = "".join(
+            f'<li class="benefit"><span class="b-title">{_inline(v)}</span>'
+            f'<span class="b-sub">{_inline(l)}</span></li>'
+            for v, l in pairs)
+        out.append(f'<ul class="hero-benefits">{items}</ul>')
     return "\n      ".join(out)
 
 
@@ -1477,11 +1750,15 @@ def _stable_id(name: str, used: dict[str, int]) -> str:
 
 
 def build_markup(sections: list[tuple[str, list[Block]]],
-                 cta_href: str) -> str:
+                 cta_href: str,
+                 dropped: set[int] | None = None,
+                 scene: bool = False) -> str:
     """The page's body markup: a header, a hero, the sections, a footer.
 
     Section names may repeat, so every section gets a unique id and each CTA
-    links to a real anchor on the page (never `#`).
+    links to a real anchor on the page (never `#`).  `dropped` collects the ids
+    of hero illustration labels that were identified and left out of the DOM
+    (see `_hero_html`); `scene` selects the scene hero's accent headline.
     """
     parts: list[str] = []
     used: dict[str, int] = {}
@@ -1506,7 +1783,8 @@ def build_markup(sections: list[tuple[str, list[Block]]],
         parts.append('<section class="hero" id="hero">\n      '
                      '<div class="hero-art" aria-hidden="true"><!--ART--></div>\n'
                      '      <div class="wrap hero-copy">\n      '
-                     + _hero_html(hero, cta_href, _cta_sublabels(hero, hero_ctas))
+                     + _hero_html(hero, cta_href, _cta_sublabels(hero, hero_ctas),
+                                  dropped=dropped, accent=scene, benefits=scene)
                      + "\n      </div>\n    </section>")
     middle = []
     for name, blocks in sections:
@@ -1733,7 +2011,76 @@ def hero_band(sections: list[tuple[str, list[Block]]]) -> list[int] | None:
     return info["band"] if info else None
 
 
-def build_content(sections: list[tuple[str, list[Block]]], name: str) -> dict:
+def hero_figure(sections: list[tuple[str, list[Block]]],
+                artwork: list[Block],
+                band: list[int] | None) -> list[int] | None:
+    """The hero illustration's own region, when the hero has one.
+
+    A hero is often copy beside an illustration (a device mockup, a dashboard, a
+    diagram).  The illustration carries its own labels -- which the model reports
+    as `part: artwork`, and which the page must NOT replace -- and the usual
+    full-bleed backdrop is wrong for it twice over: `object-fit: cover` crops the
+    sides the labels sit on, and the copy scrim dims what survives.
+
+    The region here is the illustration's labels grown by `HERO_FIGURE_PAD`,
+    taken down to the hero band's own vertical slice (the band already starts
+    below the mockup's header and stops at the next section).  Returns
+    `[x0, y0, x1, y1]` in stage coordinates, or None when the hero has no clear
+    illustration column:
+
+      * fewer than `HERO_ILLUSTRATION_MIN` artwork labels inside the band, or
+      * the labels are not clear of the copy's right edge (so a split would not
+        separate anything -- the art surrounds the copy), or
+      * the resulting region is too narrow to be worth a column.
+
+    The caller (the runner) additionally declines the split for continuous-tone
+    artwork, which is a photograph and stays a backdrop.
+
+    The region is derived from the labels, so it is a lower bound on the
+    drawing: an element that extends past its own labels and across the copy
+    floor (a rack left of the leftmost label) is still clipped at the panel
+    edge.  That is the known limit of a label-derived crop; segmentation-based
+    asset recovery is future work.  Every labelled element is preserved.
+    """
+    if not band or len(band) != 2 or not artwork:
+        return None
+    y0, y1 = int(band[0]), int(band[1])
+    artwork = [b for b in artwork if getattr(b, "part", "page") == "artwork"]
+    inside = [b for b in artwork
+              if y0 - HERO_FIGURE_PAD <= (b.bbox[1] + b.bbox[3]) / 2.0
+              <= y1 + HERO_FIGURE_PAD]
+    if len(inside) < HERO_ILLUSTRATION_MIN:
+        return None
+    hero = [b for n, g in sections if n == "hero" for b in g]
+    if not hero:
+        return None
+    copy_right = max(b.bbox[2] for b in hero)
+    ax0 = min(b.bbox[0] for b in inside)
+    ax1 = max(b.bbox[2] for b in inside)
+    if ax0 < copy_right + HERO_SPLIT_GAP:
+        return None                      # the art is not a clear right-hand column
+    x0 = max(0, int(round(ax0)) - 2 * HERO_FIGURE_PAD)
+    x1 = min(STAGE_W, int(round(ax1)) + 2 * HERO_FIGURE_PAD)
+    if x1 - x0 < 120:                    # too narrow to carry a figure
+        return None
+    return [x0, y0, x1, y1]
+
+
+def build_content(sections: list[tuple[str, list[Block]]], name: str,
+                  artwork: list[Block] | None = None,
+                  dropped: set[int] | None = None,
+                  scene_ok: bool = True) -> dict:
+    """The editable page definition for one design.
+
+    `artwork` is every `part: artwork` block (they are not in `sections`): the
+    blocks whose labels make the hero an illustration rather than a backdrop.
+    `dropped` collects the ids of hero illustration labels left out of the DOM.
+    `scene_ok` is the runner's measured verdict that the hero is FLAT artwork: a
+    continuous-tone hero (a photograph) must not be composed as a scene, and the
+    transformation below (lifting the benefit row, blanking it) must not run at
+    all -- the runner measures the hero's pixels, which this module never sees.
+    All optional so a synthetic caller can build a page without them.
+    """
     blocks = [b for _, group in sections for b in group]
     headline = next((b for b in blocks if b.role == "headline"), None)
     tagline = next((b for b in blocks if b.role == "tagline"), None)
@@ -1742,9 +2089,25 @@ def build_content(sections: list[tuple[str, list[Block]]], name: str) -> dict:
     # Two passes: build the sections first so the CTA can link to a real anchor
     # that the markup actually created, then build the markup with that target.
     sections = [(s, _reading_order(g)) for s, g in sections]
-    probe = build_markup(sections, "#top")
-    href = cta_target(sections, probe)
     band = hero_band_info(sections)
+    # The hero illustration's own column, when the model recovered labels for
+    # one.  The scene prototype (below) uses the whole copy-removed scene rather
+    # than this column; the runner declines either for continuous-tone artwork,
+    # which is a photograph and stays a full-bleed backdrop.
+    figure = hero_figure(sections, artwork or [],
+                         band["band"] if band else None)
+    # Prototype composition: an illustration hero on FLAT artwork becomes the
+    # integrated scene, and the reference's benefit row -- which sits inside the
+    # hero band but is easily tagged a later section -- is lifted into the hero
+    # (its original row is blanked out of the artwork by `write_all`).  The
+    # runner measures the hero first and passes `scene_ok=False` for a
+    # photograph, so none of this runs on a photographic design.
+    scene = figure is not None and scene_ok
+    if scene and band:
+        sections = _lift_blocks_to_hero(
+            sections, _benefit_candidates(sections, band["band"]))
+    probe = build_markup(sections, "#top", dropped=dropped, scene=scene)
+    href = cta_target(sections, probe)
     return {
         "title": title,
         "description": tagline.text if tagline else "Built from a design reference.",
@@ -1752,13 +2115,19 @@ def build_content(sections: list[tuple[str, list[Block]]], name: str) -> dict:
         "cta_href": href,
         "stage": [STAGE_W, STAGE_H],
         "hero_band": band["band"] if band else None,
+        # The hero composition: `scene` is the reference-led prototype (the whole
+        # copy-removed scene in flow, live copy over its dark side); `full` is
+        # the full-bleed backdrop; `split` remains available for an illustration
+        # shown in its own column.
+        "hero_layout": "scene" if scene else "full",
+        "hero_figure": figure,
         # Whether the band reaches into the section below the hero.  The page CSS
         # uses it to decide whether `.hero-art::after` needs its bottom fade: a
         # band that stops at the hero's own end has nothing to dissolve, and the
         # fade is full-width, so keeping it would darken real artwork.
         "hero_overshoot": bool(band and band["overshoot"]),
         "sections": [s for s, _ in sections],
-        "markup": build_markup(sections, href),
+        "markup": build_markup(sections, href, dropped=dropped, scene=scene),
     }
 
 
@@ -1866,7 +2235,8 @@ a {{ color: inherit; }}
 /* A photographic hero ships as a raster instead of traced geometry (see
    `app/heroart.py`).  `object-fit: cover` is the exact equivalent of the SVG's
    `preserveAspectRatio="… slice"`: the image fills the hero box and is cropped,
-   never letterboxed or stretched. */
+   never letterboxed or stretched.  This is the full-bleed layout; a hero whose
+   artwork is an illustration overrides it below (`.hero.hero-split`). */
 .hero-art picture, .hero-art img {{ width: 100%; height: 100%; display: block; }}
 .hero-art img {{ object-fit: cover; }}
 /* A scrim over the artwork so the copy keeps contrast whatever the art does.
@@ -1926,6 +2296,92 @@ a {{ color: inherit; }}
 .hero-badges .badge::before {{
   content: ""; width: 7px; height: 7px; border-radius: 50%;
   background: var(--accent); flex: none;
+}}
+
+/* ---- hero as illustration (copy | artwork) ------------------------------ */
+/* A hero whose artwork is an ILLUSTRATION (a device mockup, a dashboard, a
+   diagram) is not background texture: it carries its own labels, and the
+   full-bleed treatment above is wrong for it -- `object-fit: cover` crops the
+   sides those labels sit on and the copy scrim dims the rest.  `hero-split`
+   gives the illustration its own region beside the copy and shows it WHOLE
+   (`height: auto`, never cropped); below 880px the two stack.  The class is
+   applied by `gen-page.mjs` from `content.hero_layout`, which the runner only
+   leaves as `split` for flat artwork -- a photograph stays the page-wide
+   backdrop even when the model found labels in it.  The figure is the
+   illustration's own raster crop (or the narrowed SVG viewBox). */
+.hero.hero-split {{
+  display: grid; grid-template-columns: minmax(0, 1.05fr) minmax(0, 1fr);
+  align-items: center; gap: clamp(24px, 4vw, 56px);
+  width: 100%; max-width: var(--maxw); margin: 0 auto;
+  padding: 0 var(--pad); overflow: visible;
+}}
+.hero.hero-split .hero-copy {{
+  order: 1; min-height: 0;
+  padding-top: clamp(48px, 7vw, 88px); padding-bottom: clamp(48px, 7vw, 88px);
+}}
+.hero.hero-split .hero-art {{ order: 2; position: relative; inset: auto;
+  width: 100%; max-width: {HERO_FIGURE_MAX_CSS}px; margin-inline: auto; }}
+.hero.hero-split .hero-art svg {{ width: 100%; height: auto; display: block; }}
+.hero.hero-split .hero-art img {{ width: 100%; height: auto; object-fit: contain; }}
+.hero.hero-split .hero-art::after {{ display: none; }}
+@media (max-width: 880px) {{
+  .hero.hero-split {{ grid-template-columns: minmax(0, 1fr); }}
+  .hero.hero-split .hero-copy {{ padding-bottom: clamp(20px, 3vw, 32px); }}
+  .hero.hero-split .hero-art {{ padding-bottom: clamp(36px, 6vw, 56px); }}
+}}
+
+/* ---- hero as an integrated scene (prototype) ---------------------------- */
+/* A hero whose artwork is a complete scene -- racks, floor, lighting, a UI
+   illustration -- is not a boxed picture and not a texture: the whole
+   copy-removed scene IS the hero, shown at its own aspect in normal flow, and
+   the live copy sits over its dark side.  No `cover` crop, no scrim: the
+   reference puts the copy on the scene's own dark ground.  The image is a grid
+   sibling of the copy in the same cell, so it sets the hero's height while the
+   content stays in flow.  Below 900px the two stack (the copy is as tall as
+   the scene at those widths, so nothing would be legible over it), scene
+   first.  The class comes from
+   `content.hero_layout == 'scene'` via `gen-page.mjs`; the runner leaves a
+   continuous-tone hero (a photograph) on `full` instead. */
+.hero.hero-scene {{ display: grid; overflow: clip; }}
+.hero.hero-scene > * {{ grid-area: 1 / 1; }}
+.hero.hero-scene .hero-art {{ position: static; inset: auto; z-index: 0; }}
+.hero.hero-scene .hero-art picture {{ display: block; }}
+.hero.hero-scene .hero-art img,
+.hero.hero-scene .hero-art svg {{ width: 100%; height: auto; display: block; }}
+.hero.hero-scene .hero-art::after {{ display: none; }}
+.hero.hero-scene .hero-copy {{
+  z-index: 1; min-height: 0; width: 100%; max-width: none; margin: 0;
+  align-content: center;
+  padding-left: clamp(20px, 4.2vw, 64px); padding-right: var(--pad);
+  padding-top: clamp(48px, 7vw, 96px); padding-bottom: clamp(48px, 7vw, 96px);
+}}
+.hero.hero-scene .hero-copy > * {{ max-width: min(100%, 470px); }}
+.hero.hero-scene h1 {{ font-size: clamp(32px, 4.3vw, 54px); }}
+/* The reference's supporting paragraph is body copy, not a secondary headline:
+   it reads muted and regular even when the model tags it `subhead`. */
+.hero.hero-scene .subhead {{
+  font-size: clamp(17px, 1.6vw, 20px); font-weight: 400; color: var(--muted);
+}}
+.hero .accent {{ color: var(--accent); }}
+
+/* The reference's benefit row (icon + value + sub-label, three in a line).  The
+   sizes are small because the reference draws them small -- the row must read
+   as one line inside the copy column, not wrap into cards. */
+.hero-benefits {{
+  list-style: none; display: flex; flex-wrap: wrap; gap: 12px 18px; margin-top: 10px;
+}}
+.hero-benefits .benefit {{ display: grid; gap: 1px; position: relative; padding-left: 12px; }}
+.hero-benefits .benefit::before {{
+  content: ""; position: absolute; left: 0; top: 6px; width: 6px; height: 6px;
+  border-radius: 50%; background: var(--accent);
+}}
+.hero-benefits .b-title {{ color: var(--ink); font-weight: 600; font-size: 12.5px; }}
+.hero-benefits .b-sub {{ color: var(--muted); font-size: 10.5px; }}
+/* Below 900px the copy (which is ~490px tall) would cover most of the scene's
+   height and reach its panel, so the two stack instead: scene, then copy. */
+@media (max-width: 900px) {{
+  .hero.hero-scene {{ display: block; }}
+  .hero.hero-scene .hero-copy {{ padding-bottom: clamp(20px, 4vw, 32px); }}
 }}
 
 /* ---- sections ----------------------------------------------------------- */
@@ -2102,13 +2558,16 @@ def page_blocks(blocks: list[Block]) -> list[Block]:
 
 
 def text_rects(blocks: list[Block]) -> list[list[int]]:
-    """mkart's exclusion rects: each text box grown, clamped to the stage.
+    """mkart's exclusion rects: each *replaced* text box grown, clamped to the stage.
 
-    The caller passes **every** text block -- the page copy that becomes DOM and
-    the text inside the artwork.  A text block is not art: leaving one unblanked
-    bakes a ghost of it into the hero backdrop, where the real copy sits.  A
-    small box (a `6px` label) is still enclosed by the pad, since the rect grows
-    on both sides of it.
+    The caller passes the blocks the page actually renders as DOM (see
+    `write_all`): blanking exactly those is what stops a ghost of the mockup's
+    own copy sitting behind the live text.  An illustration's internal labels are
+    **not** passed -- they are content of the artwork, so the trace must keep
+    them (and the raster export must not inpaint them away).
+
+    A small box (a `6px` label) is still enclosed by the pad, since the rect
+    grows on both sides of it.
     """
     out: list[list[int]] = []
     for b in blocks:
@@ -2175,10 +2634,22 @@ def structure_issues(sections: list[tuple[str, list[Block]]], markup: str) -> li
 
 
 def write_all(pipeline: Path, name: str, blocks: list[Block],
-              background: tuple[int, int, int]) -> dict:
-    """Write content/page.css/design config into the job's pipeline copy."""
+              background: tuple[int, int, int],
+              scene_ok: bool = True) -> dict:
+    """Write content/page.css/design config into the job's pipeline copy.
+
+    `scene_ok` is the runner's measured flat-vs-photograph verdict for the hero;
+    a photographic hero must keep the full-bleed composition untouched.
+    """
     sections = group_sections(blocks)
-    content = build_content(sections, name)
+    # Labels the hero keeps OUT of its DOM are not copy the page replaces
+    # (see `_drop_artwork_labels`): they stay in the artwork asset, so they must
+    # not be in the tracer's exclusion rects.
+    dropped: set[int] = set()
+    content = build_content(
+        sections, name,
+        artwork=[b for b in blocks if getattr(b, "part", "page") == "artwork"],
+        dropped=dropped, scene_ok=scene_ok)
     (pipeline / f"content-{name}.json").write_text(
         json.dumps(content, indent=2, ensure_ascii=False) + "\n")
 
@@ -2186,12 +2657,15 @@ def write_all(pipeline: Path, name: str, blocks: list[Block],
         build_page_css(palette(blocks, background),
                        hero_overshoot=bool(content.get("hero_overshoot"))))
 
-    # The exclusion rects are EVERY text block the model found -- the page copy
-    # that becomes DOM *and* the text inside the artwork (labels on a device
-    # mockup, a logo on a wall).  The artwork is a decorative backdrop: any text
-    # baked into it doubles with the real DOM copy sitting over it, which is the
-    # single ugliest defect the page can have.  A text block is not art, so it is
-    # blanked either way; the tracer repaints it from the surrounding pixels.
+    # The exclusion rects are the copy the page ACTUALLY REPLACES with DOM text:
+    # any text baked into the artwork would double with the live copy sitting
+    # over it, the single ugliest defect the page can have.  They are NOT every
+    # text block.  An illustration's own labels -- a dashboard's row names, a
+    # device mockup's captions -- are content of the artwork: blanking them
+    # strips real content out of the hero (a measured dashboard lost its region
+    # labels, table values and caption, and smears were left where they were),
+    # while the page does not show any DOM element in their place.  So only
+    # `page_blocks` minus the labels dropped from the hero DOM are blanked.
     cfg_path = pipeline / "designs" / f"{name}.json"
     cfg = json.loads(cfg_path.read_text()) if cfg_path.is_file() else {"name": name}
     cfg["name"] = name
@@ -2205,9 +2679,10 @@ def write_all(pipeline: Path, name: str, blocks: list[Block],
     # box vs 5.37 with the hero box, same 96 bands.  The box stays full;
     # `hero_band` crops what is *shown*, not what is traced.
     cfg["box"] = [0, 0, STAGE_W, STAGE_H]
-    text_r = text_rects(blocks)
+    replaced = [b for b in page_blocks(blocks) if id(b) not in dropped]
+    text_r = text_rects(replaced)
     cfg["text"] = text_r
-    cfg["blank"] = button_rects(blocks)
+    cfg["blank"] = button_rects(replaced) + _benefit_blank_rects(sections, content)
     cfg.setdefault("params", {})
     bg_lum = round(sum(background) / 3.0, 1)
     cfg["params"].update({
